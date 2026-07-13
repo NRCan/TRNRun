@@ -1,0 +1,13 @@
+[check]
+select = ["ALL"]
+preview = true
+line-length = 120
+ignore = []
+target-std = "f2023"
+fix-only = true
+
+[check.invalid-tab]
+indent-width = 2
+
+[check.strings]
+quotes = "double"

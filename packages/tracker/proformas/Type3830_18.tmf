@@ -1,0 +1,227 @@
+#ESI!
+4.0
+Progress Tracker
+0
+
+Alex Lachance
+Natural Resources Canada
+1
+
+4
+34
+January 01, 2026
+NA
+January 01, 2026
+1
+
+noowner
+__
+__
+__
+1
+Subroutine Type3830 log simulation TIME, START, STOP and STEP to a .tmp file at a set interval
+0
+0
+0
+0
+0
+0
+__
+__
+__
+1
+
+0
+__
+__
+__
+__
+0
+0
+__
+.\SourceCode\Types\NRCan\Type3830.f90
+__
+__
+__
+2
+Logical unit
+SN
+1
+This parameter sets the Fortran Logical Unit (File reference number) of the output file. It is used internally by TRNSYS to refer to the file. This parameter will automatically be assigned to a unique value by the TRNSYS Studio
+simple
+integer
+3
++
+30
+999
+[ ; ]
+30
+0
+-
+Dimensionless
+Printing interval
+SN
+1
+The time interval at which printing is to occur.
+simple
+real
+3
++
+0
++Inf
+[ ; ]
+1
+0
+hr
+Time
+0
+0
+0
+0
+0
+
+*** trnModel specific properties ***
+9999
+3830
+df /c
+9
+
+
+
+0
+
+
+
+0
+
+
+
+0
+
+
+
+0
+
+
+
+0
+
+
+
+0
+
+
+
+0
+
+
+
+0
+
+
+
+0
+9
+
+Output file
+***.tmp
+1
+***.tmp
+Logical unit
+
+0
+
+
+
+0
+
+
+0
+
+
+
+0
+
+
+0
+
+
+
+0
+
+
+0
+
+
+
+0
+
+
+0
+
+
+
+10
+Printing interval
+Start time
+Stop time
+Logical unit
+Units printing mode
+Relative or absolute start time
+Overwrite or Append
+Print header
+Delimiter
+Print labels
+
+
+0
+
+
+
+0
+
+
+0
+
+
+
+0
+
+
+0
+
+
+
+0
+
+
+0
+0
+-1
+-1
+0
+
+
+1
+50
+-1
+-1
+0
+
+
+1
+50
+0
+1
+0
+
+
+1
+50
+-1
+-1
+0
+
+
+1
+50

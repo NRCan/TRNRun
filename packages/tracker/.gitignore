@@ -1,0 +1,18 @@
+# TRNSYS
+*.log
+*.lst
+*.tmp
+*.PTI
+*.out
+*.BAL
+*.plt
+
+# B18
+*.bld
+*.trn
+*.inf
+
+# others
+*.dll
+*.zip
+dist/

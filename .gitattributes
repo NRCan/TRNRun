@@ -1,0 +1,12 @@
+* text=auto
+
+*.f90 text eol=lf
+*.py text eol=lf
+*.nim text eol=lf
+*.md text eol=lf
+
+*.exe binary
+*.dll binary
+
+# Prevent GitHub from displaying comments within JSON files as errors.
+*.json linguist-language=JSON-with-Comments
