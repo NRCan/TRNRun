@@ -1,1 +1,13 @@
-# TODO
+# TRNSYS Simulation
+*.log
+*.lst
+*.tmp
+*.PTI
+*.out
+*.BAL
+*.plt
+
+# B18
+*.bld
+*.trn
+*.inf

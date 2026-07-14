@@ -1,0 +1,41 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "trnrun"
+version = "0.1.0"
+description = "TODO"
+readme = "README.md"
+requires-python = '>=3.12'
+dependencies = [
+    "rich>=14.2.0",
+]
+authors = [
+    { name = "Natural Resources Canada / Ressources naturelles Canada" },
+    { name = "CanmetENERGY in Varennes / CanmetÉNERGIE à Varennes" },
+    { name = "Alex Lachance" },
+]
+license = { file = 'LICENSE' }
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Scientific/Engineering",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=9.0.1", "ipykernel>=7.1.0"]
+
+[tool.hatch.version]
+path = "trnrun/__init__.py"
+
+[tool.basedpyright]
+pythonVersion = "3.12"
