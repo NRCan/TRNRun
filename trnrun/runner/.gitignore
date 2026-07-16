@@ -21,6 +21,8 @@ docs/nimcache
 *.ilk
 *.csv
 *.PTI
+*.plt
+*.out
 *.tmp
 *.jsonl
 *.lst

@@ -1,22 +1,20 @@
-## Windows named-mutex guard for TRNSYS process launches.
+## mutex.nim - Windows named-mutex guard for TRNSYS process launches.
 ##
-## TRNSYS does not tolerate simultaneously TRNEXE launches; two instances
-## started simultaneously can causes crashes.
-## This module serialises launches across all processes on the machine
-## via a single named kernel mutex, `Global\TRNRun_LaunchMutex`.
+## TRNSYS does not tolerate simultaneous TrnEXE launches; two instances
+## started at the same time can crash each other. This module serialises
+## launches across all processes on the machine via a single named kernel
+## mutex, `Global\TRNRun_LaunchMutex`.
 ##
 ## The mutex is created (or opened, if it already exists) at module
-## initialisation and lives for the lifetime of the process.
+## initialisation and lives for the lifetime of the process; an `OSError`
+## is raised at import time if creation fails.
 ##
 ## Typical usage:
 ##
 ## ```nim
 ## withLock:
-##   startProcess("TRNSYS.exe", …)
+##   startProcess("TrnEXE64.exe", …)
 ## ```
-##
-## `withLock` acquires the mutex, runs the body, then releases it.
-
 
 import std/[os, winlean]
 
@@ -45,7 +43,7 @@ if lock == 0:
 # Acquire / Release
 # ---------------------------------------------------------------------------
 proc acquireLock*() =
-  ## Blocks until the global TRNSYS launch mutex is acquired.
+  ## Blocks until the global TRNSYS launch mutex is acquired (warns if the previous holder died).
   let waitResult = waitForSingleObject(lock, INFINITE)
   if waitResult == WAIT_ABANDONED:
     stderr.writeLine "Warning: previous TRNSYS process did not exit cleanly. Proceeding anyway."
@@ -60,6 +58,20 @@ proc releaseLock*() =
 # Public Template
 # ---------------------------------------------------------------------------
 template withLock*(body: untyped) =
+  ## Runs `body` while holding the global TRNSYS launch mutex.
+  ##
+  ## Acquires the machine-wide named mutex, executes the body, and always
+  ## releases the mutex afterwards - including when the body raises.
+  ##
+  ## Parameters
+  ## ----------
+  ## body : untyped
+  ##     Statements to execute while the lock is held.
+  ##
+  ## Raises
+  ## ------
+  ## OSError
+  ##     If the mutex cannot be acquired.
   acquireLock()
   try:
     body

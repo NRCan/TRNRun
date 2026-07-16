@@ -1,17 +1,3 @@
-<#
-.SYNOPSIS
-    Runs build\trnrun.exe across the FULL Cartesian product of every CLI flag
-    value you define below, crossed with every .dck file. One run at a time
-    (-Wait), so there is never overlap.
-
-.DESCRIPTION
-    Every combination of every flag's value range, crossed with every .dck
-    file, is executed in sequence.
-
-      -StartAt N : resume - skip the first N runs in the selected order.
-      -Force     : skip the "this will launch N processes, continue?" prompt.
-#>
-
 param(
     [int64]$StartAt = 0,
     [switch]$Force
@@ -23,16 +9,13 @@ $ExePath = Join-Path $RepoRoot "build\trnrun.exe"
 
 # ---- Deck files to test --------------------------------------------------------
 $DckFiles = @(
-    (Join-Path $RepoRoot "tests\dck\test_fast_wo_plot_wo_tracking_0.dck"),
-    (Join-Path $RepoRoot "tests\dck\test_fast_wo_plot_w_tracking_0.dck"),
-    (Join-Path $RepoRoot "tests\dck\test_fast_w_plot_wo_tracking_0.dck"),
-    (Join-Path $RepoRoot "tests\dck\test_fast_w_plot_w_tracking_0.dck")
+    (Join-Path $RepoRoot "tests\dck\test_wo_plot_wo_tracking.dck"),
+    (Join-Path $RepoRoot "tests\dck\test_wo_plot_w_tracking.dck"),
+    (Join-Path $RepoRoot "tests\dck\test_w_plot_wo_tracking.dck"),
+    (Join-Path $RepoRoot "tests\dck\test_w_plot_w_tracking.dck")
 )
 
 # ---- Parameter value sets -------------------------------------------------------
-# Keys here are the EXACT CLI flag names from main.nim (not the internal var names,
-# e.g. it's --detectTimeout not --detectTimeoutMs). Edit the value arrays to taste —
-# every value here gets crossed with every other value AND every dck file.
 $ParamValues = [ordered]@{
     guiVisibility  = @("hidden")
     waitForGui     = @($true)
@@ -56,6 +39,7 @@ $ParamValues = [ordered]@{
 $ExitCodeMeaning = @{
     0   = "Done"
     1   = "Fatal"
+    2   = "User Error"
     124 = "Timeout"
     125 = "Stalled"
     130 = "Cancelled"

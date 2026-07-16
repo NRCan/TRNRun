@@ -1,9 +1,9 @@
-## TRNRun - Command Line Interface for TRNSYS Simulation Execution
+## runner.nim - command-line interface for TRNRun.
 ##
-## This module provides a command-line entry point for launching and
-## configuring TRNSYS simulations through the TRNRun execution engine.
-## It acts as a thin wrapper around `simulate`, exposing its parameters via
-## CLI flags and optional GUI file selection.
+## Command-line entry point for launching and configuring TRNSYS
+## simulations through the TRNRun execution engine. It acts as a thin
+## wrapper around `simulate`, exposing its parameters via CLI flags, with
+## an optional native file picker when no deck file is supplied.
 
 import std/[parseopt, strutils]
 import ./simulate
@@ -13,17 +13,23 @@ import ./filedialog
 const NimblePkgVersion {.strdefine.} = "unknown"
 
 proc parseGuiVisibility(s: string): TrnexeGuiVisibility =
+  ## Parses a CLI visibility string into a `TrnexeGuiVisibility`; raises `ValueError` on unknown input.
   case s.toLowerAscii()
   of "keep", "keepopen":
     guiKeepOpen
   of "auto", "autoclose":
     guiAutoClose
+  of "min", "minimized":
+    guiMinimized
+  of "minauto", "minimizedauto":
+    guiMinimizedAuto
   of "hidden":
     guiHidden
   else:
     raise newException(ValueError, "Invalid guiVisibility: " & s)
 
 proc exitCode*(code: SimMonitorResult): int =
+  ## Maps a `SimMonitorResult` to a conventional process exit code.
   case code
   of monitorDone: 0
   of monitorCancelled: 130
@@ -32,6 +38,7 @@ proc exitCode*(code: SimMonitorResult): int =
   of monitorStalled: 125
 
 proc writeHelp() =
+  ## Prints CLI usage to stdout.
   echo """trnrun - launch and monitor TRNSYS simulations
 
 Usage:
@@ -40,7 +47,7 @@ Usage:
   -h, --help              Show this help and exit
   -v, --version           Show version and exit
   --trnexePath:PATH       Path to TrnEXE64.exe
-  --guiVisibility:MODE    keep | auto | hidden   (default: hidden)
+  --guiVisibility:MODE    keep | auto | min | minauto | hidden   (default: hidden)
   --waitForGui:BOOL       (default: true)
   --waitForLst:BOOL       (default: true)
   --waitForTmp:BOOL       (default: false)
@@ -57,10 +64,27 @@ Usage:
   --severity:LEVEL        Notice | Warning | Fatal (default: Notice)
   --writeLog:BOOL         (default: true)
 
-Exit codes: 0 done  1 fatal  124 timeout  125 stalled  130 cancelled"""
+Exit codes: 0 done  1 fatal  2 usage error  124 timeout  125 stalled  130 cancelled"""
 
 proc main() =
-  ## Entry point for the TRNRun CLI: parses command-line arguments
+  ## Entry point for the TRNRun CLI.
+  ##
+  ## Parses command-line flags into `simulate` parameters, opens a native
+  ## file picker when no deck file is supplied, runs the simulation, and
+  ## terminates the process with an exit code describing the outcome.
+  ##
+  ## Returns
+  ## -------
+  ## None
+  ##     Does not return after a run; exits via `quit(exitCode(...))`.
+  ##     Exit codes: 0 done, 1 fatal, 2 usage/validation error,
+  ##     124 timeout, 125 stalled, 130 cancelled.
+  ##
+  ## Raises
+  ## ------
+  ## ValueError, IOError
+  ##     Invalid flag values or a missing deck/executable propagate to the
+  ##     top-level handler, which prints one line and exits with code 2.
   var
     deckFile = ""
     trnexePath = DefaultTrnexePath
@@ -141,7 +165,7 @@ proc main() =
     if deckFile == "":
       echo "No file selected."
       return
-  let result = simulate(
+  let simResult = simulate(
     deckFile = deckFile,
     trnexePath = trnexePath,
     guiVisibility = guiVisibility,
@@ -161,7 +185,13 @@ proc main() =
     severity = severity,
     writeLog = writeLog,
   )
-  quit(exitCode(result))
+  quit(exitCode(simResult))
 
 when isMainModule:
-  main()
+  try:
+    main()
+  except CatchableError:
+    # CLI trust boundary: a bad flag value or a missing deck/exe should print
+    # one clean line and exit 2, not dump a stack trace.
+    stderr.writeLine("Error: ", getCurrentExceptionMsg())
+    quit(2)

@@ -1,15 +1,3 @@
-<#
-.SYNOPSIS
-    Runs build\trnrun.exe once for each of the 4 example .dck files, using a
-    single fixed set of CLI flag values (no combinatorial sweep).
-
-.DESCRIPTION
-    One run per .dck file, executed in sequence (-Wait), so there is never
-    overlap.
-
-      -Force : skip the "this will launch N processes, continue?" prompt.
-#>
-
 param(
     [switch]$Force
 )
@@ -20,18 +8,15 @@ $ExePath = Join-Path $RepoRoot "build\trnrun.exe"
 
 # ---- Deck files to test --------------------------------------------------------
 $DckFiles = @(
-    (Join-Path $PSScriptRoot "dck\example_slow_wo_plot_wo_tracking.dck"),
-    (Join-Path $PSScriptRoot "dck\example_slow_wo_plot_w_tracking.dck"),
-    (Join-Path $PSScriptRoot "dck\example_slow_w_plot_wo_tracking.dck"),
-    (Join-Path $PSScriptRoot "dck\example_slow_w_plot_w_tracking.dck")
+    (Join-Path $PSScriptRoot "dck\example_wo_plot_wo_tracking.dck"),
+    (Join-Path $PSScriptRoot "dck\example_wo_plot_w_tracking.dck"),
+    (Join-Path $PSScriptRoot "dck\example_w_plot_wo_tracking.dck"),
+    (Join-Path $PSScriptRoot "dck\example_w_plot_w_tracking.dck")
 )
 
 # ---- Fixed parameter values (same for every dck file) --------------------------
-# Keys here are the EXACT CLI flag names from main.nim (not the internal var names,
-# e.g. it's --detectTimeout not --detectTimeoutMs). Edit values to taste — these
-# are applied as-is to all 4 deck files, no Cartesian product.
 $Params = [ordered]@{
-    guiVisibility  = "hidden"
+    guiVisibility  = "Auto"
     waitForGui     = $true
     waitForLst     = $true
     waitForTmp     = $false
@@ -46,13 +31,15 @@ $Params = [ordered]@{
     killOnTimeout  = $true
     killOnStall    = $true
     severity       = "Notice"
-    writeLog       = $false
+    writeLog       = $true
 }
+
 
 # ---- Exit-code meaning (mirrors exitCode() in main.nim) ------------------------
 $ExitCodeMeaning = @{
     0   = "Done"
     1   = "Fatal"
+    2   = "User Error"
     124 = "Timeout"
     125 = "Stalled"
     130 = "Cancelled"

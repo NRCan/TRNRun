@@ -1,6 +1,6 @@
 # Package
 
-version       = "0.3.0"
+version       = "0.3.1"
 author        = "Alex Lachance"
 description   = "Process wrapper for TRNSYS TRNEXE with simulation monitoring and status reporting"
 license       = "MIT"
@@ -27,4 +27,4 @@ task zigbuild, "Build with zigcc":
        "--out:build/trnrun.exe " &
        "--os:windows --cpu:amd64 " &
        "-d:release --opt:speed " &
-       "src/trnrun.nim"
+       "src/runner.nim"

@@ -1,4 +1,4 @@
-## TRNSYS simulation monitor.
+## monitor.nim - TRNSYS simulation monitor.
 ##
 ## Wraps a running TRNSYS process and streams structured JSON events to stdout
 ## by polling two output files:
@@ -24,7 +24,6 @@
 ## The main entry point is `monitor`. Call it after launching TRNSYS; it
 ## blocks until the process exits (or a fatal log entry, timeout, or stall
 ## is encountered) and returns a `SimMonitorResult` indicating the outcome.
-
 
 import std/[os, osproc, strutils, options, times, json, math]
 
@@ -67,13 +66,15 @@ type
     progress: SimProgress
 
   SimMonitorResult* = enum
-    monitorDone # Process exited and simulation reached 100%.
-    monitorCancelled # Process exited before simulation reached 100%.
-    monitorFatal # Process crashed or exited prematurely.
+    ## Final outcome of a monitored simulation run.
+    monitorDone # Process exited and simulation reached 100 %.
+    monitorCancelled # Process exited before simulation reached 100 %.
+    monitorFatal # Process crashed, failed to start, or logged a fatal error.
     monitorTimeout # Process still running but did not finish in time.
-    monitorStalled # Simulation time stopped advancing for longer than stallTimeoutMs.
+    monitorStalled # Simulation time stopped advancing for longer than `stallTimeoutMs`.
 
   MonitorState = object
+    ## Mutable book-keeping shared across polling ticks.
     tmpFile: string
     logFile: string
     startTime: Time
@@ -91,6 +92,7 @@ type
 # Progress / tmp file
 # ---------------------------------------------------------------------------
 proc percent(self: SimProgress, config: SimConfig): float =
+  ## Returns simulation progress in [0, 1] relative to `config`.
   if config.stop <= config.start: return 0.0
   clamp((self.time - config.start) / (config.stop - config.start), 0.0, 1.0)
 
@@ -111,6 +113,7 @@ proc eta(self: SimProgress, config: SimConfig, realStart: Time): float =
 const IsoFmt: string = "yyyy-MM-dd'T'HH:mm:ss"
 
 proc toJson*(self: SimConfig): JsonNode =
+  ## Serialises the run parameters as a `CONFIG` event.
   result = newJObject()
   result["kind"] = %"CONFIG"
   result["timestamp"] = %self.timestamp.format(IsoFmt)
@@ -119,6 +122,7 @@ proc toJson*(self: SimConfig): JsonNode =
   result["step"] = %self.step
 
 proc toJson*(self: SimProgress, config: SimConfig, realStart: Time): JsonNode =
+  ## Serialises a progress sample as a `PROGRESS` event.
   result = newJObject()
   result["kind"] = %"PROGRESS"
   result["timestamp"] = %self.timestamp.format(IsoFmt)
@@ -128,6 +132,7 @@ proc toJson*(self: SimProgress, config: SimConfig, realStart: Time): JsonNode =
   result["eta"] = %self.eta(config, realStart).round(2)
 
 proc toJson*(self: SimLog): JsonNode =
+  ## Serialises a log entry as a `LOG` event, omitting empty fields.
   result = newJObject()
   result["kind"] = %"LOG"
   result["timestamp"] = %self.timestamp.format(IsoFmt)
@@ -156,7 +161,9 @@ proc splitKeyValue(line: string): tuple[key, val: string] =
   if i >= 0:
     result = (line[0 ..< i].strip(), line[i + 1 .. ^1].strip())
 
-proc splitValue(line: string): string = splitKeyValue(line).val
+proc splitValue(line: string): string =
+  ## Returns the value part of a `key : value` line.
+  splitKeyValue(line).val
 
 # -- Field parsers --
 proc parseHeader(line: string, log: var SimLog) =
@@ -246,7 +253,10 @@ proc parseLogBlock(blck: openArray[string]): Option[SimLog] =
     let lower    = stripped.toLowerAscii()
     for (prefix, parser) in LogFieldParsers:
       if lower.startsWith(prefix):
-        parser(stripped, entry)
+        try:
+          parser(stripped, entry)
+        except ValueError:
+          discard
         break
 
   if entry.message.isEmptyOrWhitespace:
@@ -255,8 +265,7 @@ proc parseLogBlock(blck: openArray[string]): Option[SimLog] =
   result = some(entry)
 
 proc readNewLines(offset: var int64, path: string): seq[string] =
-  ## Reads only newly appended lines from `path`, advancing `offset`.
-  ## Resets the offset if the file was truncated.
+  ## Reads newly appended lines from `path`, advancing `offset` and resetting it if the file was truncated.
   var file: File
   if not open(file, path, fmRead): return @[]
   defer: file.close()
@@ -278,9 +287,7 @@ proc readNewLines(offset: var int64, path: string): seq[string] =
 
 # -- Iterator --
 iterator readLog(offset: var int64, path: string): SimLog =
-  ## Yields newly appended TRNSYS log entries since the last call.
-  ## Pass the same `offset` variable on every call to advance the read position.
-  ## Yields nothing if `path` does not yet exist.
+  ## Yields log entries appended since the last call with the same `offset` (nothing if `path` doesn't exist yet).
   if fileExists(path):
     for blck in splitIntoBlocks(readNewLines(offset, path)):
       let parsed = parseLogBlock(blck)
@@ -291,11 +298,10 @@ iterator readLog(offset: var int64, path: string): SimLog =
 # tmp parsing
 # ---------------------------------------------------------------------------
 proc parseTmpContent(content: string): Option[TmpSnapshot] =
-  ## Parses a raw Type3830 tmp file string.
-  ## Expected format: `currentTime, start, stop, step`
+  ## Parses raw Type3830 tmp content of the form `currentTime, start, stop, step`.
   let parts = content.strip().split(',')
   if parts.len != 4:
-    stderr.writeLine("[Monitor] Malformed tmp content (expected 4 fields, got ",parts.len, "): ", content.strip())
+    stderr.writeLine("[Monitor] Malformed tmp content (expected 4 fields, got ", parts.len, "): ", content.strip())
     return none(TmpSnapshot)
 
   try:
@@ -314,8 +320,7 @@ proc parseTmpContent(content: string): Option[TmpSnapshot] =
     return none(TmpSnapshot)
 
 proc readTmp(filepath: string): Option[TmpSnapshot] =
-  ## Reads and parses a Type3830 tmp file. Returns none on any I/O or parse
-  ## error, including when TRNSYS holds an exclusive write lock on the file.
+  ## Reads and parses a Type3830 tmp file; returns `none` on any I/O or parse error.
   try:
     return parseTmpContent(readFile(filepath))
   except CatchableError:
@@ -324,19 +329,27 @@ proc readTmp(filepath: string): Option[TmpSnapshot] =
 # ---------------------------------------------------------------------------
 # Poll loop
 # ---------------------------------------------------------------------------
+proc appendJsonl*(path, line: string) =
+  ## Appends `line` to `path` (no-op if empty), warning on stderr instead of raising.
+  if path.len == 0: return
+  try:
+    let f = open(path, fmAppend)
+    try:
+      f.writeLine(line)
+    finally:
+      f.close()
+  except CatchableError:
+    stderr.writeLine("[Monitor] Could not append to ", path, ": ",
+                     getCurrentExceptionMsg())
+
 proc emit(state: var MonitorState, line: string) =
   ## Writes a line to stdout and the JSONL file, flushing both immediately.
   echo line
   stdout.flushFile()
-
-  if state.jsonlPath.len > 0:
-    let f = open(state.jsonlPath, fmAppend)
-    f.writeLine(line)
-    f.close()
+  appendJsonl(state.jsonlPath, line)
 
 proc pollTmp(state: var MonitorState) =
-  ## Reads the tmp file and emits config/progress updates as needed.
-  ## Skips silently on any I/O or parse error.
+  ## Reads the tmp file and emits config/progress events as needed, skipping silently on I/O or parse errors.
   let snap = readTmp(state.tmpFile)
   if snap.isNone: return
 
@@ -351,8 +364,7 @@ proc pollTmp(state: var MonitorState) =
   state.lastSnapshot = some(current)
 
 proc pollLog(state: var MonitorState, emitLogs: bool = true): bool =
-  ## Processes new log entries.
-  ## Returns `true` if a Fatal entry is encountered.
+  ## Processes new log entries, emitting those at or above the severity threshold; returns `true` on a Fatal entry.
   for entry in readLog(state.logOffset, state.logFile):
     if emitLogs and entry.severity >= state.severity:
       state.emit($entry.toJson())
@@ -363,7 +375,7 @@ proc pollLog(state: var MonitorState, emitLogs: bool = true): bool =
   return false
 
 proc tick(state: var MonitorState): bool =
-  ## Runs one polling step. Returns `true` if a fatal condition is encountered.
+  ## Runs one polling step; returns `true` if a fatal log entry was encountered.
   if state.watchTmp: state.pollTmp()
   if state.watchLog: result = state.pollLog()
 
@@ -372,8 +384,7 @@ proc isTimedOut(state: MonitorState): bool =
   state.watchTimeoutMs > 0 and (getTime() - state.startTime).inMilliseconds >= state.watchTimeoutMs
 
 proc isStalled(state: MonitorState): bool =
-  ## Returns `true` if simulation time has not advanced for `stallTimeoutMs`.
-  ## Always `false` if `watchTmp` is disabled, since progress can't be observed.
+  ## Returns `true` if simulation time has not advanced for `stallTimeoutMs` while under 100 % (requires `watchTmp`).
   if not state.watchTmp or state.stallTimeoutMs <= 0 or state.lastSnapshot.isNone:
     return false
 
@@ -384,9 +395,7 @@ proc isStalled(state: MonitorState): bool =
   (getTime() - state.lastProgressChange).inMilliseconds >= state.stallTimeoutMs
 
 proc clampTimeout(timeoutMs, pollMs: int, name: string): int =
-  ## Raises `timeoutMs` to `pollMs` if smaller, since a threshold finer than
-  ## the polling interval can't be checked meaningfully and would trigger
-  ## prematurely. Disabled (0) timeouts pass through unchanged.
+  ## Raises `timeoutMs` to `pollMs` when smaller, since finer thresholds would trigger prematurely; 0 stays disabled.
   if timeoutMs > 0 and timeoutMs < pollMs:
     stderr.writeLine("[Monitor] ", name, " (", timeoutMs, " ms) is less than pollMs (",
                       pollMs, " ms); using ", pollMs, " ms instead.")
@@ -409,7 +418,47 @@ proc monitor*(
     jsonlPath: string = "",
 ): SimMonitorResult =
   ## Polls TRNSYS output files until the process exits, streaming JSON events.
-  ## A final tick runs after exit to drain any output written before termination.
+  ##
+  ## Watches the Type3830 `.tmp` file and the TRNSYS `.log` file of a
+  ## running simulation, emitting one self-contained JSON object per line
+  ## to stdout (and optionally to a JSONL file). A final tick runs after
+  ## the process exits to drain any output written just before termination.
+  ##
+  ## Parameters
+  ## ----------
+  ## process : Process
+  ##     Running TRNSYS process, as returned by `launchTrnexe`.
+  ## deckFile : string
+  ##     Deck path; the `.tmp` and `.log` paths are derived from it.
+  ## startTime : Time
+  ##     Wall-clock launch time, used for `elapsed`/`eta` and the watch
+  ##     timeout.
+  ## watchLog : bool, optional
+  ##     Emit `LOG` events parsed from the `.log` file (default: true).
+  ## watchTmp : bool, optional
+  ##     Emit `CONFIG`/`PROGRESS` events parsed from the `.tmp` file
+  ##     (default: true).
+  ## pollMs : int, optional
+  ##     Polling interval in milliseconds, clamped to >= 1 (default: 100).
+  ## severity : LogSeverity, optional
+  ##     Minimum severity a log entry must have to be emitted
+  ##     (default: Notice).
+  ## watchTimeoutMs : int, optional
+  ##     Maximum total monitoring time in ms; 0 disables (default: 0).
+  ## stallTimeoutMs : int, optional
+  ##     Maximum time simulation time may stay unchanged before the run is
+  ##     reported as stalled; 0 disables, requires `watchTmp` (default: 0).
+  ## jsonlPath : string, optional
+  ##     If non-empty, every emitted line is also appended to this file.
+  ##
+  ## Returns
+  ## -------
+  ## SimMonitorResult
+  ##     `monitorDone` on normal completion, `monitorCancelled` if the
+  ##     process exited before reaching 100 %, `monitorFatal` on a fatal
+  ##     log entry, `monitorTimeout` if `watchTimeoutMs` elapsed, or
+  ##     `monitorStalled` if progress stopped for `stallTimeoutMs`.
+  let interval = max(1, pollMs)
   var state = MonitorState(
     tmpFile:   deckFile.changeFileExt("tmp"),
     logFile:   deckFile.changeFileExt("log"),
@@ -418,14 +467,14 @@ proc monitor*(
     watchTmp:  watchTmp,
     severity:  severity,
     jsonlPath: jsonlPath,
-    watchTimeoutMs: clampTimeout(watchTimeoutMs, pollMs, "watchTimeoutMs"),
-    stallTimeoutMs: clampTimeout(stallTimeoutMs, pollMs, "stallTimeoutMs"),
+    watchTimeoutMs: clampTimeout(watchTimeoutMs, interval, "watchTimeoutMs"),
+    stallTimeoutMs: clampTimeout(stallTimeoutMs, interval, "stallTimeoutMs"),
     lastProgressChange: startTime,
   )
 
   if not watchLog and not watchTmp:
     discard process.waitForExit()
-    if state.pollLog(emitLogs = true): return monitorFatal
+    if state.pollLog(emitLogs = false): return monitorFatal
     return monitorDone
 
   while process.running:
@@ -442,7 +491,7 @@ proc monitor*(
                         " ms - process still running.")
       return monitorTimeout
 
-    sleep(pollMs)
+    sleep(interval)
 
   if state.tick(): return monitorFatal
 

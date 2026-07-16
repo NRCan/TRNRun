@@ -1,3 +1,5 @@
+## simulate.nim - high-level TRNSYS execution engine.
+##
 ## This module provides a high-level interface for launching, monitoring,
 ## and managing TRNSYS simulations via TrnEXE. It wraps process execution,
 ## readiness detection, and runtime monitoring into a single controlled
@@ -7,6 +9,7 @@
 ## - Safe execution of TRNSYS decks (.dck / .trd)
 ## - Automatic validation of inputs and executable paths
 ## - Global execution locking to prevent concurrent conflicts
+## - GUI visibility control, including synthesized "minimized" modes
 ## - Multi-signal readiness detection:
 ##     * GUI window detection
 ##     * .lst file creation
@@ -42,13 +45,20 @@ import ./monitor
 # ---------------------------------------------------------------------------
 type
   TrnexeLaunchError* = object of CatchableError
+    ## Raised when TrnEXE fails to start.
 
   TrnexeGuiVisibility* = enum
-    guiKeepOpen = ""
-    guiAutoClose = "/n"
-    guiHidden = "/h"
+    ## TrnEXE only supports three real CLI states (default / `/n` / `/h`).
+    ## The minimized modes are synthesized: launch with a visible flag, then
+    ## drive the windows into the minimized state via Win32.
+    guiKeepOpen # Visible; window stays open after the run.
+    guiAutoClose # Visible; window closes when the run finishes.
+    guiMinimized # Minimized; window stays open after the run.
+    guiMinimizedAuto # Minimized; window closes when the run finishes.
+    guiHidden # No window at all.
 
   SimStatus* = enum
+    ## Lifecycle states emitted as `STATUS` events.
     statusPending = "PENDING"
     statusLaunching = "LAUNCHING"
     statusRunning = "RUNNING"
@@ -59,9 +69,25 @@ type
     statusStalled = "STALLED"
 
 const
-  DefaultTrnexePath* = r"C:\TRNSYS18\Exe\TrnEXE64.exe"
-  DefaultGuiVisibility* = guiHidden
-  Extensions = [".tmp", ".log", ".lst"]
+  DefaultTrnexePath* = r"C:\TRNSYS18\Exe\TrnEXE64.exe" # Default TRNSYS 18 executable path.
+  DefaultGuiVisibility* = guiHidden # GUI mode used when none is specified.
+  Extensions = [
+    ".tmp", # Temporary progress file
+    ".log", # Simulation log containing notice, warnings, and Fatal errors
+    ".lst", # Simulation list file
+    ".PTI", # Online Plotter file
+  ]
+
+func flag*(v: TrnexeGuiVisibility): string =
+  ## The TrnEXE command-line switch for a visibility mode ("" = no switch).
+  case v
+  of guiKeepOpen, guiMinimized: ""
+  of guiAutoClose, guiMinimizedAuto: "/n"
+  of guiHidden: "/h"
+
+func wantsMinimize*(v: TrnexeGuiVisibility): bool =
+  ## True if the mode requires post-launch Win32 minimization.
+  v in {guiMinimized, guiMinimizedAuto}
 
 # ---------------------------------------------------------------------------
 # Status
@@ -69,31 +95,31 @@ const
 const IsoFmt: string = "yyyy-MM-dd'T'HH:mm:ss"
 
 proc toJson*(status: SimStatus): JsonNode =
+  ## Serialises a status transition as a `STATUS` event.
   result = newJObject()
   result["kind"] = %"STATUS"
   result["timestamp"] = %now().format(IsoFmt)
   result["status"] = %($status)
 
 proc emit(status: SimStatus, jsonlPath: string = "") =
+  ## Writes a status event to stdout and the JSONL file, flushing immediately.
   let line = $status.toJson()
   echo line
   stdout.flushFile()
-
-  if jsonlPath.len > 0:
-    let f = open(jsonlPath, fmAppend)
-    f.writeLine(line)
-    f.close()
+  appendJsonl(jsonlPath, line)
 
 # ---------------------------------------------------------------------------
 # Validation & file helpers
 # ---------------------------------------------------------------------------
 proc validateDeck*(deckFile: string) =
+  ## Raises `IOError` if `deckFile` is missing, or `ValueError` if it is not a `.dck`/`.trd` file.
   if not fileExists(deckFile):
     raise newException(IOError, fmt"Deck file not found: '{deckFile}'")
   if deckFile.splitFile().ext.toLowerAscii() notin [".dck", ".trd"]:
     raise newException(ValueError, fmt"Expected .dck or .trd, got: '{deckFile}'")
 
 proc validateTrnexe*(trnexePath: string) =
+  ## Raises `IOError` if the TRNSYS executable does not exist.
   if not fileExists(trnexePath):
     raise newException(IOError, fmt"TRNEXE not found: '{trnexePath}'")
 
@@ -105,10 +131,11 @@ proc launchTrnexe*(
     trnexePath: string = DefaultTrnexePath,
     guiVisibility: TrnexeGuiVisibility = DefaultGuiVisibility,
 ): Process =
-  ## Spawns TrnEXE and returns the process.
+  ## Spawns TrnEXE for `deckFile` and returns the process; raises `TrnexeLaunchError` on failure.
   var args = @[deckFile]
-  if guiVisibility != guiKeepOpen:
-    args.add($guiVisibility)
+  let switch = guiVisibility.flag()
+  if switch.len > 0:
+    args.add(switch)
 
   try:
     return startProcess(
@@ -120,16 +147,17 @@ proc launchTrnexe*(
     )
 
 proc unlinkFiles*(deckFile: string) =
-  ## Deletes TRNSYS sidecar files for a given deck, ignoring missing files.
+  ## Deletes TRNSYS sidecar files for a deck, ignoring missing ones.
   for ext in Extensions:
     let f = deckFile.changeFileExt(ext)
     if fileExists(f) and not tryRemoveFile(f):
-      echo fmt"Warning: Could not delete {f} (likely in use)."
+      stderr.writeLine(fmt"Warning: Could not delete {f} (likely in use).")
 
 proc unlinkJsonl*(deckFile: string) =
+  ## Deletes the deck's `.jsonl` event file if present.
   let f = deckFile.changeFileExt("jsonl")
   if fileExists(f) and not tryRemoveFile(f):
-    echo fmt"Warning: Could not delete {f} (likely in use)."
+    stderr.writeLine(fmt"Warning: Could not delete {f} (likely in use).")
 
 # ---------------------------------------------------------------------------
 # Main simulation
@@ -154,54 +182,75 @@ proc simulate*(
     severity: LogSeverity = Notice,
     writeLog: bool = true,
 ): SimMonitorResult =
-  ## Launches and monitors a TRNSYS simulation, streaming structured JSON status
-  ## and optional log events.
+  ## Launches and monitors a TRNSYS simulation, streaming structured JSON events.
   ##
-  ## The procedure validates the deck and TRNSYS executable, acquires a global
-  ## execution lock, launches TrnEXE, and waits for readiness signals (GUI,
-  ## `.lst`, or `.tmp`). Once ready, it continuously monitors the running
-  ## simulation until completion, failure, cancellation, timeout, or stall.
+  ## Validates the deck and executable, acquires the global launch lock,
+  ## starts TrnEXE, waits for the configured readiness signals (GUI window,
+  ## `.lst` header, `.tmp` file), then monitors the run until completion,
+  ## failure, cancellation, timeout, or stall. A `STATUS` event is emitted
+  ## on every state transition; `CONFIG`/`PROGRESS`/`LOG` events are emitted
+  ## while monitoring.
   ##
-  ## A JSON status stream is printed to stdout for each state transition, and
-  ## optionally written to a JSONL file located at:
-  ##   `<deckFile>.jsonl` (only if `writeLog = true`).
+  ## Parameters
+  ## ----------
+  ## deckFile : string
+  ##     Path to a `.dck` or `.trd` simulation deck.
+  ## trnexePath : string, optional
+  ##     Path to the TRNSYS executable (default: `DefaultTrnexePath`).
+  ## guiVisibility : TrnexeGuiVisibility, optional
+  ##     GUI mode. The minimized modes are synthesized once after launch via
+  ##     Win32; plotter windows TRNSYS opens later in the run are not
+  ##     re-minimized (default: `DefaultGuiVisibility`).
+  ## waitForGui : bool, optional
+  ##     Treat the appearance of a TRNSYS window as a readiness signal
+  ##     (default: true).
+  ## waitForLst : bool, optional
+  ##     Wait for the `.lst` component-order header (default: true).
+  ## waitForTmp : bool, optional
+  ##     Wait for the `.tmp` file to appear (default: false).
+  ## detectTimeoutMs : int, optional
+  ##     Shared timeout across all readiness stages; 0 = unlimited
+  ##     (default: 0).
+  ## extraDelayMs : int, optional
+  ##     Additional delay after readiness before monitoring starts
+  ##     (default: 0).
+  ## watchLog : bool, optional
+  ##     Stream `.log` entries as `LOG` events (default: true).
+  ## watchTmp : bool, optional
+  ##     Stream `.tmp` updates as `CONFIG`/`PROGRESS` events (default: true).
+  ## watchTimeoutMs : int, optional
+  ##     Maximum monitoring duration in ms; 0 = unlimited (default: 0).
+  ## stallTimeoutMs : int, optional
+  ##     Maximum time simulation time may go without advancing before the
+  ##     run is reported as stalled; 0 = disabled, requires `watchTmp`
+  ##     (default: 0).
+  ## pollMs : int, optional
+  ##     Polling interval for file and process monitoring (default: 100).
+  ## cleanOnSuccess : bool, optional
+  ##     Delete TRNSYS sidecar files after a successful run (default: false).
+  ## killOnTimeout : bool, optional
+  ##     Kill the TRNSYS process when a readiness or watch timeout occurs
+  ##     (default: false).
+  ## killOnStall : bool, optional
+  ##     Kill the TRNSYS process when a stall is detected (default: true).
+  ## severity : LogSeverity, optional
+  ##     Minimum log severity level to emit (default: Notice).
+  ## writeLog : bool, optional
+  ##     Also append every event to `<deckFile>.jsonl` (default: true).
   ##
-  ## Execution phases:
-  ## - VALIDATION: deck and executable existence/type checks
-  ## - LAUNCHING: TRNSYS process is started
-  ## - READINESS: waits for GUI/.lst/.tmp signals (`waitReady`)
-  ## - RUNNING: simulation is actively monitored
-  ## - TERMINATION: normal exit, timeout, stall, fatal error, or cancellation
+  ## Returns
+  ## -------
+  ## SimMonitorResult
+  ##     Final outcome: `monitorDone` (completed), `monitorFatal` (crashed
+  ##     or failed), `monitorCancelled` (exited early), `monitorTimeout`
+  ##     (watch timeout reached), or `monitorStalled` (progress stopped).
   ##
-  ## Parameters:
-  ## - `deckFile`        - Path to `.dck` or `.trd` simulation deck.
-  ## - `trnexePath`      - Path to TRNSYS executable (TrnEXE64.exe).
-  ## - `guiVisibility`   - Controls GUI behavior (`keep open`, `auto close`, `hidden`).
-  ## - `waitForGui`       - Use GUI window presence as readiness signal.
-  ## - `waitForLst`       - Wait for `.lst` file generation as readiness signal.
-  ## - `waitForTmp`       - Wait for `.tmp` file as readiness signal.
-  ## - `detectTimeoutMs` - Max time to wait for readiness before timeout.
-  ## - `extraDelayMs`    - Delay after launch before readiness checks begin.
-  ## - `watchLog`        - Stream `.log` output as structured events.
-  ## - `watchTmp`        - Stream `.tmp` updates (progress/config events).
-  ## - `watchTimeoutMs`  - Max monitoring duration (0 = unlimited).
-  ## - `stallTimeoutMs`  - Max time simulation time may go without advancing,
-  ##                       before being reported as stalled (0 = disabled).
-  ##                       Requires `watchTmp = true` to have any effect.
-  ## - `pollMs`          - Polling interval for file/process monitoring.
-  ## - `cleanOnSuccess`  - Delete TRNSYS sidecar files on successful completion.
-  ## - `killOnTimeout`   - Kill TRNSYS process if a watch timeout occurs.
-  ## - `killOnStall`     - Kill TRNSYS process if a stall is detected.
-  ## - `severity`        - Minimum log severity level to emit.
-  ## - `writeLog`        - Enable writing JSONL output to `<deckFile>.jsonl`.
-  ##
-  ## Returns:
-  ## - `SimMonitorResult` describing final simulation outcome:
-  ##   - `monitorDone`     - Completed successfully
-  ##   - `monitorFatal`    - Process crashed or failed
-  ##   - `monitorCancelled`- Manually cancelled
-  ##   - `monitorTimeout`  - Watch timeout reached
-  ##   - `monitorStalled`  - Simulation time stopped advancing
+  ## Raises
+  ## ------
+  ## IOError
+  ##     If the deck file or TRNSYS executable does not exist.
+  ## ValueError
+  ##     If `deckFile` is not a `.dck` or `.trd` file.
   validateDeck(deckFile)
   validateTrnexe(trnexePath)
 
@@ -252,6 +301,9 @@ proc simulate*(
     else:
       discard
 
+    if guiVisibility.wantsMinimize() and process.running:
+      discard minimizeGui(process)
+
     emit(statusRunning, jsonlPath)
 
   let monitorResult = monitor(
@@ -298,7 +350,13 @@ proc simulate*(
 # ---------------------------------------------------------------------------
 when isMainModule:
   const DeckFile =
-    r"C:\Users\alexl\Documents\Project\Coding\TRNRun\examples\data\dck\example_slow_wo_plot_w_tracking_2.dck"
+    r"C:\Users\alexl\Documents\Project\TRNRun\manager\examples\data\tpf\example_slow_w_plot_w_tracking.dck"
 
-  let simResult = simulate(deckFile = DeckFile, extraDelayMs = 0, waitForTmp = true)
+  let simResult = simulate(
+    deckFile = DeckFile,
+    guiVisibility = guiMinimizedAuto,
+    extraDelayMs = 1000,
+    waitForTmp = false,
+    waitForGui = false,
+  )
   echo fmt"Simulation finished with result: {simResult}"

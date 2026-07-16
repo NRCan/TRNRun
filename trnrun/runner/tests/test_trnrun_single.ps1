@@ -1,18 +1,20 @@
-
 $RepoRoot = Join-Path $PSScriptRoot ".."
 $ExePath = Join-Path $RepoRoot "build\trnrun.exe"
-$DeckFile = Join-Path $RepoRoot "tests\dck\test_fast_w_plot_wo_tracking_0.dck"
+$DeckFile = Join-Path $RepoRoot "tests\dck\test_wo_plot_w_tracking.dck"
 
 $Args = @(
-    "--deckFile=$DeckFile",
+    "--deckFile=$DeckFile"
     "--guiVisibility=auto",
-    "--detectTimeout=5000",
+    "--detectTimeout=0",
     "--extraDelay=1000"
 )
+
+
 
 $ExitCodeMeaning = @{
     0   = "Done"
     1   = "Fatal"
+    2   = "User Error"
     124 = "Timeout"
     125 = "Stalled"
     130 = "Cancelled"
