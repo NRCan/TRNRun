@@ -62,7 +62,7 @@ Usage:
   --killOnTimeout:BOOL    (default: false)
   --killOnStall:BOOL      (default: false)
   --severity:LEVEL        Notice | Warning | Fatal (default: Notice)
-  --writeLog:BOOL         (default: true)
+  --writeLog:BOOL         (default: false)
 
 Exit codes: 0 done  1 fatal  2 usage error  124 timeout  125 stalled  130 cancelled"""
 
@@ -103,7 +103,7 @@ proc main() =
     killOnTimeout = false
     killOnStall = false
     severity = Notice
-    writeLog = true
+    writeLog = false
   var p = initOptParser()
   while true:
     p.next()
