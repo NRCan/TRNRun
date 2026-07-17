@@ -4,7 +4,7 @@ This repository uses third-party dependencies and build tools.
 
 ---
 
-# Python Dependencies
+# Runtime Dependencies
 
 ## Python
 
@@ -24,7 +24,7 @@ Copyright (c) 2020 Will McGugan
 
 ---
 
-# Nim Build Dependencies
+# Build Tools
 
 ## Nim
 
@@ -33,14 +33,6 @@ Copyright (c) 2020 Will McGugan
 - License text: https://github.com/nim-lang/Nim/blob/devel/copying.txt
 
 Copyright (C) 2006-2026 Andreas Rumpf. All rights reserved.
-
-## Zig
-
-- Repository: https://github.com/ziglang/zig
-- License: MIT License
-- License text: https://github.com/ziglang/zig/blob/master/LICENSE
-
-Copyright (c) Zig contributors
 
 ---
 
