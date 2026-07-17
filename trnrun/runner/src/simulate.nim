@@ -111,17 +111,21 @@ proc emit(status: SimStatus, jsonlPath: string = "") =
 # ---------------------------------------------------------------------------
 # Validation & file helpers
 # ---------------------------------------------------------------------------
-proc validateDeck*(deckFile: string) =
-  ## Raises `IOError` if `deckFile` is missing, or `ValueError` if it is not a `.dck`/`.trd` file.
-  if not fileExists(deckFile):
-    raise newException(IOError, fmt"Deck file not found: '{deckFile}'")
-  if deckFile.splitFile().ext.toLowerAscii() notin [".dck", ".trd"]:
+proc validateDeck*(deckFile: string): string =
+  ## Resolves `deckFile` to an absolute, normalized path.
+  ## Raises `IOError` if it is missing, or `ValueError` if it is not a `.dck`/`.trd`.
+  result = deckFile.absolutePath().normalizedPath()
+  if not fileExists(result):
+    raise newException(IOError, fmt"Deck file not found: '{result}'")
+  if result.splitFile().ext.toLowerAscii() notin [".dck", ".trd"]:
     raise newException(ValueError, fmt"Expected .dck or .trd, got: '{deckFile}'")
 
-proc validateTrnexe*(trnexePath: string) =
-  ## Raises `IOError` if the TRNSYS executable does not exist.
-  if not fileExists(trnexePath):
-    raise newException(IOError, fmt"TRNEXE not found: '{trnexePath}'")
+proc validateTrnexe*(trnexePath: string): string =
+  ## Resolves the TRNSYS executable to an absolute, normalized path.
+  ## Raises `IOError` if it does not exist.
+  result = trnexePath.absolutePath().normalizedPath()
+  if not fileExists(result):
+    raise newException(IOError, fmt"TRNEXE not found: '{result}'")
 
 # ---------------------------------------------------------------------------
 # Launch TRNSYS
@@ -251,8 +255,8 @@ proc simulate*(
   ##     If the deck file or TRNSYS executable does not exist.
   ## ValueError
   ##     If `deckFile` is not a `.dck` or `.trd` file.
-  validateDeck(deckFile)
-  validateTrnexe(trnexePath)
+  let deckFile = validateDeck(deckFile)
+  let trnexePath = validateTrnexe(trnexePath)
 
   let jsonlPath: string =
     if writeLog:
@@ -349,13 +353,12 @@ proc simulate*(
 
 # ---------------------------------------------------------------------------
 when isMainModule:
-  const DeckFile =
-    r"C:\Users\alexl\Documents\Project\TRNRun\manager\examples\data\tpf\example_slow_w_plot_w_tracking.dck"
+  let deckFile = absolutePath(r"examples\dck\example_w_plot_w_tracking.dck")
 
   let simResult = simulate(
-    deckFile = DeckFile,
+    deckFile = deckFile,
     guiVisibility = guiMinimizedAuto,
-    extraDelayMs = 1000,
+    extraDelayMs = 2000,
     waitForTmp = false,
     waitForGui = false,
   )
