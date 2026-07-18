@@ -16,7 +16,7 @@ $DckFiles = @(
 
 # ---- Fixed parameter values (same for every dck file) --------------------------
 $Params = [ordered]@{
-    guiVisibility  = "Auto"
+    guiVisibility  = "Hidden"
     waitForGui     = $true
     waitForLst     = $true
     waitForTmp     = $false

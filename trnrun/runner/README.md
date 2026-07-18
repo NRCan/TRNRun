@@ -179,69 +179,66 @@ Launch detection determines when TRNSYS startup has completed, allowing the glob
 
 ### Batch runs
 
-Run multiple TRNSYS simulations one at a time. Each simulation is monitored
-for timeout and stalled execution, temporary files are cleaned after completion, and the exit code
-is checked to identify failed runs.
+Decks run one at a time in your current console, so output from each run appears
+in order and you only ever have one simulation competing for the machine. Each
+run gets its own runtime and stall monitoring and cleans up its temp artifacts on
+completion; a non-zero exit is reported as a warning and the loop continues to
+the next deck.
 
 ```powershell
-$trnrun = "C:\Path\To\trnrun.exe"
+$Exe      = 'C:\path\to\trnrun.exe'
+$DckFiles = Get-ChildItem 'C:\path\to\dck\*.dck' | ForEach-Object FullName
 
-foreach ($deck in Get-ChildItem .\decks\*.dck) {
-    & $trnrun $deck.FullName `
+foreach ($Deck in $DckFiles) {
+    $name = [IO.Path]::GetFileName($Deck)
+    Write-Host "Running $name"
+    & $Exe $Deck `
         --watchTmp:true `
         --watchTimeout:7200000 `
         --killOnTimeout:true `
         --stallTimeout:300000 `
         --killOnStall:true `
         --clean:true
-
-    if ($LASTEXITCODE -ne 0) {
-        Write-Warning "$($deck.Name) failed with exit code $LASTEXITCODE"
+    if ($LASTEXITCODE) {
+        Write-Warning "$name failed with exit code $LASTEXITCODE"
     }
 }
 ```
 
-### Concurrent Batch runs
+### Concurrent batch runs
 
-Launch multiple TRNSYS simulations in parallel, with each simulation running as an independent process. Each process is independently monitored for runtime limits and stalled execution,
-temporary artifacts are cleaned after completion, and failures are reported through the exit code.
+Each deck runs in its own `powershell.exe` window as an independent process, so
+runs proceed in parallel and one failure doesn't stop the rest. Every process
+gets its own runtime and stall monitoring, cleans up its temp artifacts on
+completion, and leaves its window open on non-zero exit so you can read the error.
 
 ```powershell
-$trnrun = "C:\Path\To\trnrun.exe"
+$Exe      = 'C:\path\to\trnrun.exe'
+$DckFiles = Get-ChildItem 'C:\path\to\dck\*.dck' | ForEach-Object FullName
 
-foreach ($deck in Get-ChildItem .\dck\*.dck) {
-    $deckPath = $deck.FullName
-
-    wt new-tab powershell -NoExit -Command {
-        param($exe, $deck)
-
-        & $exe $deck `
-            --watchTmp:true `
-            --watchTimeout:7200000 `
-            --killOnTimeout:true `
-            --stallTimeout:300000 `
-            --killOnStall:true `
-            --clean:true
-
-        if ($LASTEXITCODE -ne 0) {
-            Write-Warning "$([System.IO.Path]::GetFileName($deck)) failed with exit code $LASTEXITCODE"
-        }
-    } -ArgumentList $trnrun, $deckPath
+$worker = {
+    param($Exe, $Deck)
+    $name = [IO.Path]::GetFileName($Deck)
+    $host.UI.RawUI.WindowTitle = "trnrun - $name"
+    & $Exe $Deck `
+        --watchTmp:true `
+        --watchTimeout:7200000 `
+        --killOnTimeout:true `
+        --stallTimeout:300000 `
+        --killOnStall:true `
+        --clean:true
+    if ($LASTEXITCODE) {
+        Write-Warning "$name failed with exit code $LASTEXITCODE"
+        Read-Host 'Window kept open. Press Enter to close' | Out-Null
+    }
 }
-```
 
-### Live progress with `jq`
-
-```bash
-trnrun deck.dck --watchTmp:true |
-  jq -r '
-    select(.kind == "PROGRESS") |
-    (.percent * 30 | floor) as $filled |
-    "[" + ("#" * $filled) + ("-" * (30-$filled)) + "] " +
-    ((.percent * 100) | floor | tostring) + "% ETA " +
-    ((.eta / 1000) | round | tostring) + "s"
-  ' |
-  ForEach-Object {
-      Write-Host "`r$(' ' * 60)`r$_" -NoNewline
-  }
+$DckFiles |
+    Where-Object { Test-Path -LiteralPath $_ } |
+    ForEach-Object {
+        $cmd     = "& {$worker} '$($Exe -replace "'","''")' '$($_ -replace "'","''")'"
+        $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($cmd))
+        Start-Process powershell.exe -ArgumentList '-NoProfile', '-EncodedCommand', $encoded
+        Write-Host "Launched $([IO.Path]::GetFileName($_))"
+    }
 ```

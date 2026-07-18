@@ -172,8 +172,8 @@ proc enumCallback(hwnd: Handle, lParam: LPARAM): int32 {.stdcall.} =
 
   if winPid != data.pid: return 1
 
-  if isWindowVisible(hwnd) == 0: return 1
-  if getWindowTextLengthW(hwnd) == 0: return 1
+  # if isWindowVisible(hwnd) == 0: return 1
+  # if getWindowTextLengthW(hwnd) == 0: return 1
 
   var buf: array[256, Utf16Char]
   let ws = cast[WideCString](addr buf[0])

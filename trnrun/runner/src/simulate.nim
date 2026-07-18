@@ -358,8 +358,8 @@ when isMainModule:
   let simResult = simulate(
     deckFile = deckFile,
     guiVisibility = guiMinimizedAuto,
-    extraDelayMs = 2000,
+    extraDelayMs = 0,
     waitForTmp = false,
-    waitForGui = false,
+    waitForGui = true,
   )
   echo fmt"Simulation finished with result: {simResult}"
