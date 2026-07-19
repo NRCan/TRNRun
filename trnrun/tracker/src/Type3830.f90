@@ -3,7 +3,7 @@ Subroutine Type3830
   !    DESCRIPTION
   !------------------------------------------------------------------------------------
   ! Subroutine Type3830 writes TRNSYS simulation timing information to a
-  ! `*.tmp` file for external monitoring and post-processing.
+  ! `***.tmp` file for external monitoring and post-processing.
   !
   ! The subroutine records:
   !   - Current simulation time (TIME)

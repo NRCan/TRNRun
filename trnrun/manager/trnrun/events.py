@@ -1,6 +1,6 @@
 """Typed events emitted by TRNRun on stdout, and their JSONL parsers.
 
-TRNRun.exe writes one JSON object per line. ``parse_event`` turns a single
+TRNRun writes one JSON object per line. ``parse_event`` turns a single
 line into a typed event; ``stream_events`` does the same for an entire
 stream of lines.
 """
@@ -13,16 +13,16 @@ from dataclasses import dataclass
 from typing import Final, cast
 
 
-# ---------------------------------------------------------------------------
-# EXCEPTIONS
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------
+# Exceptions
+# -----------------------------------------------------------------
 class EventParseError(ValueError):
     """Raised when a JSON line cannot be parsed into a TRNRun event."""
 
 
-# ---------------------------------------------------------------------------
-# EVENTS
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------
+# Events
+# -----------------------------------------------------------------
 @dataclass(frozen=True)
 class StatusEvent:
     """A STATUS event reporting the run's current state.
@@ -123,13 +123,12 @@ class LogEvent:
     information: str | None = None
 
 
-# Union of every event TRNRun can emit on stdout.
 type TrnRunEvent = StatusEvent | ProgressEvent | ConfigEvent | LogEvent
 
 
-# ---------------------------------------------------------------------------
-# VALIDATION HELPERS
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------
+# Validation Helpers
+# -----------------------------------------------------------------
 def _required(data: dict[str, object], key: str) -> object:
     """Return a required field, raising ``EventParseError`` if missing."""
     try:
@@ -183,9 +182,9 @@ def _optional_int(data: dict[str, object], key: str) -> int | None:
     return None if data.get(key) is None else _require_int(data, key)
 
 
-# ---------------------------------------------------------------------------
-# EVENT PARSERS
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------
+# Event Parsers
+# -----------------------------------------------------------------
 def _parse_status(data: dict[str, object]) -> StatusEvent:
     """Parse a STATUS event."""
     return StatusEvent(
@@ -238,9 +237,9 @@ _PARSERS: Final[dict[str, Callable[[dict[str, object]], TrnRunEvent]]] = {
 }
 
 
-# ---------------------------------------------------------------------------
-# PARSING
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------
+# Parsing
+# -----------------------------------------------------------------
 def parse_event(line: str) -> TrnRunEvent:
     """Parse one JSON-encoded TRNRun event.
 
@@ -254,12 +253,6 @@ def parse_event(line: str) -> TrnRunEvent:
     TrnRunEvent
         The typed event corresponding to the object's ``kind``.
 
-    Raises
-    ------
-    EventParseError
-        If ``line`` is not valid JSON, the value is not a JSON object,
-        the ``kind`` is unknown, or a field is missing or has the
-        wrong type.
     """
     try:
         value = cast("object", json.loads(line))
@@ -300,11 +293,6 @@ def stream_events(
     ------
     TrnRunEvent
         One typed event per successfully parsed line.
-
-    Raises
-    ------
-    EventParseError
-        If a line fails to parse and ``skip_invalid`` is false.
     """
     for raw_line in lines:
         line = raw_line.strip()
