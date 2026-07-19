@@ -18,6 +18,10 @@ it through a typed, thread-safe Python API.
 - TRNSYS v17 or v18
 - _Optional: Progress Tracker (Type3830)_
 
+## Dependencies
+
+- [Rich](https://github.com/Textualize/rich)
+
 ## Installation
 
 PyPI: (TODO)

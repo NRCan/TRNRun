@@ -1,3 +1,41 @@
-TODO
+# TRNRun
 
-> **Disclaimer:** TRNRun is an independent third‑party tool and is not affiliated with, endorsed by, or officially supported by the TRNSYS development team or its associated institutions.
+TRNRun is a tool for running [TRNSYS](https://www.trnsys.com/) simulations, built to make batch runs easy to automate, monitor, and orchestrate.
+
+## Components
+
+| Component                             | Description                                                                                                                                                                       |
+| ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [trnrun-tracker](trnrun-tracker/) | Type3830, custom TRNSYS component that periodically writes simulation `TIME`, `START`, `STOP`, and `STEP` to a `***.tmp` file.                                                    |
+| [trnrun-runner](trnrun-runner/)   | `trnrun.exe` launches a single deck, serializes TRNSYS startup machine-wide, monitors the run, and emits `STATUS` / `CONFIG` / `PROGRESS` / `LOG` events as JSON Lines on stdout. |
+| [trnrun-manager](trnrun-manager/) | `trnrun` Python package runs many decks at once (up to a set limit), with a thread-safe API and a live terminal display.                                                          |
+
+## Requirements
+
+- Windows
+- Python >= 3.12
+- TRNSYS v17 or v18
+- _Optional: Progress Tracker (Type3830)_
+
+## Installation (TODO)
+
+```sh
+pip install trnrun
+```
+
+## Usage
+```python
+from trnrun import SimulationConfig, SimulationManager
+
+config = SimulationConfig(watch_tmp=True)
+
+with SimulationManager() as manager:
+    manager.add("path/to/deck.dck", config)
+    manager.wait()
+```
+
+## Demo
+
+## License
+
+MIT License - see LICENSE file for details.

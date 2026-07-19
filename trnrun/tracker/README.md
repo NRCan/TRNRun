@@ -1,4 +1,4 @@
-# Progress Tracker (Type3830)
+# TRNRun-Tracker (Type3830)
 
 Custom TRNSYS component that exports simulation TIME, START, STOP, and STEP to a temporary file `***.tmp` for external monitoring.
 
