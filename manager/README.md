@@ -1,5 +1,4 @@
-# TRNRun - Manager
-
+# TRNRun
 `trnrun` is a Python package that drives the TRNRun runner (`trnrun.exe`) to launch, monitor, and
 manage TRNSYS simulations from Python. It runs multiple decks concurrently through a bounded worker
 pool, mirrors each run's status, progress, and log events behind thread-safe objects, and renders a
@@ -24,16 +23,10 @@ it through a typed, thread-safe Python API.
 
 ## Installation
 
-PyPI: (TODO)
+PyPI:
 
 ```sh
 pip install trnrun
-```
-
-From source:
-
-```sh
-pip install -e .
 ```
 
 ## Quick start

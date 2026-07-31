@@ -17,7 +17,7 @@ TRNRun is a tool for running [TRNSYS](https://www.trnsys.com/) simulations, buil
 - TRNSYS v17 or v18
 - _Optional: Progress Tracker (Type3830)_
 
-## Installation (TODO)
+## Installation
 
 ```sh
 pip install trnrun

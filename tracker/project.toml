@@ -1,5 +1,5 @@
 name = "ProgressTracker-Type3830"
-version = "0.2.0"
+version = "0.4.0"
 description = "export simulation TIME, START, STOP and STEP at a set interval"
 readme = "README.md"
 authors = [
@@ -7,4 +7,4 @@ authors = [
     { name = "CanmetENERGY in Varennes / CanmetÉNERGIE à Varennes" },
     { name = "Alex Lachance" },
 ]
-license = {file = 'LICENSE'}
+license = {file = '../LICENSE'}

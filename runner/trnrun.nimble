@@ -1,9 +1,9 @@
 # Package
 
-version       = "0.3.1"
+version       = "0.4.0"
 author        = "Alex Lachance"
 description   = "Process wrapper for TRNSYS TRNEXE with simulation monitoring and status reporting"
-license       = "MIT"
+license       = "../LICENSE"
 srcDir        = "src"
 bin           = @["trnrun"]
 
