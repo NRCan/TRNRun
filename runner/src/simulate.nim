@@ -258,6 +258,11 @@ proc simulate*(
   let deckFile = validateDeck(deckFile)
   let trnexePath = validateTrnexe(trnexePath)
 
+  try:
+    initJobGuard()
+  except OSError as e:
+    stderr.writeLine("Warning: orphan guard unavailable, TrnEXE64.exe may outlive trnrun: ", e.msg)
+
   let jsonlPath: string =
     if writeLog:
       deckFile.changeFileExt("jsonl")
@@ -278,7 +283,6 @@ proc simulate*(
     except TrnexeLaunchError:
       emit(statusError, jsonlPath)
       return monitorFatal
-    assignToJob(process)
     startTime = getTime()
 
     let waitStatus = waitReady(
