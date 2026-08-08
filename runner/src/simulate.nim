@@ -274,7 +274,7 @@ proc simulate*(
   var process: Process
   var startTime: Time
 
-  withLock:
+  withLaunchLock:
     unlinkFiles(deckFile)
     emit(statusLaunching, jsonlPath)
 
