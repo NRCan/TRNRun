@@ -136,6 +136,7 @@ proc launchTrnexe*(
     guiVisibility: TrnexeGuiVisibility = DefaultGuiVisibility,
 ): Process =
   ## Spawns TrnEXE for `deckFile` and returns the process; raises `TrnexeLaunchError` on failure.
+  result = default(Process)
   var args = @[deckFile]
   let switch = guiVisibility.flag()
   if switch.len > 0:
@@ -271,8 +272,8 @@ proc simulate*(
   unlinkJsonl(deckFile)
   emit(statusPending, jsonlPath)
 
-  var process: Process
-  var startTime: Time
+  var process: Process = default(Process)
+  var startTime: Time = default(Time)
 
   withLaunchLock:
     unlinkFiles(deckFile)

@@ -73,13 +73,15 @@ const SW_SHOWMINNOACTIVE = 7'i32
 # ---------------------------------------------------------------------------
 # Poll
 # ---------------------------------------------------------------------------
+type PollCondition = proc(): bool {.closure, gcsafe.}
+
 proc poll(
-    condition: proc(): bool,
+    condition: PollCondition,
     timeoutMs: int = 0,
     initialIntervalMs: int = 10,
     maxIntervalMs: int = 500,
     backoff: float = 1.3,
-): bool =
+): bool {.gcsafe.} =
   ## Polls `condition` with exponential backoff until it returns true or `timeoutMs` (0 = forever) expires.
   if initialIntervalMs <= 0:
     raise newException(ValueError, "initialIntervalMs must be positive")
@@ -99,6 +101,7 @@ proc poll(
       getMonoTime() + initDuration(milliseconds = timeoutMs)
 
   var delay = initialIntervalMs.float
+  result = false
 
   while true:
     if condition():
@@ -175,7 +178,7 @@ proc enumCallback(hwnd: Handle, lParam: LPARAM): int32 {.stdcall.} =
   # if isWindowVisible(hwnd) == 0: return 1
   # if getWindowTextLengthW(hwnd) == 0: return 1
 
-  var buf: array[256, Utf16Char]
+  var buf = default(array[256, Utf16Char])
   let ws = cast[WideCString](addr buf[0])
   if getClassNameW(hwnd, ws, 256) > 0 and $ws in data.guiClasses:
     data.foundHwnd = hwnd
@@ -189,7 +192,7 @@ proc waitGui(
 ): bool =
   ## Returns true when a top-level window of one of `guiClasses` appears for the process.
   var data = CallbackData(
-    pid: int32(process.processId()),
+    pid: int32(process.processID()),
     foundHwnd: 0,
     guiClasses: guiClasses.toHashSet,
   )
@@ -219,7 +222,7 @@ proc collectCallback(hwnd: Handle, lParam: LPARAM): int32 {.stdcall.} =
   if isWindowVisible(hwnd) == 0: return 1
   if getWindowTextLengthW(hwnd) == 0: return 1
 
-  var buf: array[256, Utf16Char]
+  var buf = default(array[256, Utf16Char])
   let ws = cast[WideCString](addr buf[0])
   if getClassNameW(hwnd, ws, 256) > 0 and $ws in data.guiClasses:
     data.found.add(hwnd)
@@ -228,7 +231,7 @@ proc collectCallback(hwnd: Handle, lParam: LPARAM): int32 {.stdcall.} =
 proc windowsOf(process: Process, guiClasses: openArray[string]): seq[Handle] =
   ## Returns all top-level windows of `process` whose class is in `guiClasses`.
   var data = CollectData(
-    pid: int32(process.processId()),
+    pid: int32(process.processID()),
     guiClasses: guiClasses.toHashSet,
     found: @[],
   )

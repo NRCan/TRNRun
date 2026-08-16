@@ -20,3 +20,68 @@ nimbledeps
 # Build & Dist
 build
 dist
+
+
+
+# Old stuff to sort
+
+# nimcache/
+# nimblecache/
+# htmldocs/
+# docs/nimcache/
+# docs/nimcache/runnableExamples/
+# docs/nimcache
+# *.js
+# *.txt
+# *.log
+# *.json
+# *.nims
+# *.c
+# *.h
+# *.hpp
+# *.cpp
+# *.obj
+# *.o
+# *.exp
+# *.lib
+# *.pdb
+# *.ilk
+# *.csv
+# *.PTI
+# *.plt
+# *.out
+# *.tmp
+# *.jsonl
+# *.lst
+# *.log
+# temp*.nim
+# .idea/
+# /.vscode/
+# nimcache/
+# /docs/
+# tester*
+# tempfiletest
+# /testresults/
+# /tools/bin/
+# nimble.develop
+# nimble.paths
+# nimbledeps
+# nimcache/
+# *.exe
+# nimble.develop
+# nimble.paths
+# /build/
+# nimbledeps
+# nim.cfg
+# bin
+# deps
+# .tool-versions
+# /build/
+# nimcache/
+# nimblecache/
+# htmldocs/
+# .htnim
+# nimble.develop
+# nimble.paths
+# nimbledeps
+# /build/

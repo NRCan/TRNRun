@@ -157,6 +157,7 @@ const LogIgnoredValues = ["Not applicable", "Not available", "Not applicable or 
 # -- Utilities --
 proc splitKeyValue(line: string): tuple[key, val: string] =
   ## Splits `line` at the first `:` into a key and value, both stripped.
+  result = ("", "")
   let i = line.find(':')
   if i >= 0:
     result = (line[0 ..< i].strip(), line[i + 1 .. ^1].strip())
@@ -228,7 +229,8 @@ const LogFieldParsers: array[7, tuple[prefix: string, parser: LogFieldParser]] =
 # -- Helpers --
 proc splitIntoBlocks(lines: openArray[string]): seq[seq[string]] =
   ## Groups log lines into blocks, each starting with a `***` header line.
-  var current: seq[string]
+  result = @[]
+  var current: seq[string] = @[]
 
   for line in lines:
     if line.startsWith("***"):
@@ -266,7 +268,8 @@ proc parseLogBlock(blck: openArray[string]): Option[SimLog] =
 
 proc readNewLines(offset: var int64, path: string): seq[string] =
   ## Reads newly appended lines from `path`, advancing `offset` and resetting it if the file was truncated.
-  var file: File
+  result = @[]
+  var file = default(File)
   if not open(file, path, fmRead): return @[]
   defer: file.close()
 
@@ -279,7 +282,7 @@ proc readNewLines(offset: var int64, path: string): seq[string] =
 
   file.setFilePos(offset)
 
-  var line: string
+  var line: string = ""
   while file.readLine(line):
     result.add(line)
 
@@ -376,6 +379,7 @@ proc pollLog(state: var MonitorState, emitLogs: bool = true): bool =
 
 proc tick(state: var MonitorState): bool =
   ## Runs one polling step; returns `true` if a fatal log entry was encountered.
+  result = false
   if state.watchTmp: state.pollTmp()
   if state.watchLog: result = state.pollLog()
 

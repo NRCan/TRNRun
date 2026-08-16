@@ -25,31 +25,31 @@ import std/[winlean, oserrors]
 # ---------------------------------------------------------------------------
 type
   JOBOBJECT_BASIC_LIMIT_INFORMATION = object
-    PerProcessUserTimeLimit: int64
-    PerJobUserTimeLimit: int64
-    LimitFlags: uint32
-    MinimumWorkingSetSize: uint
-    MaximumWorkingSetSize: uint
-    ActiveProcessLimit: uint32
-    Affinity: uint
-    PriorityClass: uint32
-    SchedulingClass: uint32
+    perProcessUserTimeLimit: int64
+    perJobUserTimeLimit: int64
+    limitFlags: uint32
+    minimumWorkingSetSize: uint
+    maximumWorkingSetSize: uint
+    activeProcessLimit: uint32
+    affinity: uint
+    priorityClass: uint32
+    schedulingClass: uint32
 
   IO_COUNTERS = object
-    ReadOperationCount: uint64
-    WriteOperationCount: uint64
-    OtherOperationCount: uint64
-    ReadTransferCount: uint64
-    WriteTransferCount: uint64
-    OtherTransferCount: uint64
+    readOperationCount: uint64
+    writeOperationCount: uint64
+    otherOperationCount: uint64
+    readTransferCount: uint64
+    writeTransferCount: uint64
+    otherTransferCount: uint64
 
   JOBOBJECT_EXTENDED_LIMIT_INFORMATION = object
-    BasicLimitInformation: JOBOBJECT_BASIC_LIMIT_INFORMATION
-    IoInfo: IO_COUNTERS
-    ProcessMemoryLimit: uint
-    JobMemoryLimit: uint
-    PeakProcessMemoryUsed: uint
-    PeakJobMemoryUsed: uint
+    basicLimitInformation: JOBOBJECT_BASIC_LIMIT_INFORMATION
+    ioInfo: IO_COUNTERS
+    processMemoryLimit: uint
+    jobMemoryLimit: uint
+    peakProcessMemoryUsed: uint
+    peakJobMemoryUsed: uint
 
 const
   JOB_OBJECT_EXTENDED_LIMIT_INFO_CLASS = 9'i32
@@ -95,7 +95,7 @@ proc initJobGuard*() =
     raiseOSError(osLastError(), "Failed to create Win32 Job Object.")
 
   var info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
-  info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+  info.basicLimitInformation.limitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
   if setInformationJobObject(
     h, JOB_OBJECT_EXTENDED_LIMIT_INFO_CLASS, addr info, sizeof(info).uint32
   ) == 0:
