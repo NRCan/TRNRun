@@ -89,6 +89,7 @@ proc compileDll(arch: Arch, mode: Mode) =
 
   var args: seq[string]
   args.add "nim c"
+  args.add "--verbosity:3"
   args.add "--app:lib"
   args.add "--os:windows"
   args.add "--cpu:" & arch.cpu

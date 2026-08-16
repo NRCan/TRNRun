@@ -193,7 +193,11 @@ proc closeFileIVF*(logicalUnit: cint): cint {.discardable.} =
 proc getLUFileName*(logicalUnit: cint): string =
   ## Returns an empty string when no file is assigned to the logical unit.
   var unit = logicalUnit
-  let maxPathLength = getMaxPathLength()
+  let maxPathLength = getMaxPathLength().int
+
+  if maxPathLength <= 0:
+    return ""
+
   var buffer = newString(maxPathLength)
   let written =
     getLUFileNameCpp(addr unit, cast[cstring](buffer[0].addr), maxPathLength.csize_t)
@@ -201,7 +205,7 @@ proc getLUFileName*(logicalUnit: cint): string =
   if written <= 0:
     return ""
 
-  buffer.setLen(min(written.int, maxPathLength.int))
+  buffer.setLen(min(written.int, maxPathLength))
   buffer.strip(chars = {' ', '\0', '\t'})
 
 # ------------------------------------------------------------
