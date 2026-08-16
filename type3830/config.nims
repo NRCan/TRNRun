@@ -9,6 +9,10 @@ switch("warningAsError", "UnusedImport")
 switch("warningAsError", "CStringConv")
 switch("warningAsError", "HoleEnumConv")
 
+switch("hint", "GlobalVar:off")
+switch("hint", "MsgOrigin:off")
+switch("hint", "ProcessingStmt:off")
+
 # begin Nimble config (version 2)
 when withDir(thisDir(), system.fileExists("nimble.paths")):
   include "nimble.paths"

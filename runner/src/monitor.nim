@@ -284,7 +284,7 @@ proc readNewLines(offset: var int64, path: string): seq[string] =
 
   var line: string = ""
   while file.readLine(line):
-    result.add(line)
+    result.add(move(line))
 
   offset = file.getFilePos()
 
