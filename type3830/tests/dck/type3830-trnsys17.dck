@@ -1,0 +1,12 @@
+VERSION 17
+SIMULATION 0 100 1
+
+*-----------------------------------------
+UNIT 2 TYPE 3830 Type3830
+PARAMETERS 2
+30 ! 1 Logical unit
+1  ! 2 Printing interval
+ASSIGN "***.tmp" 30
+*-----------------------------------------
+
+END
