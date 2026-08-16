@@ -46,7 +46,7 @@ proc writeTimingRecord(time: cdouble; closeAfter: bool = false): bool =
 
   try:
     timingFile.setFilePos(0)
-    timingFile.write(&"{time:22.10f}, {simulationStart:22.10f}, {simulationStop:22.10f}, {simulationStep:22.10f}\n")
+    timingFile.write(&"{time:.6f},{simulationStart:.6f},{simulationStop:.6f},{simulationStep:.6f}\n")
 
     if closeAfter:
       timingFile.close()
