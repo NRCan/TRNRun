@@ -11,3 +11,12 @@
 *.bld
 *.trn
 *.inf
+
+# Nim
+nimble.develop
+nimble.paths
+nimbledeps
+
+# Build & Dist
+build
+dist
