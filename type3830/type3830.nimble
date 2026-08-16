@@ -168,11 +168,12 @@ task dist, "Build all DLLs and distribution packages":
   compileAllDlls()
   assembleDistributions()
 
-task deploy, "Build and deploy to installed TRNSYS versions":
+task deploy, "Build, deploy, and test installed TRNSYS versions":
   compileAllDlls()
   assembleDistributions()
   deployPackage(arch32)
   deployPackage(arch64)
+  exec "nimble test"
 
 task release64, "Build the 64-bit release DLL":
   compileDll(arch64, releaseMode)

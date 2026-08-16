@@ -1,5 +1,5 @@
 VERSION 17
-SIMULATION 0 100 1
+SIMULATION 0 10000 1
 
 *-----------------------------------------
 UNIT 2 TYPE 3830 Type3830
