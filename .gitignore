@@ -20,9 +20,9 @@ nimbledeps
 # Build & Dist
 build
 dist
-
-
-
+*.exe
+*.dll
+*.csv
 # Old stuff to sort
 
 # nimcache/

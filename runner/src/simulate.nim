@@ -34,7 +34,8 @@
 ## - Optionally writes a JSONL log per simulation:
 ##     `<deckFile>.jsonl` (if writeLog = true)
 
-import std/[os, osproc, strformat, strutils, times, json]
+import std/[os, osproc, strformat, strutils, times]
+import ./events
 import ./job
 import ./mutex
 import ./wait
@@ -57,16 +58,6 @@ type
     guiMinimizedAuto # Minimized; window closes when the run finishes.
     guiHidden # No window at all.
 
-  SimStatus* = enum
-    ## Lifecycle states emitted as `STATUS` events.
-    statusPending = "PENDING"
-    statusLaunching = "LAUNCHING"
-    statusRunning = "RUNNING"
-    statusDone = "DONE"
-    statusCancelled = "CANCELLED"
-    statusError = "ERROR"
-    statusTimeout = "TIMEOUT"
-    statusStalled = "STALLED"
 
 const
   DefaultTrnexePath* = r"C:\TRNSYS18\Exe\TrnEXE64.exe" # Default TRNSYS 18 executable path.
@@ -92,18 +83,9 @@ func wantsMinimize*(v: TrnexeGuiVisibility): bool =
 # ---------------------------------------------------------------------------
 # Status
 # ---------------------------------------------------------------------------
-const IsoFmt: string = "yyyy-MM-dd'T'HH:mm:ss"
-
-proc toJson*(status: SimStatus): JsonNode =
-  ## Serialises a status transition as a `STATUS` event.
-  result = newJObject()
-  result["kind"] = %"STATUS"
-  result["timestamp"] = %now().format(IsoFmt)
-  result["status"] = %($status)
-
 proc emit(status: SimStatus, jsonlPath: string = "") =
   ## Writes a status event to stdout and the JSONL file, flushing immediately.
-  let line = $status.toJson()
+  let line = statusEvent(status).toJsonLine()
   echo line
   stdout.flushFile()
   appendJsonl(jsonlPath, line)
