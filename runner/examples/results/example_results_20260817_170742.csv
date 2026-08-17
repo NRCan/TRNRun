@@ -1,0 +1,5 @@
+DckFile,guiVisibility,waitForGui,waitForLst,waitForTmp,detectTimeout,extraDelay,watchLog,watchTmp,watchTimeout,stallTimeout,pollMs,clean,killOnTimeout,killOnStall,severity,writeLog,ExitCode,Meaning,DurationSec,StartTime
+example_wo_plot_wo_tracking,Hidden,true,true,false,0,0,true,true,0,0,100,false,true,true,Notice,true,0,Done,7.3,08/17/2026 17:07:42
+example_wo_plot_w_tracking,Hidden,true,true,false,0,0,true,true,0,0,100,false,true,true,Notice,true,0,Done,8.8,08/17/2026 17:07:42
+example_w_plot_wo_tracking,Hidden,true,true,false,0,0,true,true,0,0,100,false,true,true,Notice,true,0,Done,12.4,08/17/2026 17:07:42
+example_w_plot_w_tracking,Hidden,true,true,false,0,0,true,true,0,0,100,false,true,true,Notice,true,0,Done,13.5,08/17/2026 17:07:42

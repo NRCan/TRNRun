@@ -6,6 +6,7 @@
 ## an optional native file picker when no deck file is supplied.
 
 import std/[parseopt, strutils]
+import ./events
 import ./simulate
 import ./monitor
 import ./filedialog

@@ -20,8 +20,8 @@ nimbledeps
 # Build & Dist
 build
 dist
-
-
+*.exe
+*.dll
 
 # Old stuff to sort
 
