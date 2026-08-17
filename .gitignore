@@ -22,7 +22,7 @@ build
 dist
 *.exe
 *.dll
-
+*.csv
 # Old stuff to sort
 
 # nimcache/
