@@ -5,8 +5,9 @@
 ## wrapper around `simulate`, exposing its parameters via CLI flags, with
 ## an optional native file picker when no deck file is supplied.
 
-import std/[parseopt, strutils]
+import std/[os, parseopt, strutils]
 import ./events
+import ./eventsink
 import ./simulate
 import ./monitor
 import ./filedialog
@@ -166,8 +167,21 @@ proc main() =
     if deckFile == "":
       echo "No file selected."
       return
+
+  deckFile = validateDeck(deckFile)
+  trnexePath = validateTrnexe(trnexePath)
+
+  var eventSink = stdoutEventSink()
+  if writeLog:
+    let jsonlPath = deckFile.changeFileExt("jsonl")
+    try:
+      eventSink = fanoutEventSink([eventSink, jsonlEventSink(jsonlPath)])
+    except IOError:
+      stderr.writeLine(getCurrentExceptionMsg())
+
   let simResult = simulate(
     deckFile = deckFile,
+    eventSink = eventSink,
     trnexePath = trnexePath,
     guiVisibility = guiVisibility,
     waitForGui = waitForGui,
@@ -184,8 +198,8 @@ proc main() =
     killOnTimeout = killOnTimeout,
     killOnStall = killOnStall,
     severity = severity,
-    writeLog = writeLog,
   )
+
   quit(exitCode(simResult))
 
 when isMainModule:

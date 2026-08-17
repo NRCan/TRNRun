@@ -1,7 +1,7 @@
 ## monitor.nim - TRNSYS simulation monitor.
 ##
-## Wraps a running TRNSYS process and streams structured JSON events to stdout
-## by polling two output files:
+## Wraps a running TRNSYS process and produces structured events through an
+## `EventSink` by polling two output files:
 ##
 ## - **`.tmp`**: a Type3830 temp file written periodically by TRNSYS,
 ##   containing the current simulation time and the fixed run parameters
@@ -10,8 +10,7 @@
 ##   Parsed into `LOG` events carrying severity, simulation time, unit/type
 ##   IDs, message code, and free-text fields.
 ##
-## Each event is a self-contained JSON object written as a single line.
-## Event kinds:
+## The supplied sink decides how each event is delivered. Event kinds:
 ##
 ## ```
 ## {"kind":"CONFIG",   "timestamp":…, "start":…, "stop":…, "step":…}
@@ -27,6 +26,7 @@
 
 import std/[os, osproc, strutils, options, times]
 import ./events
+import ./eventsink
 
 # ---------------------------------------------------------------------------
 # Types
@@ -78,7 +78,7 @@ type
     severity: LogSeverity
     logOffset: int64
     lastSnapshot: Option[TmpSnapshot]
-    jsonlPath: string
+    eventSink: EventSink
     watchTimeoutMs: int
     stallTimeoutMs: int
     lastProgressChange: Time
@@ -317,24 +317,6 @@ proc readTmp(filepath: string): Option[TmpSnapshot] =
 # ---------------------------------------------------------------------------
 # Poll loop
 # ---------------------------------------------------------------------------
-proc appendJsonl*(path, line: string) =
-  ## Appends `line` to `path` (no-op if empty), warning on stderr instead of raising.
-  if path.len == 0: return
-  try:
-    let f = open(path, fmAppend)
-    try:
-      f.writeLine(line)
-    finally:
-      f.close()
-  except CatchableError:
-    stderr.writeLine("[Monitor] Could not append to ", path, ": ",
-                     getCurrentExceptionMsg())
-
-proc emit(state: var MonitorState, line: string) =
-  ## Writes a line to stdout and the JSONL file, flushing both immediately.
-  echo line
-  stdout.flushFile()
-  appendJsonl(state.jsonlPath, line)
 
 proc pollTmp(state: var MonitorState) =
   ## Reads the tmp file and emits config/progress events as needed, skipping silently on I/O or parse errors.
@@ -343,10 +325,10 @@ proc pollTmp(state: var MonitorState) =
 
   let current = snap.get()
   if state.lastSnapshot.isNone:
-    state.emit(current.config.toEvent().toJsonLine())
+    state.eventSink(current.config.toEvent())
 
   if state.lastSnapshot.isNone or current.progress.time != state.lastSnapshot.get().progress.time:
-    state.emit(current.progress.toEvent(current.config, state.startTime).toJsonLine())
+    state.eventSink(current.progress.toEvent(current.config, state.startTime))
     state.lastProgressChange = getTime()
 
   state.lastSnapshot = some(current)
@@ -355,7 +337,7 @@ proc pollLog(state: var MonitorState, emitLogs: bool = true): bool =
   ## Processes new log entries, emitting those at or above the severity threshold; returns `true` on a Fatal entry.
   for entry in readLog(state.logOffset, state.logFile):
     if emitLogs and entry.severity >= state.severity:
-      state.emit(entry.toEvent().toJsonLine())
+      state.eventSink(entry.toEvent())
 
     if entry.severity == Fatal:
       return true
@@ -398,20 +380,20 @@ proc monitor*(
     process: Process,
     deckFile: string,
     startTime: Time,
+    eventSink: EventSink,
     watchLog: bool = true,
     watchTmp: bool = true,
     pollMs: int = 100,
     severity: LogSeverity = Notice,
     watchTimeoutMs: int = 0,
     stallTimeoutMs: int = 0,
-    jsonlPath: string = "",
 ): SimMonitorResult =
-  ## Polls TRNSYS output files until the process exits, streaming JSON events.
+  ## Polls TRNSYS output files until the process exits, emitting structured events.
   ##
   ## Watches the Type3830 `.tmp` file and the TRNSYS `.log` file of a
-  ## running simulation, emitting one self-contained JSON object per line
-  ## to stdout (and optionally to a JSONL file). A final tick runs after
-  ## the process exits to drain any output written just before termination.
+  ## running simulation, delivering structured events through `eventSink`.
+  ## A final tick runs after the process exits to drain any output written
+  ## just before termination.
   ##
   ## Parameters
   ## ----------
@@ -422,6 +404,8 @@ proc monitor*(
   ## startTime : Time
   ##     Wall-clock launch time, used for `elapsed`/`eta` and the watch
   ##     timeout.
+  ## eventSink : EventSink
+  ##     Destination for structured events produced while monitoring.
   ## watchLog : bool, optional
   ##     Emit `LOG` events parsed from the `.log` file (default: true).
   ## watchTmp : bool, optional
@@ -437,8 +421,6 @@ proc monitor*(
   ## stallTimeoutMs : int, optional
   ##     Maximum time simulation time may stay unchanged before the run is
   ##     reported as stalled; 0 disables, requires `watchTmp` (default: 0).
-  ## jsonlPath : string, optional
-  ##     If non-empty, every emitted line is also appended to this file.
   ##
   ## Returns
   ## -------
@@ -455,7 +437,7 @@ proc monitor*(
     watchLog:  watchLog,
     watchTmp:  watchTmp,
     severity:  severity,
-    jsonlPath: jsonlPath,
+    eventSink: eventSink,
     watchTimeoutMs: clampTimeout(watchTimeoutMs, interval, "watchTimeoutMs"),
     stallTimeoutMs: clampTimeout(stallTimeoutMs, interval, "stallTimeoutMs"),
     lastProgressChange: startTime,
