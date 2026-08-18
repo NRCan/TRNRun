@@ -32,7 +32,7 @@ $ParamValues = [ordered]@{
     killOnTimeout  = @($true, $false)
     killOnStall    = @($true, $false)
     severity       = @("Notice")
-    writeLog       = @($false)
+    writeEvents    = @($false)
 }
 
 # ---- Exit-code meaning (mirrors exitCode() in main.nim) ------------------------

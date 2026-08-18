@@ -23,6 +23,7 @@ suite "simulation event serialization":
     check value["timestamp"].getStr() == TimestampText
     check value["status"].getStr() == "RUNNING"
 
+
   test "serializes every status value":
     let expected = [
       (statusPending, "PENDING"),

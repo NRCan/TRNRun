@@ -1,14 +1,17 @@
 ## eventsink.nim - delivery destinations for structured simulation events.
 ##
-## An event sink belongs to one simulation and receives its events in emission
-## order. Simulation code does not know whether a sink writes JSON, collects
-## events for a test, or forwards them to another process.
+## An `EventSink` receives typed simulation events in emission order. JSONL
+## writers own their output file so callers control its lifetime explicitly.
 
 import ./events
 
 type
   EventSink* = proc(event: SimulationEvent) {.closure.}
-    ## Synchronous destination for events produced by one simulation.
+    ## Synchronous destination for typed events produced by one simulation.
+
+  JsonlWriter* = ref object
+    ## Best-effort writer that owns an open JSONL output file.
+    file: File
 
 proc stdoutEventSink*(): EventSink =
   ## Creates a sink that writes and immediately flushes one JSON event per line.
@@ -16,29 +19,36 @@ proc stdoutEventSink*(): EventSink =
     stdout.writeLine(event.toJsonLine())
     stdout.flushFile()
 
-proc jsonlEventSink*(path: string): EventSink =
-  ## Creates a best-effort JSONL sink, replacing content from a previous run.
+proc openJsonlWriter*(path: string): JsonlWriter =
+  ## Creates a writer that truncates `path` and keeps it open until closed.
+  ## The file is unbuffered so write failures are reported synchronously.
+  new(result)
+  if not open(result.file, path, fmWrite, bufSize = 0):
+    raise newException(IOError, "Could not open JSONL file '" & path & "'")
+
+proc close*(writer: JsonlWriter) =
+  ## Closes the owned output file. Repeated calls have no effect.
+  if writer != nil and writer.file != nil:
+    writer.file.close()
+    writer.file = nil
+
+proc write*(writer: JsonlWriter, line: string) =
+  ## Writes one serialized event line and disables the writer on failure.
+  ## The trail exists to survive a crash, so a failed write is reported once
+  ## and then ignored rather than aborting the simulation producing it.
+  if writer == nil or writer.file == nil:
+    return
+
   try:
-    writeFile(path, "")
-  except CatchableError:
-    raise newException(
-      IOError,
-      "Could not initialize JSONL file '" & path & "': " & getCurrentExceptionMsg(),
-    )
-
-  result = proc(event: SimulationEvent) =
+    # One write per event: `writeLine` emits the newline as a second call, so
+    # an unbuffered trail can end mid-record when the run dies between them.
+    writer.file.write(line & "\n")
+  except IOError:
+    let message = getCurrentExceptionMsg()
+    writer.close()
     try:
-      let file = open(path, fmAppend)
-      defer: file.close()
-      file.writeLine(event.toJsonLine())
-    except CatchableError:
       stderr.writeLine(
-        "[EventSink] Could not write JSONL event: ", getCurrentExceptionMsg()
+        "[JsonlWriter] Could not write event (writer disabled): ", message
       )
-
-proc fanoutEventSink*(sinks: openArray[EventSink]): EventSink =
-  ## Creates a sink that forwards every event to each child sink in order.
-  let children = @sinks
-  result = proc(event: SimulationEvent) =
-    for sink in children:
-      sink(event)
+    except IOError:
+      discard # stderr is gone too, so there is nowhere left to report.

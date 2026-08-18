@@ -202,7 +202,7 @@ documentation for full flag semantics.
 | `kill_on_timeout`   | `--killOnTimeout` | `False`                        | Kill TRNSYS on a detection or watch timeout.                           |
 | `kill_on_stall`     | `--killOnStall`   | `False`                        | Kill TRNSYS when a stall is detected.                                  |
 | `severity`          | `--severity`      | `"Notice"`                     | Minimum log severity to emit: `Notice`, `Warning`, `Fatal`.            |
-| `write_log`         | `--writeLog`      | `False`                        | Also append every event to `<deckFile>.jsonl`.                         |
+| `write_events`      | `--writeEvents`   | `False`                        | Write every event to `<deckFile>.jsonl`, replacing any existing file. |
 
 ## Display
 

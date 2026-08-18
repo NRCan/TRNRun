@@ -1,10 +1,10 @@
-import std/[os, strutils, times, unittest]
+import std/[os, strutils, tempfiles, times, unittest]
 import ../src/events
 import ../src/eventsink
 
 let timestamp = fromUnix(0).utc()
 
-suite "event sinks":
+suite "event sinks and writers":
   test "delivers an event to a collector":
     var received: seq[SimulationEvent]
     let collector: EventSink = proc(event: SimulationEvent) =
@@ -16,31 +16,35 @@ suite "event sinks":
     check received[0].kind == eventStatus
     check received[0].statusData.status == statusRunning
 
-
-  test "fans out to child sinks in order":
-    var calls: seq[string]
-    let first: EventSink = proc(event: SimulationEvent) =
-      calls.add("first:" & $event.kind)
-    let second: EventSink = proc(event: SimulationEvent) =
-      calls.add("second:" & $event.kind)
-    let sink = fanoutEventSink([first, second])
-
-    sink(statusEvent(statusRunning, timestamp))
-
-    check calls == @["first:STATUS", "second:STATUS"]
-
-  test "JSONL sink writes events to an open file":
-    let path = getTempDir() / ("trnrun-eventsink-" & $epochTime() & ".jsonl")
+  test "JSONL writer truncates, writes, and closes safely":
+    let (file, path) = createTempFile("trnrun-eventsink-", ".jsonl")
+    file.write("old event\n")
+    file.close()
     defer:
-      if fileExists(path):
-        removeFile(path)
+      removeFile(path)
 
-    path.writeFile("old event\n")
-    let sink = jsonlEventSink(path)
-    sink(statusEvent(statusRunning, timestamp))
-    sink(statusEvent(statusDone, timestamp))
+    let writer = openJsonlWriter(path)
+    writer.write(statusEvent(statusRunning, timestamp).toJsonLine())
+    writer.write(statusEvent(statusDone, timestamp).toJsonLine())
+    writer.close()
+    writer.close()
+    writer.write("ignored after close")
 
     let lines = path.readFile().strip().splitLines()
-    check lines.len == 2
-    check lines[0] == statusEvent(statusRunning, timestamp).toJsonLine()
-    check lines[1] == statusEvent(statusDone, timestamp).toJsonLine()
+    check lines == @[
+      statusEvent(statusRunning, timestamp).toJsonLine(),
+      statusEvent(statusDone, timestamp).toJsonLine(),
+    ]
+
+  test "nil JSONL writer operations are no-ops":
+    var output: JsonlWriter = nil
+    output.write(statusEvent(statusRunning, timestamp).toJsonLine())
+    output.close()
+
+  test "invalid JSONL path raises IOError":
+    let parent = createTempDir("trnrun-eventsink-", "")
+    defer:
+      removeDir(parent)
+
+    expect IOError:
+      discard openJsonlWriter(parent / "missing" / "events.jsonl")
