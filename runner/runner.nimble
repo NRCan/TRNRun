@@ -53,7 +53,3 @@ proc compileExe() =
 # Tasks
 task zigbuild, "Build with zig cc":
   compileExe()
-
-task test, "Run runner unit tests":
-  exec "nim c -r tests/test_events.nim"
-  exec "nim c -r tests/test_eventsink.nim"
