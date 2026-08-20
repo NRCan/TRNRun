@@ -72,8 +72,8 @@ Exit codes: 0 done  1 fatal  2 usage error  124 timeout  125 stalled  130 cancel
 proc main(): int =
   ## Entry point for the TRNRun CLI.
   ##
-  ## Parses command-line flags into `simulate` parameters, opens a native
-  ## file picker when no deck file is supplied, and runs the simulation.
+  ## Parses command-line flags into a `TrnRunConfig`, opens a native file
+  ## picker when no deck file is supplied, and runs the simulation.
   ##
   ## Returns
   ## -------
@@ -91,23 +91,9 @@ proc main(): int =
   ##     top-level handler, which prints one line and exits with code 2.
   var
     deckFile = ""
-    trnexePath = DefaultTrnexePath
-    guiVisibility = DefaultGuiVisibility
-    waitForGui = true
-    waitForLst = true
-    waitForTmp = false
-    detectTimeoutMs = 0
-    extraDelayMs = 0
-    watchLog = true
-    watchTmp = false
-    watchTimeoutMs = 0
-    stallTimeoutMs = 0
-    pollMs = 100
-    cleanOnSuccess = false
-    killOnTimeout = false
-    killOnStall = false
-    severity = Notice
+    config = DefaultTrnRunConfig
     writeEvents = false
+
   var p = initOptParser()
   while true:
     p.next()
@@ -125,37 +111,37 @@ proc main(): int =
       of "deckFile":
         deckFile = p.val
       of "trnexePath":
-        trnexePath = p.val
+        config.trnexePath = p.val
       of "guiVisibility":
-        guiVisibility = parseGuiVisibility(p.val)
+        config.guiVisibility = parseGuiVisibility(p.val)
       of "waitForGui":
-        waitForGui = parseBool(p.val)
+        config.waitForGui = parseBool(p.val)
       of "waitForLst":
-        waitForLst = parseBool(p.val)
+        config.waitForLst = parseBool(p.val)
       of "waitForTmp":
-        waitForTmp = parseBool(p.val)
+        config.waitForTmp = parseBool(p.val)
       of "detectTimeout":
-        detectTimeoutMs = parseInt(p.val)
+        config.detectTimeoutMs = parseInt(p.val)
       of "extraDelay":
-        extraDelayMs = parseInt(p.val)
+        config.extraDelayMs = parseInt(p.val)
       of "watchLog":
-        watchLog = parseBool(p.val)
+        config.watchLog = parseBool(p.val)
       of "watchTmp":
-        watchTmp = parseBool(p.val)
+        config.watchTmp = parseBool(p.val)
       of "watchTimeout":
-        watchTimeoutMs = parseInt(p.val)
+        config.watchTimeoutMs = parseInt(p.val)
       of "stallTimeout":
-        stallTimeoutMs = parseInt(p.val)
+        config.stallTimeoutMs = parseInt(p.val)
       of "pollMs":
-        pollMs = parseInt(p.val)
+        config.pollMs = parseInt(p.val)
       of "clean":
-        cleanOnSuccess = parseBool(p.val)
+        config.cleanOnSuccess = parseBool(p.val)
       of "killOnTimeout":
-        killOnTimeout = parseBool(p.val)
+        config.killOnTimeout = parseBool(p.val)
       of "killOnStall":
-        killOnStall = parseBool(p.val)
+        config.killOnStall = parseBool(p.val)
       of "severity":
-        severity = parseEnum[LogSeverity](p.val)
+        config.severity = parseEnum[LogSeverity](p.val)
       of "writeEvents":
         writeEvents = parseBool(p.val)
       else:
@@ -173,7 +159,7 @@ proc main(): int =
       return 0
 
   deckFile = validateDeck(deckFile)
-  trnexePath = validateTrnexe(trnexePath)
+  config.trnexePath = validateTrnexe(config.trnexePath)
 
   # An unopenable trail is a startup error, not a warning: nothing is running
   # yet, and a lone stderr line is dropped by the manager's event parser.
@@ -194,22 +180,7 @@ proc main(): int =
   let simResult = simulate(
     deckFile = deckFile,
     eventSink = eventSink,
-    trnexePath = trnexePath,
-    guiVisibility = guiVisibility,
-    waitForGui = waitForGui,
-    waitForLst = waitForLst,
-    waitForTmp = waitForTmp,
-    detectTimeoutMs = detectTimeoutMs,
-    extraDelayMs = extraDelayMs,
-    watchLog = watchLog,
-    watchTmp = watchTmp,
-    watchTimeoutMs = watchTimeoutMs,
-    stallTimeoutMs = stallTimeoutMs,
-    pollMs = pollMs,
-    cleanOnSuccess = cleanOnSuccess,
-    killOnTimeout = killOnTimeout,
-    killOnStall = killOnStall,
-    severity = severity,
+    config = config,
   )
 
   exitCode(simResult)

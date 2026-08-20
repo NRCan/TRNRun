@@ -58,10 +58,48 @@ type
     guiMinimizedAuto # Minimized; window closes when the run finishes.
     guiHidden # No window at all.
 
+  TrnRunConfig* = object
+    ## Options controlling TRNSYS launch detection and runtime monitoring.
+    trnexePath*: string
+    guiVisibility*: TrnexeGuiVisibility
+    waitForGui*: bool
+    waitForLst*: bool
+    waitForTmp*: bool
+    detectTimeoutMs*: int
+    extraDelayMs*: int
+    watchLog*: bool
+    watchTmp*: bool
+    watchTimeoutMs*: int
+    stallTimeoutMs*: int
+    pollMs*: int
+    cleanOnSuccess*: bool
+    killOnTimeout*: bool
+    killOnStall*: bool
+    severity*: LogSeverity
+
 
 const
   DefaultTrnexePath* = r"C:\TRNSYS18\Exe\TrnEXE64.exe" # Default TRNSYS 18 executable path.
   DefaultGuiVisibility* = guiHidden # GUI mode used when none is specified.
+  DefaultTrnRunConfig* = TrnRunConfig(
+    trnexePath: DefaultTrnexePath,
+    guiVisibility: DefaultGuiVisibility,
+    waitForGui: true,
+    waitForLst: true,
+    waitForTmp: false,
+    detectTimeoutMs: 0,
+    extraDelayMs: 0,
+    watchLog: true,
+    watchTmp: true,
+    watchTimeoutMs: 0,
+    stallTimeoutMs: 0,
+    pollMs: 100,
+    cleanOnSuccess: false,
+    killOnTimeout: false,
+    killOnStall: false,
+    severity: Notice,
+  )
+    ## Default options for TRNSYS simulation runs.
   Extensions = [
     ".tmp", # Temporary progress file
     ".log", # Simulation log containing notice, warnings, and Fatal errors
@@ -138,22 +176,7 @@ proc unlinkFiles*(deckFile: string) =
 proc simulate*(
     deckFile: string,
     eventSink: EventSink,
-    trnexePath: string = DefaultTrnexePath,
-    guiVisibility: TrnexeGuiVisibility = DefaultGuiVisibility,
-    waitForGui: bool = true,
-    waitForLst: bool = true,
-    waitForTmp: bool = false,
-    detectTimeoutMs: int = 0,
-    extraDelayMs: int = 0,
-    watchLog: bool = true,
-    watchTmp: bool = true,
-    watchTimeoutMs: int = 0,
-    stallTimeoutMs: int = 0,
-    pollMs: int = 100,
-    cleanOnSuccess: bool = false,
-    killOnTimeout: bool = false,
-    killOnStall: bool = true,
-    severity: LogSeverity = Notice,
+    config: TrnRunConfig = DefaultTrnRunConfig,
 ): SimMonitorResult =
   ## Launches and monitors a TRNSYS simulation, emitting structured events.
   ##
@@ -170,46 +193,9 @@ proc simulate*(
   ##     Path to a `.dck` or `.trd` simulation deck.
   ## eventSink : EventSink
   ##     Destination for all structured events produced by the simulation.
-  ## trnexePath : string, optional
-  ##     Path to the TRNSYS executable (default: `DefaultTrnexePath`).
-  ## guiVisibility : TrnexeGuiVisibility, optional
-  ##     GUI mode. The minimized modes are synthesized once after launch via
-  ##     Win32; plotter windows TRNSYS opens later in the run are not
-  ##     re-minimized (default: `DefaultGuiVisibility`).
-  ## waitForGui : bool, optional
-  ##     Treat the appearance of a TRNSYS window as a readiness signal
-  ##     (default: true).
-  ## waitForLst : bool, optional
-  ##     Wait for the `.lst` component-order header (default: true).
-  ## waitForTmp : bool, optional
-  ##     Wait for the `.tmp` file to appear (default: false).
-  ## detectTimeoutMs : int, optional
-  ##     Shared timeout across all readiness stages; 0 = unlimited
-  ##     (default: 0).
-  ## extraDelayMs : int, optional
-  ##     Additional delay after readiness before monitoring starts
-  ##     (default: 0).
-  ## watchLog : bool, optional
-  ##     Stream `.log` entries as `LOG` events (default: true).
-  ## watchTmp : bool, optional
-  ##     Stream `.tmp` updates as `CONFIG`/`PROGRESS` events (default: true).
-  ## watchTimeoutMs : int, optional
-  ##     Maximum monitoring duration in ms; 0 = unlimited (default: 0).
-  ## stallTimeoutMs : int, optional
-  ##     Maximum time simulation time may go without advancing before the
-  ##     run is reported as stalled; 0 = disabled, requires `watchTmp`
-  ##     (default: 0).
-  ## pollMs : int, optional
-  ##     Polling interval for file and process monitoring (default: 100).
-  ## cleanOnSuccess : bool, optional
-  ##     Delete TRNSYS sidecar files after a successful run (default: false).
-  ## killOnTimeout : bool, optional
-  ##     Kill the TRNSYS process when a readiness or watch timeout occurs
-  ##     (default: false).
-  ## killOnStall : bool, optional
-  ##     Kill the TRNSYS process when a stall is detected (default: true).
-  ## severity : LogSeverity, optional
-  ##     Minimum log severity level to emit (default: Notice).
+  ## config : TrnRunConfig, optional
+  ##     Launch detection, monitoring, cleanup, and logging options. Uses
+  ##     `DefaultTrnRunConfig` when omitted.
   ##
   ## Returns
   ## -------
@@ -225,7 +211,7 @@ proc simulate*(
   ## ValueError
   ##     If `deckFile` is not a `.dck` or `.trd` file.
   let deckFile = validateDeck(deckFile)
-  let trnexePath = validateTrnexe(trnexePath)
+  let trnexePath = validateTrnexe(config.trnexePath)
 
   try:
     initJobGuard()
@@ -242,7 +228,7 @@ proc simulate*(
     eventSink(statusEvent(statusLaunching))
 
     try:
-      process = launchTrnexe(deckFile, trnexePath, guiVisibility)
+      process = launchTrnexe(deckFile, trnexePath, config.guiVisibility)
     except TrnexeLaunchError:
       eventSink(statusEvent(statusError))
       return monitorFatal
@@ -251,11 +237,11 @@ proc simulate*(
     let waitStatus = waitReady(
       process = process,
       deckFile = deckFile,
-      waitForGui = waitForGui,
-      waitForLst = waitForLst,
-      waitForTmp = waitForTmp,
-      timeoutMs = detectTimeoutMs,
-      extraDelayMs = extraDelayMs,
+      waitForGui = config.waitForGui,
+      waitForLst = config.waitForLst,
+      waitForTmp = config.waitForTmp,
+      timeoutMs = config.detectTimeoutMs,
+      extraDelayMs = config.extraDelayMs,
     )
 
     case waitStatus
@@ -265,14 +251,14 @@ proc simulate*(
         eventSink(statusEvent(statusError))
         return monitorFatal
     of wrTimeout:
-      if process.running and killOnTimeout:
+      if process.running and config.killOnTimeout:
         process.kill()
         eventSink(statusEvent(statusTimeout))
         return monitorTimeout
     else:
       discard
 
-    if guiVisibility.wantsMinimize() and process.running:
+    if config.guiVisibility.wantsMinimize() and process.running:
       discard minimizeGui(process)
 
     eventSink(statusEvent(statusRunning))
@@ -282,38 +268,38 @@ proc simulate*(
     deckFile = deckFile,
     startTime = startTime,
     eventSink = eventSink,
-    watchLog = watchLog,
-    watchTmp = watchTmp,
-    pollMs = pollMs,
-    severity = severity,
-    watchTimeoutMs = watchTimeoutMs,
-    stallTimeoutMs = stallTimeoutMs,
+    watchLog = config.watchLog,
+    watchTmp = config.watchTmp,
+    pollMs = config.pollMs,
+    severity = config.severity,
+    watchTimeoutMs = config.watchTimeoutMs,
+    stallTimeoutMs = config.stallTimeoutMs,
   )
 
   case monitorResult
   of monitorDone:
     eventSink(statusEvent(statusDone))
-    if cleanOnSuccess:
+    if config.cleanOnSuccess:
       unlinkFiles(deckFile)
   of monitorFatal:
     eventSink(statusEvent(statusError))
   of monitorCancelled:
     eventSink(statusEvent(statusCancelled))
   of monitorStalled:
-    if process.running and killOnStall:
+    if process.running and config.killOnStall:
       process.kill()
 
     eventSink(statusEvent(statusStalled))
 
-    if process.running and not killOnStall:
+    if process.running and not config.killOnStall:
       discard process.waitForExit()
   of monitorTimeout:
-    if process.running and killOnTimeout:
+    if process.running and config.killOnTimeout:
       process.kill()
 
     eventSink(statusEvent(statusTimeout))
 
-    if process.running and not killOnTimeout:
+    if process.running and not config.killOnTimeout:
       discard process.waitForExit()
 
   return monitorResult
@@ -321,13 +307,12 @@ proc simulate*(
 # ---------------------------------------------------------------------------
 when isMainModule:
   let deckFile = absolutePath(r"examples\dck\example_w_plot_w_tracking.dck")
+  var config = DefaultTrnRunConfig
+  config.guiVisibility = guiMinimizedAuto
 
   let simResult = simulate(
     deckFile = deckFile,
     eventSink = stdoutEventSink(),
-    guiVisibility = guiMinimizedAuto,
-    extraDelayMs = 0,
-    waitForTmp = false,
-    waitForGui = true,
+    config = config,
   )
   echo fmt"Simulation finished with result: {simResult}"
