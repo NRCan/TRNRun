@@ -199,8 +199,7 @@ proc `%`*(event: SimulationEvent): JsonNode =
 
 proc toJson*(event: SimulationEvent): JsonNode {.inline.} =
   ## Readable alias for the standard `std/json` serialization operator.
+  ##
+  ## This is the event's payload only. Sinks add the delivery metadata that
+  ## completes a wire line; see `sequencedEventSink` in `eventsink`.
   %event
-
-proc toJsonLine*(event: SimulationEvent): string =
-  ## Serializes an event as a compact single-line JSON object.
-  $(%event)
