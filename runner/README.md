@@ -62,7 +62,7 @@ trnrun --version   # version information
 ## Output
 
 Every event is emitted as a self-contained JSON object on a single line
-([JSON Lines](https://jsonlines.org/)), written to stdout. With `--writeLog:true`, the same lines are appended to `<deckFile>.jsonl`.
+([JSON Lines](https://jsonlines.org/)), written to stdout. With `--writeEvents:true`, the same lines are written to `<deckFile>.jsonl`, replacing any existing file when the run starts.
 
 ### Events
 
@@ -72,6 +72,7 @@ Every event is emitted as a self-contained JSON object on a single line
 {"kind":"PROGRESS","timestamp":"ISO-8601","time":"hour","percent":"0-1","elapsed":"milliseconds","eta":"milliseconds"}
 {"kind":"LOG","timestamp":"ISO-8601","severity":"Notice|Warning|Fatal","time":"hour","unitID":"OPTIONAL[INT]","typeID":"OPTIONAL[INT]","messageCode":"OPTIONAL[INT]","message":"OPTIONAL[STRING]","information":"OPTIONAL[STRING]"}
 ```
+
 
 - `elapsed` and `eta` are in milliseconds; `percent` is in `[0, 1]`; `time`, `start`, `stop`,
   and `step` are simulation hours.
@@ -172,7 +173,7 @@ Launch detection determines when TRNSYS startup has completed, allowing the glob
 | Option       | Type      | Default  | Description                                                         |
 | ------------ | --------- | -------- | ------------------------------------------------------------------- |
 | `--severity` | `String`  | `Notice` | Minimum log severity to emit. Accepts `Notice`, `Warning`, `Fatal`. |
-| `--writeLog` | `Boolean` | `false`  | Also append every event to `<deckFile>.jsonl`.                      |
+| `--writeEvents` | `Boolean` | `false`  | Write every event to `<deckFile>.jsonl`, replacing any existing file. |
 | `--clean`    | `Boolean` | `false`  | On a successful run, delete `*.tmp`, `*.log`, `*.lst`, and `*.PTI`. |
 
 ## Recipes

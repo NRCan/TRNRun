@@ -177,9 +177,13 @@ def _optional_float(data: dict[str, object], key: str) -> float | None:
     return None if data.get(key) is None else _require_float(data, key)
 
 
-def _optional_int(data: dict[str, object], key: str) -> int | None:
-    """Return an optional integer field, treating JSON null as absent."""
-    return None if data.get(key) is None else _require_int(data, key)
+def _optional_int(data: dict[str, object], key: str, *aliases: str) -> int | None:
+    """Return the first present optional integer field, treating null as absent."""
+    for candidate in (key, *aliases):
+        if candidate in data:
+            return None if data[candidate] is None else _require_int(data, candidate)
+
+    return None
 
 
 # -----------------------------------------------------------------
@@ -220,8 +224,8 @@ def _parse_log(data: dict[str, object]) -> LogEvent:
         severity=_require_str(data, "severity"),
         timestamp=_require_str(data, "timestamp"),
         time=_optional_float(data, "time"),
-        unit_id=_optional_int(data, "unitId"),
-        type_id=_optional_int(data, "typeId"),
+        unit_id=_optional_int(data, "unitID", "unitId"),
+        type_id=_optional_int(data, "typeID", "typeId"),
         message_code=_optional_int(data, "messageCode"),
         message=_optional_str(data, "message"),
         information=_optional_str(data, "information"),

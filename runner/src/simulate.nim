@@ -17,7 +17,7 @@
 ## - Continuous runtime monitoring of:
 ##     * .log streaming events
 ##     * .tmp progress/config updates
-## - Structured JSON status output (stdout + optional JSONL file)
+## - Structured lifecycle, progress, and log events through an `EventSink`
 ## - Graceful handling of:
 ##     * Normal completion
 ##     * Crashes / fatal errors
@@ -30,12 +30,12 @@
 ##     VALIDATION → LAUNCH → RUNNING → COMPLETED
 ##
 ## Output:
-## - Always emits JSON status events to stdout
-## - Optionally writes a JSONL log per simulation:
-##     `<deckFile>.jsonl` (if writeLog = true)
+## - Delivers structured lifecycle, progress, and log events through an
+##   `EventSink` supplied by the caller.
 
 import std/[os, osproc, strformat, strutils, times]
 import ./events
+import ./eventsink
 import ./job
 import ./mutex
 import ./wait
@@ -80,15 +80,6 @@ func wantsMinimize*(v: TrnexeGuiVisibility): bool =
   ## True if the mode requires post-launch Win32 minimization.
   v in {guiMinimized, guiMinimizedAuto}
 
-# ---------------------------------------------------------------------------
-# Status
-# ---------------------------------------------------------------------------
-proc emit(status: SimStatus, jsonlPath: string = "") =
-  ## Writes a status event to stdout and the JSONL file, flushing immediately.
-  let line = statusEvent(status).toJsonLine()
-  echo line
-  stdout.flushFile()
-  appendJsonl(jsonlPath, line)
 
 # ---------------------------------------------------------------------------
 # Validation & file helpers
@@ -140,17 +131,13 @@ proc unlinkFiles*(deckFile: string) =
     if fileExists(f) and not tryRemoveFile(f):
       stderr.writeLine(fmt"Warning: Could not delete {f} (likely in use).")
 
-proc unlinkJsonl*(deckFile: string) =
-  ## Deletes the deck's `.jsonl` event file if present.
-  let f = deckFile.changeFileExt("jsonl")
-  if fileExists(f) and not tryRemoveFile(f):
-    stderr.writeLine(fmt"Warning: Could not delete {f} (likely in use).")
 
 # ---------------------------------------------------------------------------
 # Main simulation
 # ---------------------------------------------------------------------------
 proc simulate*(
     deckFile: string,
+    eventSink: EventSink,
     trnexePath: string = DefaultTrnexePath,
     guiVisibility: TrnexeGuiVisibility = DefaultGuiVisibility,
     waitForGui: bool = true,
@@ -167,9 +154,8 @@ proc simulate*(
     killOnTimeout: bool = false,
     killOnStall: bool = true,
     severity: LogSeverity = Notice,
-    writeLog: bool = true,
 ): SimMonitorResult =
-  ## Launches and monitors a TRNSYS simulation, streaming structured JSON events.
+  ## Launches and monitors a TRNSYS simulation, emitting structured events.
   ##
   ## Validates the deck and executable, acquires the global launch lock,
   ## starts TrnEXE, waits for the configured readiness signals (GUI window,
@@ -182,6 +168,8 @@ proc simulate*(
   ## ----------
   ## deckFile : string
   ##     Path to a `.dck` or `.trd` simulation deck.
+  ## eventSink : EventSink
+  ##     Destination for all structured events produced by the simulation.
   ## trnexePath : string, optional
   ##     Path to the TRNSYS executable (default: `DefaultTrnexePath`).
   ## guiVisibility : TrnexeGuiVisibility, optional
@@ -222,8 +210,6 @@ proc simulate*(
   ##     Kill the TRNSYS process when a stall is detected (default: true).
   ## severity : LogSeverity, optional
   ##     Minimum log severity level to emit (default: Notice).
-  ## writeLog : bool, optional
-  ##     Also append every event to `<deckFile>.jsonl` (default: true).
   ##
   ## Returns
   ## -------
@@ -246,25 +232,19 @@ proc simulate*(
   except OSError as e:
     stderr.writeLine("Warning: orphan guard unavailable, TrnEXE64.exe may outlive trnrun: ", e.msg)
 
-  let jsonlPath: string =
-    if writeLog:
-      deckFile.changeFileExt("jsonl")
-    else:
-      ""
-  unlinkJsonl(deckFile)
-  emit(statusPending, jsonlPath)
+  eventSink(statusEvent(statusPending))
 
   var process: Process = default(Process)
   var startTime: Time = default(Time)
 
   withLaunchLock:
     unlinkFiles(deckFile)
-    emit(statusLaunching, jsonlPath)
+    eventSink(statusEvent(statusLaunching))
 
     try:
       process = launchTrnexe(deckFile, trnexePath, guiVisibility)
     except TrnexeLaunchError:
-      emit(statusError, jsonlPath)
+      eventSink(statusEvent(statusError))
       return monitorFatal
     startTime = getTime()
 
@@ -282,12 +262,12 @@ proc simulate*(
     of wrDied:
       if process.running:
         process.kill()
-        emit(statusError, jsonlPath)
+        eventSink(statusEvent(statusError))
         return monitorFatal
     of wrTimeout:
       if process.running and killOnTimeout:
         process.kill()
-        emit(statusTimeout, jsonlPath)
+        eventSink(statusEvent(statusTimeout))
         return monitorTimeout
     else:
       discard
@@ -295,35 +275,35 @@ proc simulate*(
     if guiVisibility.wantsMinimize() and process.running:
       discard minimizeGui(process)
 
-    emit(statusRunning, jsonlPath)
+    eventSink(statusEvent(statusRunning))
 
   let monitorResult = monitor(
     process = process,
     deckFile = deckFile,
     startTime = startTime,
+    eventSink = eventSink,
     watchLog = watchLog,
     watchTmp = watchTmp,
     pollMs = pollMs,
     severity = severity,
     watchTimeoutMs = watchTimeoutMs,
     stallTimeoutMs = stallTimeoutMs,
-    jsonlPath = jsonlPath,
   )
 
   case monitorResult
   of monitorDone:
-    emit(statusDone, jsonlPath)
+    eventSink(statusEvent(statusDone))
     if cleanOnSuccess:
       unlinkFiles(deckFile)
   of monitorFatal:
-    emit(statusError, jsonlPath)
+    eventSink(statusEvent(statusError))
   of monitorCancelled:
-    emit(statusCancelled, jsonlPath)
+    eventSink(statusEvent(statusCancelled))
   of monitorStalled:
     if process.running and killOnStall:
       process.kill()
 
-    emit(statusStalled, jsonlPath)
+    eventSink(statusEvent(statusStalled))
 
     if process.running and not killOnStall:
       discard process.waitForExit()
@@ -331,7 +311,7 @@ proc simulate*(
     if process.running and killOnTimeout:
       process.kill()
 
-    emit(statusTimeout, jsonlPath)
+    eventSink(statusEvent(statusTimeout))
 
     if process.running and not killOnTimeout:
       discard process.waitForExit()
@@ -344,6 +324,7 @@ when isMainModule:
 
   let simResult = simulate(
     deckFile = deckFile,
+    eventSink = stdoutEventSink(),
     guiVisibility = guiMinimizedAuto,
     extraDelayMs = 0,
     waitForTmp = false,

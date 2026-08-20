@@ -31,7 +31,7 @@ $Params = [ordered]@{
     killOnTimeout  = $true
     killOnStall    = $true
     severity       = "Notice"
-    writeLog       = $true
+    writeEvents    = $true
 }
 
 # ---- Exit-code meaning ---------------------------------------------------------

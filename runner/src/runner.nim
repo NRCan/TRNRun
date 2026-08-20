@@ -5,8 +5,9 @@
 ## wrapper around `simulate`, exposing its parameters via CLI flags, with
 ## an optional native file picker when no deck file is supplied.
 
-import std/[parseopt, strutils]
+import std/[os, parseopt, strutils]
 import ./events
+import ./eventsink
 import ./simulate
 import ./monitor
 import ./filedialog
@@ -47,6 +48,7 @@ Usage:
 
   -h, --help              Show this help and exit
   -v, --version           Show version and exit
+  --deckFile:PATH         Deck path; same as the positional argument
   --trnexePath:PATH       Path to TrnEXE64.exe
   --guiVisibility:MODE    keep | auto | min | minauto | hidden   (default: hidden)
   --waitForGui:BOOL       (default: true)
@@ -63,23 +65,24 @@ Usage:
   --killOnTimeout:BOOL    (default: false)
   --killOnStall:BOOL      (default: false)
   --severity:LEVEL        Notice | Warning | Fatal (default: Notice)
-  --writeLog:BOOL         (default: false)
+  --writeEvents:BOOL      (default: false)
 
 Exit codes: 0 done  1 fatal  2 usage error  124 timeout  125 stalled  130 cancelled"""
 
-proc main() =
+proc main(): int =
   ## Entry point for the TRNRun CLI.
   ##
   ## Parses command-line flags into `simulate` parameters, opens a native
-  ## file picker when no deck file is supplied, runs the simulation, and
-  ## terminates the process with an exit code describing the outcome.
+  ## file picker when no deck file is supplied, and runs the simulation.
   ##
   ## Returns
   ## -------
-  ## None
-  ##     Does not return after a run; exits via `quit(exitCode(...))`.
-  ##     Exit codes: 0 done, 1 fatal, 2 usage/validation error,
-  ##     124 timeout, 125 stalled, 130 cancelled.
+  ## int
+  ##     Process exit code describing the outcome: 0 done, 1 fatal,
+  ##     2 usage/validation error, 124 timeout, 125 stalled, 130 cancelled.
+  ##     The caller is responsible for calling `quit` with this value; this
+  ##     proc itself never calls `quit`, so any future `defer`/`finally`
+  ##     cleanup added here is guaranteed to run.
   ##
   ## Raises
   ## ------
@@ -104,7 +107,7 @@ proc main() =
     killOnTimeout = false
     killOnStall = false
     severity = Notice
-    writeLog = false
+    writeEvents = false
   var p = initOptParser()
   while true:
     p.next()
@@ -115,10 +118,10 @@ proc main() =
       case p.key
       of "help", "h":
         writeHelp()
-        return
+        return 0
       of "version", "v":
         echo NimblePkgVersion
-        return
+        return 0
       of "deckFile":
         deckFile = p.val
       of "trnexePath":
@@ -153,21 +156,43 @@ proc main() =
         killOnStall = parseBool(p.val)
       of "severity":
         severity = parseEnum[LogSeverity](p.val)
-      of "writeLog":
-        writeLog = parseBool(p.val)
+      of "writeEvents":
+        writeEvents = parseBool(p.val)
       else:
         stderr.writeLine("Unknown option: ", p.key)
-        quit(2)
+        return 2
     of cmdArgument:
-      if deckFile == "":
-        deckFile = p.key
+      if deckFile != "":
+        stderr.writeLine("Unexpected argument: ", p.key)
+        return 2
+      deckFile = p.key
   if deckFile == "":
     deckFile = openDeckFileDialog()
     if deckFile == "":
       echo "No file selected."
-      return
+      return 0
+
+  deckFile = validateDeck(deckFile)
+  trnexePath = validateTrnexe(trnexePath)
+
+  # An unopenable trail is a startup error, not a warning: nothing is running
+  # yet, and a lone stderr line is dropped by the manager's event parser.
+  var jsonlOutput: JsonlWriter = nil
+  if writeEvents:
+    jsonlOutput = openJsonlWriter(deckFile.changeFileExt("jsonl"))
+
+  defer:
+    jsonlOutput.close()
+
+  let eventSink = proc(event: SimulationEvent) =
+    let line = event.toJsonLine()
+    jsonlOutput.write(line)
+    stdout.writeLine(line)
+    stdout.flushFile()
+
   let simResult = simulate(
     deckFile = deckFile,
+    eventSink = eventSink,
     trnexePath = trnexePath,
     guiVisibility = guiVisibility,
     waitForGui = waitForGui,
@@ -184,15 +209,17 @@ proc main() =
     killOnTimeout = killOnTimeout,
     killOnStall = killOnStall,
     severity = severity,
-    writeLog = writeLog,
   )
-  quit(exitCode(simResult))
+
+  exitCode(simResult)
 
 when isMainModule:
-  try:
-    main()
-  except CatchableError:
-    # CLI trust boundary: a bad flag value or a missing deck/exe should print
-    # one clean line and exit 2, not dump a stack trace.
-    stderr.writeLine("Error: ", getCurrentExceptionMsg())
-    quit(2)
+  let code =
+    try:
+      main()
+    except CatchableError:
+      # CLI trust boundary: a bad flag value or a missing deck/exe should print
+      # one clean line and exit 2, not dump a stack trace.
+      stderr.writeLine("Error: ", getCurrentExceptionMsg())
+      2
+  quit(code)

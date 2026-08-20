@@ -27,7 +27,7 @@ class SimulationConfig:
     `--flag`). Flags are passed as `--name:value`. These defaults mirror
     trnrun's own CLI defaults: the `detect`/`watch`/`stall` timeouts are
     `0` (unlimited/disabled), progress tracking (`watch_tmp`) is off, and
-    `clean_on_success`, `write_log`, and both kill-on-* behaviors are
+    `clean_on_success`, `write_events`, and both kill-on-* behaviors are
     disabled.
 
     Attributes
@@ -97,9 +97,9 @@ class SimulationConfig:
     severity : str, default `"Notice"`
     Minimum log severity to emit (`--severity`), one of `"Notice"`,
     `"Warning"`, or `"Fatal"`.
-    write_log : bool, default `False`
-    Also append every emitted event to `<deckFile>.jsonl`
-    (`--writeLog`).
+    write_events : bool, default `False`
+    Write every emitted event to `<deckFile>.jsonl`, replacing any existing
+    file when the run starts (`--writeEvents`).
     """
 
     trnrun_path: Path = BUNDLED_TRNRUN_PATH
@@ -119,7 +119,7 @@ class SimulationConfig:
     kill_on_timeout: bool = False
     kill_on_stall: bool = False
     severity: str = "Notice"
-    write_log: bool = False
+    write_events: bool = False
 
     def validate(self) -> None:
         """Check that both executables exist.
@@ -157,5 +157,5 @@ class SimulationConfig:
             f"--killOnTimeout:{boolean(self.kill_on_timeout)}",
             f"--killOnStall:{boolean(self.kill_on_stall)}",
             f"--severity:{self.severity}",
-            f"--writeLog:{boolean(self.write_log)}",
+            f"--writeEvents:{boolean(self.write_events)}",
         ]
