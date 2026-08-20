@@ -67,15 +67,17 @@ Every event is emitted as a self-contained JSON object on a single line
 ### Events
 
 ```json
-{"kind":"STATUS","timestamp":"ISO-8601","status":"PENDING|LAUNCHING|RUNNING|DONE|CANCELLED|ERROR|TIMEOUT|STALLED"}
-{"kind":"CONFIG","timestamp":"ISO-8601","start":"hour","stop":"hour","step":"hour"}
-{"kind":"PROGRESS","timestamp":"ISO-8601","time":"hour","percent":"0-1","elapsed":"milliseconds","eta":"milliseconds"}
-{"kind":"LOG","timestamp":"ISO-8601","severity":"Notice|Warning|Fatal","time":"hour","unitID":"OPTIONAL[INT]","typeID":"OPTIONAL[INT]","messageCode":"OPTIONAL[INT]","message":"OPTIONAL[STRING]","information":"OPTIONAL[STRING]"}
+{"kind":"STATUS","timestamp":"ISO-8601","status":"PENDING|LAUNCHING|RUNNING|DONE|CANCELLED|ERROR|TIMEOUT|STALLED","seq":"INT"}
+{"kind":"CONFIG","timestamp":"ISO-8601","start":"hour","stop":"hour","step":"hour","seq":"INT"}
+{"kind":"PROGRESS","timestamp":"ISO-8601","time":"hour","percent":"0-1","elapsed":"milliseconds","eta":"milliseconds","seq":"INT"}
+{"kind":"LOG","timestamp":"ISO-8601","severity":"Notice|Warning|Fatal","time":"hour","unitID":"OPTIONAL[INT]","typeID":"OPTIONAL[INT]","messageCode":"OPTIONAL[INT]","message":"OPTIONAL[STRING]","information":"OPTIONAL[STRING]","seq":"INT"}
 ```
 
 
 - `elapsed` and `eta` are in milliseconds; `percent` is in `[0, 1]`; `time`, `start`, `stop`,
   and `step` are simulation hours.
+- `seq` counts emitted events, starting at `1` for the first line of the run and incrementing by
+  one per event, so a consumer can order lines and detect a dropped one.
 - `CONFIG` is emitted once, on the first successful `*.tmp` read.
 
 ### Simulation states
@@ -99,16 +101,16 @@ Reported as `STATUS` events:
 ### Example
 
 ```json
-{"kind":"STATUS","timestamp":"2026-06-19T19:37:13","status":"PENDING"}
-{"kind":"STATUS","timestamp":"2026-06-19T19:37:14","status":"LAUNCHING"}
-{"kind":"STATUS","timestamp":"2026-06-19T19:37:15","status":"RUNNING"}
-{"kind":"CONFIG","timestamp":"2026-06-19T19:37:15","start":0.0,"stop":10000.0,"step":0.1}
-{"kind":"LOG","timestamp":"2026-06-19T19:37:15","severity":"Notice","time":0.0,"message":"\"Type169.dll\" was found but did not contain any components from the input file."}
-{"kind":"PROGRESS","timestamp":"2026-06-19T19:37:15","time":221.6,"percent":0.0222,"elapsed":287.0,"eta":12664.26}
+{"kind":"STATUS","timestamp":"2026-06-19T19:37:13","status":"PENDING","seq":1}
+{"kind":"STATUS","timestamp":"2026-06-19T19:37:14","status":"LAUNCHING","seq":2}
+{"kind":"STATUS","timestamp":"2026-06-19T19:37:15","status":"RUNNING","seq":3}
+{"kind":"CONFIG","timestamp":"2026-06-19T19:37:15","start":0.0,"stop":10000.0,"step":0.1,"seq":4}
+{"kind":"LOG","timestamp":"2026-06-19T19:37:15","severity":"Notice","time":0.0,"message":"\"Type169.dll\" was found but did not contain any components from the input file.","seq":5}
+{"kind":"PROGRESS","timestamp":"2026-06-19T19:37:15","time":221.6,"percent":0.0222,"elapsed":287.0,"eta":12664.26,"seq":6}
 [...]
-{"kind":"PROGRESS","timestamp":"2026-06-19T19:37:23","time":10000.0,"percent":1.0,"elapsed":8663.0,"eta":0.0}
-{"kind":"LOG","timestamp":"2026-06-19T19:37:23","severity":"Warning","time":10000.0,"unitID":5,"typeID":139,"message":"Furnace fan mass balance failed during 100000 timesteps. Please check the connections."}
-{"kind":"STATUS","timestamp":"2026-06-19T19:37:23","status":"DONE"}
+{"kind":"PROGRESS","timestamp":"2026-06-19T19:37:23","time":10000.0,"percent":1.0,"elapsed":8663.0,"eta":0.0,"seq":184}
+{"kind":"LOG","timestamp":"2026-06-19T19:37:23","severity":"Warning","time":10000.0,"unitID":5,"typeID":139,"message":"Furnace fan mass balance failed during 100000 timesteps. Please check the connections.","seq":185}
+{"kind":"STATUS","timestamp":"2026-06-19T19:37:23","status":"DONE","seq":186}
 ```
 
 ## Exit codes

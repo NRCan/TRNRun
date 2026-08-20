@@ -184,11 +184,12 @@ proc main(): int =
   defer:
     jsonlOutput.close()
 
-  let eventSink = proc(event: SimulationEvent) =
-    let line = event.toJsonLine()
-    jsonlOutput.write(line)
-    stdout.writeLine(line)
-    stdout.flushFile()
+  let eventSink = sequencedEventSink(
+    proc(line: string) =
+      jsonlOutput.write(line)
+      stdout.writeLine(line)
+      stdout.flushFile()
+  )
 
   let simResult = simulate(
     deckFile = deckFile,
