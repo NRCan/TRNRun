@@ -10,6 +10,7 @@ import ./events
 import ./eventsink
 import ./simulate
 import ./monitor
+import ./settings
 import ./filedialog
 
 const NimblePkgVersion {.strdefine.} = "unknown"
@@ -72,7 +73,7 @@ Exit codes: 0 done  1 fatal  2 usage error  124 timeout  125 stalled  130 cancel
 proc main(): int =
   ## Entry point for the TRNRun CLI.
   ##
-  ## Parses command-line flags into a `TrnRunConfig`, opens a native file
+  ## Parses command-line flags into `RunnerSettings`, opens a native file
   ## picker when no deck file is supplied, and runs the simulation.
   ##
   ## Returns
@@ -91,8 +92,7 @@ proc main(): int =
   ##     top-level handler, which prints one line and exits with code 2.
   var
     deckFile = ""
-    config = DefaultTrnRunConfig
-    writeEvents = false
+    settings = DefaultRunnerSettings
 
   var p = initOptParser()
   while true:
@@ -111,39 +111,39 @@ proc main(): int =
       of "deckFile":
         deckFile = p.val
       of "trnexePath":
-        config.trnexePath = p.val
+        settings.trnexePath = p.val
       of "guiVisibility":
-        config.guiVisibility = parseGuiVisibility(p.val)
+        settings.guiVisibility = parseGuiVisibility(p.val)
       of "waitForGui":
-        config.waitForGui = parseBool(p.val)
+        settings.waitForGui = parseBool(p.val)
       of "waitForLst":
-        config.waitForLst = parseBool(p.val)
+        settings.waitForLst = parseBool(p.val)
       of "waitForTmp":
-        config.waitForTmp = parseBool(p.val)
+        settings.waitForTmp = parseBool(p.val)
       of "detectTimeout":
-        config.detectTimeoutMs = parseInt(p.val)
+        settings.detectTimeoutMs = parseInt(p.val)
       of "extraDelay":
-        config.extraDelayMs = parseInt(p.val)
+        settings.extraDelayMs = parseInt(p.val)
       of "watchLog":
-        config.watchLog = parseBool(p.val)
+        settings.watchLog = parseBool(p.val)
       of "watchTmp":
-        config.watchTmp = parseBool(p.val)
+        settings.watchTmp = parseBool(p.val)
       of "watchTimeout":
-        config.watchTimeoutMs = parseInt(p.val)
+        settings.watchTimeoutMs = parseInt(p.val)
       of "stallTimeout":
-        config.stallTimeoutMs = parseInt(p.val)
+        settings.stallTimeoutMs = parseInt(p.val)
       of "pollMs":
-        config.pollMs = parseInt(p.val)
+        settings.pollMs = parseInt(p.val)
       of "clean":
-        config.cleanOnSuccess = parseBool(p.val)
+        settings.cleanOnSuccess = parseBool(p.val)
       of "killOnTimeout":
-        config.killOnTimeout = parseBool(p.val)
+        settings.killOnTimeout = parseBool(p.val)
       of "killOnStall":
-        config.killOnStall = parseBool(p.val)
+        settings.killOnStall = parseBool(p.val)
       of "severity":
-        config.severity = parseEnum[LogSeverity](p.val)
+        settings.severity = parseEnum[LogSeverity](p.val)
       of "writeEvents":
-        writeEvents = parseBool(p.val)
+        settings.writeEvents = parseBool(p.val)
       else:
         stderr.writeLine("Unknown option: ", p.key)
         return 2
@@ -159,12 +159,12 @@ proc main(): int =
       return 0
 
   deckFile = validateDeck(deckFile)
-  config.trnexePath = validateTrnexe(config.trnexePath)
+  settings.trnexePath = validateTrnexe(settings.trnexePath)
 
   # An unopenable trail is a startup error, not a warning: nothing is running
   # yet, and a lone stderr line is dropped by the manager's event parser.
   var jsonlOutput: JsonlWriter = nil
-  if writeEvents:
+  if settings.writeEvents:
     jsonlOutput = openJsonlWriter(deckFile.changeFileExt("jsonl"))
 
   defer:
@@ -180,7 +180,7 @@ proc main(): int =
   let simResult = simulate(
     deckFile = deckFile,
     eventSink = eventSink,
-    config = config,
+    settings = settings,
   )
 
   exitCode(simResult)

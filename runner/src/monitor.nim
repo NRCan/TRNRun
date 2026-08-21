@@ -105,33 +105,47 @@ proc eta(self: SimProgress, config: SimConfig, realStart: Time): float =
 # ---------------------------------------------------------------------------
 # Event conversion
 # ---------------------------------------------------------------------------
-proc toEvent(self: SimConfig): SimulationEvent =
-  ## Converts parsed run parameters into a structured event.
-  configEvent(self.start, self.stop, self.step, self.timestamp)
-
-proc toEvent(
-    self: SimProgress, config: SimConfig, realStart: Time
-): SimulationEvent =
-  ## Converts a progress sample into a structured event.
-  progressEvent(
-    time = self.time,
-    percent = self.percent(config),
-    elapsedMs = self.elapsed(realStart),
-    etaMs = self.eta(config, realStart),
-    timestamp = self.timestamp,
+proc configEvent(config: SimConfig): SimulationEvent =
+  ## Creates an event from parsed run parameters.
+  SimulationEvent(
+    kind: eventConfig,
+    configData: ConfigEvent(
+      timestamp: config.timestamp,
+      start: config.start,
+      stop: config.stop,
+      step: config.step,
+    ),
   )
 
-proc toEvent(self: SimLog): SimulationEvent =
-  ## Converts a parsed TRNSYS log entry into a structured event.
-  logEvent(
-    severity = self.severity,
-    time = self.time,
-    unitId = self.unitId,
-    typeId = self.typeId,
-    messageCode = self.messageCode,
-    message = self.message,
-    information = self.information,
-    timestamp = self.timestamp,
+proc progressEvent(
+    progress: SimProgress, config: SimConfig, realStart: Time
+): SimulationEvent =
+  ## Creates an event from a progress sample and its run context.
+  SimulationEvent(
+    kind: eventProgress,
+    progressData: ProgressEvent(
+      timestamp: progress.timestamp,
+      time: progress.time,
+      percent: progress.percent(config),
+      elapsedMs: progress.elapsed(realStart),
+      etaMs: progress.eta(config, realStart),
+    ),
+  )
+
+proc logEvent(entry: SimLog): SimulationEvent =
+  ## Creates an event from a parsed TRNSYS log entry.
+  SimulationEvent(
+    kind: eventLog,
+    logData: LogEvent(
+      timestamp: entry.timestamp,
+      severity: entry.severity,
+      time: entry.time,
+      unitId: entry.unitId,
+      typeId: entry.typeId,
+      messageCode: entry.messageCode,
+      message: entry.message,
+      information: entry.information,
+    ),
   )
 
 # ---------------------------------------------------------------------------
@@ -325,10 +339,10 @@ proc pollTmp(state: var MonitorState) =
 
   let current = snap.get()
   if state.lastSnapshot.isNone:
-    state.eventSink(current.config.toEvent())
+    state.eventSink(configEvent(current.config))
 
   if state.lastSnapshot.isNone or current.progress.time != state.lastSnapshot.get().progress.time:
-    state.eventSink(current.progress.toEvent(current.config, state.startTime))
+    state.eventSink(progressEvent(current.progress, current.config, state.startTime))
     state.lastProgressChange = getTime()
 
   state.lastSnapshot = some(current)
@@ -337,7 +351,7 @@ proc pollLog(state: var MonitorState, emitLogs: bool = true): bool =
   ## Processes new log entries, emitting those at or above the severity threshold; returns `true` on a Fatal entry.
   for entry in readLog(state.logOffset, state.logFile):
     if emitLogs and entry.severity >= state.severity:
-      state.eventSink(entry.toEvent())
+      state.eventSink(logEvent(entry))
 
     if entry.severity == Fatal:
       return true

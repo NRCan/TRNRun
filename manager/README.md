@@ -1,9 +1,9 @@
 # TRNRun
 `trnrun` is a Python package that drives the TRNRun runner (`trnrun.exe`) to launch, monitor, and
 manage TRNSYS simulations from Python. It runs multiple decks concurrently through a bounded worker
-pool, mirrors each run's status, progress, and log events behind thread-safe objects, and renders a
-live terminal display while simulations run, making it suitable for batch studies, parametric runs,
-and job orchestration.
+pool, mirrors each run's status, progress, config, setting, and log events behind thread-safe objects,
+and renders a live terminal display while simulations run, making it suitable for batch studies,
+parametric runs, and job orchestration.
 
 Each simulation is executed by its own `trnrun.exe` process, which handles machine-wide launch
 serialization, startup detection, runtime monitoring, and log parsing on its own (see the runner
@@ -143,8 +143,8 @@ for running simulations to finish
 ### Simulation
 
 A handle for one runner process, normally obtained from `SimulationManager.add()`. TRNRun owns the
-simulation state; this object only mirrors the latest events received on stdout, plus local process
-bookkeeping (PID, exit code, cancellation).
+simulation state; this object mirrors the latest state events received on stdout, retains a rolling
+log window, and tracks local process bookkeeping (PID, exit code, cancellation).
 
 All members are thread-safe. Each property acquires the internal lock separately, so two
 consecutive reads may straddle an event - use `snapshot()` whenever a consistent multi-field view
@@ -153,10 +153,12 @@ is required.
 | Member                          | Type                    | Description                                                                                 |
 | ------------------------------- | ----------------------- | ------------------------------------------------------------------------------------------- |
 | `id`                            | `int \| None`           | Identifier assigned by the manager.                                                         |
-| `deck_path`                     | `str\| Path             | Deck (`.dck`) file passed to the runner.                                                    |
+| `deck_path`                     | `str \| Path`           | Deck (`.dck`) file passed to the runner.                                                    |
+| `config`                        | `SimulationConfig`      | Python configuration used to invoke the runner.                                             |
 | `status`                        | `StatusEvent \| None`   | Latest `STATUS` event.                                                                      |
 | `progress`                      | `ProgressEvent \| None` | Latest `PROGRESS` event. Requires `watch_tmp=True`.                                         |
-| `config`                        | `ConfigEvent \| None`   | `CONFIG` event with simulation start / stop / step.                                         |
+| `config_event`                  | `ConfigEvent \| None`   | Latest `CONFIG` event with simulation start / stop / step.                                  |
+| `setting_event`                 | `SettingEvent | None`  | Latest `SETTING` event with the configured runner settings.                                 |
 | `logs`                          | `list[LogEvent]`        | Rolling window of `LOG` events (default: last 5 000).                                       |
 | `notices`, `warnings`, `fatals` | `int`                   | Event counters, kept over the whole run — even after older events leave the rolling window. |
 | `exit_code`                     | `int \| None`           | `None` while running; the runner exit code afterwards.                                      |
@@ -166,16 +168,16 @@ is required.
 | `is_running`                    | `bool`                  | Runner process is alive.                                                                    |
 | `is_finished`                   | `bool`                  | An exit code has been recorded.                                                             |
 | `succeeded`                     | `bool`                  | Success criteria under [Exit codes](#exit-codes).                                           |
-| `snapshot()`                    | `SimulationSnapshot`    | Consistent view of all of the above, captured under a single lock.                          |
+| `snapshot()`                    | `SimulationSnapshot`    | Consistent view of the snapshot fields below, captured under a single lock.                 |
 | `cancel()`                      | `None`                  | Request termination of the runner process. Safe to call before or after start.              |
 | `run()`                         | `None`                  | Spawn the runner and consume stdout until it exits. Called by the manager's worker thread   |
 
 ### SimulationSnapshot
 
 Frozen dataclass returned by `Simulation.snapshot()` with the fields `id`, `deck_path`, `status`,
-`progress`, `config_event`, `notices`, `warnings`, `fatals`, `log_count`, `exit_code`, `error`,
-and `cancelled`. Every field is captured in one critical section, so a consumer can never mix
-state from either side of an event.
+`progress`, `config_event`, `setting_event`, `notices`, `warnings`, `fatals`, `log_count`, `exit_code`,
+`error`, and `cancelled`. Every field is captured in one critical section, so a consumer can never
+mix state from either side of an event.
 
 ### SimulationConfig
 
