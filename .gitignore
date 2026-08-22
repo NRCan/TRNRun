@@ -24,6 +24,7 @@ dist
 *.exe
 *.dll
 *.csv
+stress
 # Old stuff to sort
 
 # nimcache/
