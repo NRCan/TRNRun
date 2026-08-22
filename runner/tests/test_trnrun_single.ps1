@@ -5,9 +5,10 @@ $DeckFile = Join-Path $RepoRoot "tests\dck\test_wo_plot_w_tracking.dck"
 $Args = @(
     "--deckFile=$DeckFile"
     "--guiVisibility=auto",
+    "--watchTmp=true",
     "--detectTimeout=0",
-    "--pollMs=10000000"
-    "--extraDelay=1000000"
+    "--pollMs=100",
+    "--extraDelay=0"
 )
 
 
