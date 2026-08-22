@@ -41,8 +41,9 @@ import ./mutex
 import ./wait
 import ./monitor
 import ./settings
+import ./status
 
-export settings
+export settings, status
 
 # ---------------------------------------------------------------------------
 # Types & constants
@@ -117,7 +118,7 @@ proc simulate*(
     deckFile: string,
     eventSink: EventSink,
     settings: RunnerSettings = DefaultRunnerSettings,
-): SimMonitorResult =
+): SimResult =
   ## Launches and monitors a TRNSYS simulation, emitting structured events.
   ##
   ## Validates the deck and executable, acquires the global launch lock,
@@ -139,10 +140,10 @@ proc simulate*(
   ##
   ## Returns
   ## -------
-  ## SimMonitorResult
-  ##     Final outcome: `monitorDone` (completed), `monitorFatal` (crashed
-  ##     or failed), `monitorCancelled` (exited early), `monitorTimeout`
-  ##     (watch timeout reached), or `monitorStalled` (progress stopped).
+  ## SimResult
+  ##     Final outcome: `simDone` (completed), `simFatal` (crashed or failed),
+  ##     `simCancelled` (exited early), `simTimeout` (watch timeout reached),
+  ##     or `simStalled` (progress stopped).
   ##
   ## Raises
   ## ------
@@ -171,8 +172,8 @@ proc simulate*(
     try:
       process = launchTrnexe(deckFile, trnexePath, settings.guiVisibility)
     except TrnexeLaunchError:
-      eventSink(statusEvent(statusError))
-      return monitorFatal
+      eventSink(statusEvent(simFatal.status))
+      return simFatal
     startTime = getTime()
 
     let waitStatus = waitReady(
@@ -189,13 +190,13 @@ proc simulate*(
     of wrDied:
       if process.running:
         process.kill()
-        eventSink(statusEvent(statusError))
-        return monitorFatal
+        eventSink(statusEvent(simFatal.status))
+        return simFatal
     of wrTimeout:
       if process.running and settings.killOnTimeout:
         process.kill()
-        eventSink(statusEvent(statusTimeout))
-        return monitorTimeout
+        eventSink(statusEvent(simTimeout.status))
+        return simTimeout
     else:
       discard
 
@@ -218,27 +219,25 @@ proc simulate*(
   )
 
   case monitorResult
-  of monitorDone:
-    eventSink(statusEvent(statusDone))
+  of simDone:
+    eventSink(statusEvent(monitorResult.status))
     if settings.cleanOnSuccess:
       unlinkFiles(deckFile)
-  of monitorFatal:
-    eventSink(statusEvent(statusError))
-  of monitorCancelled:
-    eventSink(statusEvent(statusCancelled))
-  of monitorStalled:
+  of simFatal, simCancelled:
+    eventSink(statusEvent(monitorResult.status))
+  of simStalled:
     if process.running and settings.killOnStall:
       process.kill()
 
-    eventSink(statusEvent(statusStalled))
+    eventSink(statusEvent(monitorResult.status))
 
     if process.running and not settings.killOnStall:
       discard process.waitForExit()
-  of monitorTimeout:
+  of simTimeout:
     if process.running and settings.killOnTimeout:
       process.kill()
 
-    eventSink(statusEvent(statusTimeout))
+    eventSink(statusEvent(monitorResult.status))
 
     if process.running and not settings.killOnTimeout:
       discard process.waitForExit()

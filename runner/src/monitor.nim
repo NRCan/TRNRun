@@ -22,11 +22,12 @@
 ##
 ## The main entry point is `monitor`. Call it after launching TRNSYS; it
 ## blocks until the process exits (or a fatal log entry, timeout, or stall
-## is encountered) and returns a `SimMonitorResult` indicating the outcome.
+## is encountered) and returns a `SimResult` indicating the outcome.
 
 import std/[os, osproc, strutils, options, times]
 import ./events
 import ./eventsink
+import ./status
 
 # ---------------------------------------------------------------------------
 # Types
@@ -60,13 +61,6 @@ type
     config: SimConfig
     progress: SimProgress
 
-  SimMonitorResult* = enum
-    ## Final outcome of a monitored simulation run.
-    monitorDone # Process exited and simulation reached 100 %.
-    monitorCancelled # Process exited before simulation reached 100 %.
-    monitorFatal # Process crashed, failed to start, or logged a fatal error.
-    monitorTimeout # Process still running but did not finish in time.
-    monitorStalled # Simulation time stopped advancing for longer than `stallTimeoutMs`.
 
   MonitorState = object
     ## Mutable book-keeping shared across polling ticks.
@@ -401,7 +395,7 @@ proc monitor*(
     severity: LogSeverity = Notice,
     watchTimeoutMs: int = 0,
     stallTimeoutMs: int = 0,
-): SimMonitorResult =
+): SimResult =
   ## Polls TRNSYS output files until the process exits, emitting structured events.
   ##
   ## Watches the Type3830 `.tmp` file and the TRNSYS `.log` file of a
@@ -438,11 +432,11 @@ proc monitor*(
   ##
   ## Returns
   ## -------
-  ## SimMonitorResult
-  ##     `monitorDone` on normal completion, `monitorCancelled` if the
-  ##     process exited before reaching 100 %, `monitorFatal` on a fatal
-  ##     log entry, `monitorTimeout` if `watchTimeoutMs` elapsed, or
-  ##     `monitorStalled` if progress stopped for `stallTimeoutMs`.
+  ## SimResult
+  ##     `simDone` on normal completion, `simCancelled` if the process exited
+  ##     before reaching 100 %, `simFatal` on a fatal log entry, `simTimeout`
+  ##     if `watchTimeoutMs` elapsed, or `simStalled` if progress stopped for
+  ##     `stallTimeoutMs`.
   let interval = max(1, pollMs)
   var state = MonitorState(
     tmpFile:   deckFile.changeFileExt("tmp"),
@@ -459,30 +453,30 @@ proc monitor*(
 
   if not watchLog and not watchTmp:
     discard process.waitForExit()
-    if state.pollLog(emitLogs = false): return monitorFatal
-    return monitorDone
+    if state.pollLog(emitLogs = false): return simFatal
+    return simDone
 
   while process.running:
-    if state.tick(): return monitorFatal
+    if state.tick(): return simFatal
 
     if state.isStalled():
       stderr.writeLine("[Monitor] Stall detected - no progress for ",
                         (getTime() - state.lastProgressChange).inMilliseconds, " ms.")
-      return monitorStalled
+      return simStalled
 
     if state.isTimedOut():
       stderr.writeLine("[Monitor] Timeout after ",
                         (getTime() - state.startTime).inMilliseconds,
                         " ms - process still running.")
-      return monitorTimeout
+      return simTimeout
 
     sleep(interval)
 
-  if state.tick(): return monitorFatal
+  if state.tick(): return simFatal
 
   if state.watchTmp and state.lastSnapshot.isSome:
     let snap = state.lastSnapshot.get()
     if snap.progress.percent(snap.config) < 1.0:
-      return monitorCancelled
+      return simCancelled
 
-  return monitorDone
+  return simDone
