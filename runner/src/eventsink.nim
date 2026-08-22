@@ -31,7 +31,7 @@ proc sequencedEventSink*(lineSink: JsonLineSink): EventSink =
   ## the number here, at the emission boundary, lets a consumer distinguish a
   ## dropped line from a pause in the stream.
   var sequence = 0
-  result = proc(event: SimulationEvent) =
+  result = proc(event: SimulationEvent) {.gcsafe.} =
     inc sequence
     lineSink(event.sequencedJsonLine(sequence))
 
@@ -85,7 +85,7 @@ proc stdoutEventSink*(writer: JsonlWriter = nil): EventSink =
   ## Returns a sink that writes each event to standard output as one JSON line,
   ## numbered from 1 in emission order. Each line is flushed immediately.
   result = sequencedEventSink(
-    proc(line: string) =
+    proc(line: string) {.gcsafe.} =
       stdout.writeLine(line)
       stdout.flushFile()
       writer.write(line)

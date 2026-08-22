@@ -8,7 +8,18 @@
 import std/[json, math, options, times]
 
 const EventTimestampFormat* = "yyyy-MM-dd'T'HH:mm:ss"
-let eventTimeFormat = initTimeFormat(EventTimestampFormat)
+
+var
+  eventTimeFormat {.threadvar.}: TimeFormat
+  eventTimeFormatInitialized {.threadvar.}: bool
+
+proc formatEventTimestamp(timestamp: DateTime): string {.gcsafe.} =
+  ## Reuses a parsed timestamp format without sharing GC-managed state between
+  ## threads.
+  if not eventTimeFormatInitialized:
+    eventTimeFormat = initTimeFormat(EventTimestampFormat)
+    eventTimeFormatInitialized = true
+  timestamp.format(eventTimeFormat)
 
 type
   SimStatus* = enum
@@ -107,7 +118,7 @@ proc `%`*(event: SettingEvent): JsonNode =
   ## Serializes the runner settings applied to a simulation.
   result = newJObject()
   result["kind"] = %($eventSetting)
-  result["timestamp"] = %event.timestamp.format(eventTimeFormat)
+  result["timestamp"] = %event.timestamp.formatEventTimestamp()
   result["trnexePath"] = %event.trnexePath
   result["guiVisibility"] = %event.guiVisibility
   result["waitForGui"] = %event.waitForGui
@@ -130,14 +141,14 @@ proc `%`*(event: StatusEvent): JsonNode =
   ## Serializes a lifecycle status event.
   result = newJObject()
   result["kind"] = %($eventStatus)
-  result["timestamp"] = %event.timestamp.format(eventTimeFormat)
+  result["timestamp"] = %event.timestamp.formatEventTimestamp()
   result["status"] = %($event.status)
 
 proc `%`*(event: ConfigEvent): JsonNode =
   ## Serializes fixed simulation parameters.
   result = newJObject()
   result["kind"] = %($eventConfig)
-  result["timestamp"] = %event.timestamp.format(eventTimeFormat)
+  result["timestamp"] = %event.timestamp.formatEventTimestamp()
   result["start"] = %event.start
   result["stop"] = %event.stop
   result["step"] = %event.step
@@ -146,7 +157,7 @@ proc `%`*(event: ProgressEvent): JsonNode =
   ## Serializes simulation progress using the established wire precision.
   result = newJObject()
   result["kind"] = %($eventProgress)
-  result["timestamp"] = %event.timestamp.format(eventTimeFormat)
+  result["timestamp"] = %event.timestamp.formatEventTimestamp()
   result["time"] = %event.time.round(2)
   result["percent"] = %event.percent.round(4)
   result["elapsed"] = %event.elapsedMs.round(2)
@@ -156,7 +167,7 @@ proc `%`*(event: LogEvent): JsonNode =
   ## Serializes a log event, omitting fields that are not present.
   result = newJObject()
   result["kind"] = %($eventLog)
-  result["timestamp"] = %event.timestamp.format(eventTimeFormat)
+  result["timestamp"] = %event.timestamp.formatEventTimestamp()
   result["severity"] = %($event.severity)
   result["time"] = %event.time
   if event.unitId.isSome:
