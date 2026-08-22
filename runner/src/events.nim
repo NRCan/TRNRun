@@ -101,12 +101,6 @@ type
     of eventLog:
       logData*: LogEvent
 
-proc statusEvent*(status: SimStatus, timestamp: DateTime = now()): SimulationEvent =
-  ## Creates a timestamped lifecycle event.
-  SimulationEvent(
-    kind: eventStatus,
-    statusData: StatusEvent(timestamp: timestamp, status: status),
-  )
 
 proc `%`*(event: SettingEvent): JsonNode =
   ## Serializes the runner settings applied to a simulation.

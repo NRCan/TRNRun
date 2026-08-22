@@ -9,7 +9,7 @@ import std/[os, parseopt, strutils]
 import ./events
 import ./eventsink
 import ./simulate
-import ./monitor
+import ./status
 import ./settings
 import ./filedialog
 
@@ -31,14 +31,6 @@ proc parseGuiVisibility(s: string): TrnexeGuiVisibility =
   else:
     raise newException(ValueError, "Invalid guiVisibility: " & s)
 
-proc exitCode*(code: SimMonitorResult): int =
-  ## Maps a `SimMonitorResult` to a conventional process exit code.
-  case code
-  of monitorDone: 0
-  of monitorCancelled: 130
-  of monitorFatal: 1
-  of monitorTimeout: 124
-  of monitorStalled: 125
 
 proc writeHelp() =
   ## Prints CLI usage to stdout.
