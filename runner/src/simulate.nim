@@ -171,7 +171,8 @@ proc simulate*(
 
     try:
       process = launchTrnexe(deckFile, trnexePath, settings.guiVisibility)
-    except TrnexeLaunchError:
+    except TrnexeLaunchError as e:
+      stderr.writeLine("Error: ", e.msg)
       eventSink(statusEvent(simFatal.status))
       return simFatal
     startTime = getTime()
@@ -247,12 +248,12 @@ proc simulate*(
 # ---------------------------------------------------------------------------
 when isMainModule:
   let deckFile = absolutePath(r"examples\dck\example_w_plot_w_tracking.dck")
-  var settings = DefaultRunnerSettings
-  settings.guiVisibility = guiMinimizedAuto
+  var runnerSettings = DefaultRunnerSettings
+  runnerSettings.guiVisibility = guiMinimizedAuto
 
   let simResult = simulate(
     deckFile = deckFile,
     eventSink = stdoutEventSink(),
-    settings = settings,
+    settings = runnerSettings,
   )
-  echo fmt"Simulation finished with result: {simResult}"
+  stderr.writeLine(fmt"Simulation finished with result: {simResult}")

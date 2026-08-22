@@ -148,7 +148,7 @@ proc main(): int =
   if deckFile == "":
     deckFile = openDeckFileDialog()
     if deckFile == "":
-      echo "No file selected."
+      stderr.writeLine("No file selected.")
       return 0
 
   deckFile = validateDeck(deckFile)
