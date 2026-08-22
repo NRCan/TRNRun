@@ -35,15 +35,6 @@ proc sequencedEventSink*(lineSink: JsonLineSink): EventSink =
     inc sequence
     lineSink(event.sequencedJsonLine(sequence))
 
-proc stdoutEventSink*(): EventSink =
-  ## Returns a sink that writes each event to standard output as one JSON line,
-  ## numbered from 1 in emission order. Each line is flushed immediately.
-  result = sequencedEventSink(
-    proc(line: string) =
-      stdout.writeLine(line)
-      stdout.flushFile()
-  )
-
 proc openJsonlWriter*(path: string): JsonlWriter =
   ## Opens `path` for unbuffered output, truncating any existing file.
   ##
@@ -76,7 +67,7 @@ proc write*(writer: JsonlWriter, line: string) =
     return
 
   try:
-    writer.file.write(line & "\n")
+    writer.file.writeLine(line)
   except IOError:
     let message = getCurrentExceptionMsg()
     try:
@@ -89,3 +80,13 @@ proc write*(writer: JsonlWriter, line: string) =
       )
     except IOError:
       discard
+
+proc stdoutEventSink*(writer: JsonlWriter = nil): EventSink =
+  ## Returns a sink that writes each event to standard output as one JSON line,
+  ## numbered from 1 in emission order. Each line is flushed immediately.
+  result = sequencedEventSink(
+    proc(line: string) =
+      stdout.writeLine(line)
+      stdout.flushFile()
+      writer.write(line)
+  )

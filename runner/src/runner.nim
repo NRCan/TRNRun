@@ -144,6 +144,7 @@ proc main(): int =
         stderr.writeLine("Unexpected argument: ", p.key)
         return 2
       deckFile = p.key
+
   if deckFile == "":
     deckFile = openDeckFileDialog()
     if deckFile == "":
@@ -153,21 +154,27 @@ proc main(): int =
   deckFile = validateDeck(deckFile)
   settings.trnexePath = validateTrnexe(settings.trnexePath)
 
-  # An unopenable trail is a startup error, not a warning: nothing is running
-  # yet, and a lone stderr line is dropped by the manager's event parser.
   var jsonlOutput: JsonlWriter = nil
+
   if settings.writeEvents:
-    jsonlOutput = openJsonlWriter(deckFile.changeFileExt("jsonl"))
+    try:
+      jsonlOutput = openJsonlWriter(deckFile.changeFileExt("jsonl"))
+    except IOError:
+      stderr.writeLine(
+        "[JsonlWriter] Could not open event file (logging disabled): ",
+        getCurrentExceptionMsg()
+      )
 
   defer:
-    jsonlOutput.close()
+    try:
+      jsonlOutput.close()
+    except IOError:
+      stderr.writeLine(
+        "[JsonlWriter] Could not close event file: ",
+        getCurrentExceptionMsg()
+      )
 
-  let eventSink = sequencedEventSink(
-    proc(line: string) =
-      jsonlOutput.write(line)
-      stdout.writeLine(line)
-      stdout.flushFile()
-  )
+  let eventSink = stdoutEventSink(jsonlOutput)
 
   let simResult = simulate(
     deckFile = deckFile,
