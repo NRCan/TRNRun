@@ -15,6 +15,7 @@
 ## state, since TrnEXE has no command-line switch for it.
 
 import std/[os, osproc, times, monotimes, strutils, sets, winlean]
+import ./processwait
 
 # ---------------------------------------------------------------------------
 # Types
@@ -117,9 +118,11 @@ proc poll(
       if remaining <= 0:
         return false
 
-      discard process.waitForExit(min(delay.int, remaining))
+      if process.waitForExitNonDestructive(min(delay.int, remaining)):
+        return condition() # Last-chance read of files flushed just before exit.
     else:
-      discard process.waitForExit(delay.int)
+      if process.waitForExitNonDestructive(delay.int):
+        return condition()
 
     delay = min(delay * backoff, maxIntervalMs.float)
 

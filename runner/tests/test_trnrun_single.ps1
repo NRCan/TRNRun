@@ -6,7 +6,8 @@ $Args = @(
     "--deckFile=$DeckFile"
     "--guiVisibility=auto",
     "--detectTimeout=0",
-    "--extraDelay=10000000000000"
+    "--pollMs=10000000"
+    "--extraDelay=1000000"
 )
 
 

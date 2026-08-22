@@ -27,6 +27,7 @@
 import std/[os, osproc, strutils, options, times]
 import ./events
 import ./eventsink
+import ./processwait
 import ./status
 
 # ---------------------------------------------------------------------------
@@ -470,7 +471,8 @@ proc monitor*(
                         " ms - process still running.")
       return simTimeout
 
-    discard process.waitForExit(interval)
+    if process.waitForExitNonDestructive(interval):
+      break
 
   if state.tick(): return simFatal
 
