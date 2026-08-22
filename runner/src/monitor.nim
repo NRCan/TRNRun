@@ -470,7 +470,7 @@ proc monitor*(
                         " ms - process still running.")
       return simTimeout
 
-    sleep(interval)
+    discard process.waitForExit(interval)
 
   if state.tick(): return simFatal
 

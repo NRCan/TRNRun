@@ -76,6 +76,7 @@ const SW_SHOWMINNOACTIVE = 7'i32
 type PollCondition = proc(): bool {.closure, gcsafe.}
 
 proc poll(
+    process: Process,
     condition: PollCondition,
     timeoutMs: int = 0,
     initialIntervalMs: int = 10,
@@ -116,9 +117,9 @@ proc poll(
       if remaining <= 0:
         return false
 
-      sleep(min(delay.int, remaining))
+      discard process.waitForExit(min(delay.int, remaining))
     else:
-      sleep(delay.int)
+      discard process.waitForExit(delay.int)
 
     delay = min(delay * backoff, maxIntervalMs.float)
 
@@ -145,7 +146,7 @@ proc waitLst(process: Process, deckFile: string, timeoutMs: int): bool =
       return true # Stop polling immediately
     return false
 
-  discard poll(cond, timeoutMs)
+  discard poll(process, cond, timeoutMs)
   return found
 
 proc waitTmp(process: Process, deckFile: string, timeoutMs: int): bool =
@@ -161,7 +162,7 @@ proc waitTmp(process: Process, deckFile: string, timeoutMs: int): bool =
       return true # Stop polling immediately
     return false
 
-  discard poll(cond, timeoutMs)
+  discard poll(process, cond, timeoutMs)
   return found
 
 # ---------------------------------------------------------------------------
@@ -205,7 +206,7 @@ proc waitGui(
     discard enumWindows(enumCallback, cast[LPARAM](addr data))
     return data.foundHwnd != 0
 
-  discard poll(cond, timeoutMs)
+  discard poll(process, cond, timeoutMs)
   return data.foundHwnd != 0
 
 # ---------------------------------------------------------------------------
@@ -256,7 +257,7 @@ proc minimizeGui*(
         done = true
     return done
 
-  discard poll(cond, timeoutMs)
+  discard poll(process, cond, timeoutMs)
   return done
 
 # ---------------------------------------------------------------------------
@@ -323,7 +324,11 @@ proc waitReady*(
       return if process.running: wrTimeout else: wrDied
 
   if extraDelayMs > 0:
-    let diedDuringDelay = poll(condition = proc(): bool = not process.running, timeoutMs = extraDelayMs)
+    let diedDuringDelay = poll(
+      process = process,
+      condition = proc(): bool = not process.running,
+      timeoutMs = extraDelayMs,
+    )
     if diedDuringDelay or not process.running:
       return wrDied
 
