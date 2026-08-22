@@ -67,6 +67,7 @@ Every event is emitted as a self-contained JSON object on a single line
 ### Events
 
 ```json
+{"kind":"SETTING","timestamp":"ISO-8601","trnexePath":"PATH","guiVisibility":"keepOpen|autoClose|minimized|minimizedAuto|hidden","waitForGui":"BOOL","waitForLst":"BOOL","waitForTmp":"BOOL","detectTimeoutMs":"INT","extraDelayMs":"INT","watchLog":"BOOL","watchTmp":"BOOL","watchTimeoutMs":"INT","stallTimeoutMs":"INT","pollMs":"INT","cleanOnSuccess":"BOOL","killOnTimeout":"BOOL","killOnStall":"BOOL","severity":"Notice|Warning|Fatal","writeEvents":"BOOL","seq":"INT"}
 {"kind":"STATUS","timestamp":"ISO-8601","status":"PENDING|LAUNCHING|RUNNING|DONE|CANCELLED|ERROR|TIMEOUT|STALLED","seq":"INT"}
 {"kind":"CONFIG","timestamp":"ISO-8601","start":"hour","stop":"hour","step":"hour","seq":"INT"}
 {"kind":"PROGRESS","timestamp":"ISO-8601","time":"hour","percent":"0-1","elapsed":"milliseconds","eta":"milliseconds","seq":"INT"}
@@ -78,6 +79,7 @@ Every event is emitted as a self-contained JSON object on a single line
   and `step` are simulation hours.
 - `seq` counts emitted events, starting at `1` for the first line of the run and incrementing by
   one per event, so a consumer can order lines and detect a dropped one.
+- `SETTING` is always the first event and records the configured runner settings for the run.
 - `CONFIG` is emitted once, on the first successful `*.tmp` read.
 
 ### Simulation states
@@ -101,16 +103,17 @@ Reported as `STATUS` events:
 ### Example
 
 ```json
-{"kind":"STATUS","timestamp":"2026-06-19T19:37:13","status":"PENDING","seq":1}
-{"kind":"STATUS","timestamp":"2026-06-19T19:37:14","status":"LAUNCHING","seq":2}
-{"kind":"STATUS","timestamp":"2026-06-19T19:37:15","status":"RUNNING","seq":3}
-{"kind":"CONFIG","timestamp":"2026-06-19T19:37:15","start":0.0,"stop":10000.0,"step":0.1,"seq":4}
-{"kind":"LOG","timestamp":"2026-06-19T19:37:15","severity":"Notice","time":0.0,"message":"\"Type169.dll\" was found but did not contain any components from the input file.","seq":5}
-{"kind":"PROGRESS","timestamp":"2026-06-19T19:37:15","time":221.6,"percent":0.0222,"elapsed":287.0,"eta":12664.26,"seq":6}
+{"kind":"SETTING","timestamp":"2026-06-19T19:37:13","trnexePath":"C:\\TRNSYS18\\Exe\\TrnEXE64.exe","guiVisibility":"hidden","waitForGui":true,"waitForLst":true,"waitForTmp":false,"detectTimeoutMs":0,"extraDelayMs":0,"watchLog":true,"watchTmp":true,"watchTimeoutMs":0,"stallTimeoutMs":0,"pollMs":100,"cleanOnSuccess":false,"killOnTimeout":false,"killOnStall":false,"severity":"Notice","writeEvents":false,"seq":1}
+{"kind":"STATUS","timestamp":"2026-06-19T19:37:13","status":"PENDING","seq":2}
+{"kind":"STATUS","timestamp":"2026-06-19T19:37:14","status":"LAUNCHING","seq":3}
+{"kind":"STATUS","timestamp":"2026-06-19T19:37:15","status":"RUNNING","seq":4}
+{"kind":"CONFIG","timestamp":"2026-06-19T19:37:15","start":0.0,"stop":10000.0,"step":0.1,"seq":5}
+{"kind":"LOG","timestamp":"2026-06-19T19:37:15","severity":"Notice","time":0.0,"message":"\"Type169.dll\" was found but did not contain any components from the input file.","seq":6}
+{"kind":"PROGRESS","timestamp":"2026-06-19T19:37:15","time":221.6,"percent":0.0222,"elapsed":287.0,"eta":12664.26,"seq":7}
 [...]
-{"kind":"PROGRESS","timestamp":"2026-06-19T19:37:23","time":10000.0,"percent":1.0,"elapsed":8663.0,"eta":0.0,"seq":184}
-{"kind":"LOG","timestamp":"2026-06-19T19:37:23","severity":"Warning","time":10000.0,"unitID":5,"typeID":139,"message":"Furnace fan mass balance failed during 100000 timesteps. Please check the connections.","seq":185}
-{"kind":"STATUS","timestamp":"2026-06-19T19:37:23","status":"DONE","seq":186}
+{"kind":"PROGRESS","timestamp":"2026-06-19T19:37:23","time":10000.0,"percent":1.0,"elapsed":8663.0,"eta":0.0,"seq":185}
+{"kind":"LOG","timestamp":"2026-06-19T19:37:23","severity":"Warning","time":10000.0,"unitID":5,"typeID":139,"message":"Furnace fan mass balance failed during 100000 timesteps. Please check the connections.","seq":186}
+{"kind":"STATUS","timestamp":"2026-06-19T19:37:23","status":"DONE","seq":187}
 ```
 
 ## Exit codes

@@ -17,7 +17,7 @@
 ## - Continuous runtime monitoring of:
 ##     * .log streaming events
 ##     * .tmp progress/config updates
-## - Structured lifecycle, progress, and log events through an `EventSink`
+## - Structured setting, lifecycle, progress, and log events through an `EventSink`
 ## - Graceful handling of:
 ##     * Normal completion
 ##     * Crashes / fatal errors
@@ -40,6 +40,9 @@ import ./job
 import ./mutex
 import ./wait
 import ./monitor
+import ./settings
+
+export settings
 
 # ---------------------------------------------------------------------------
 # Types & constants
@@ -48,76 +51,13 @@ type
   TrnexeLaunchError* = object of CatchableError
     ## Raised when TrnEXE fails to start.
 
-  TrnexeGuiVisibility* = enum
-    ## TrnEXE only supports three real CLI states (default / `/n` / `/h`).
-    ## The minimized modes are synthesized: launch with a visible flag, then
-    ## drive the windows into the minimized state via Win32.
-    guiKeepOpen # Visible; window stays open after the run.
-    guiAutoClose # Visible; window closes when the run finishes.
-    guiMinimized # Minimized; window stays open after the run.
-    guiMinimizedAuto # Minimized; window closes when the run finishes.
-    guiHidden # No window at all.
-
-  TrnRunConfig* = object
-    ## Options controlling TRNSYS launch detection and runtime monitoring.
-    trnexePath*: string
-    guiVisibility*: TrnexeGuiVisibility
-    waitForGui*: bool
-    waitForLst*: bool
-    waitForTmp*: bool
-    detectTimeoutMs*: int
-    extraDelayMs*: int
-    watchLog*: bool
-    watchTmp*: bool
-    watchTimeoutMs*: int
-    stallTimeoutMs*: int
-    pollMs*: int
-    cleanOnSuccess*: bool
-    killOnTimeout*: bool
-    killOnStall*: bool
-    severity*: LogSeverity
-
-
 const
-  DefaultTrnexePath* = r"C:\TRNSYS18\Exe\TrnEXE64.exe" # Default TRNSYS 18 executable path.
-  DefaultGuiVisibility* = guiHidden # GUI mode used when none is specified.
-  DefaultTrnRunConfig* = TrnRunConfig(
-    trnexePath: DefaultTrnexePath,
-    guiVisibility: DefaultGuiVisibility,
-    waitForGui: true,
-    waitForLst: true,
-    waitForTmp: false,
-    detectTimeoutMs: 0,
-    extraDelayMs: 0,
-    watchLog: true,
-    watchTmp: true,
-    watchTimeoutMs: 0,
-    stallTimeoutMs: 0,
-    pollMs: 100,
-    cleanOnSuccess: false,
-    killOnTimeout: false,
-    killOnStall: false,
-    severity: Notice,
-  )
-    ## Default options for TRNSYS simulation runs.
   Extensions = [
     ".tmp", # Temporary progress file
     ".log", # Simulation log containing notice, warnings, and Fatal errors
     ".lst", # Simulation list file
     ".PTI", # Online Plotter file
   ]
-
-func flag*(v: TrnexeGuiVisibility): string =
-  ## The TrnEXE command-line switch for a visibility mode ("" = no switch).
-  case v
-  of guiKeepOpen, guiMinimized: ""
-  of guiAutoClose, guiMinimizedAuto: "/n"
-  of guiHidden: "/h"
-
-func wantsMinimize*(v: TrnexeGuiVisibility): bool =
-  ## True if the mode requires post-launch Win32 minimization.
-  v in {guiMinimized, guiMinimizedAuto}
-
 
 # ---------------------------------------------------------------------------
 # Validation & file helpers
@@ -176,16 +116,16 @@ proc unlinkFiles*(deckFile: string) =
 proc simulate*(
     deckFile: string,
     eventSink: EventSink,
-    config: TrnRunConfig = DefaultTrnRunConfig,
+    settings: RunnerSettings = DefaultRunnerSettings,
 ): SimMonitorResult =
   ## Launches and monitors a TRNSYS simulation, emitting structured events.
   ##
   ## Validates the deck and executable, acquires the global launch lock,
   ## starts TrnEXE, waits for the configured readiness signals (GUI window,
   ## `.lst` header, `.tmp` file), then monitors the run until completion,
-  ## failure, cancellation, timeout, or stall. A `STATUS` event is emitted
-  ## on every state transition; `CONFIG`/`PROGRESS`/`LOG` events are emitted
-  ## while monitoring.
+  ## failure, cancellation, timeout, or stall. A `SETTING` event is emitted
+  ## first, followed by `STATUS` events on every state transition;
+  ## `CONFIG`/`PROGRESS`/`LOG` events are emitted while monitoring.
   ##
   ## Parameters
   ## ----------
@@ -193,9 +133,9 @@ proc simulate*(
   ##     Path to a `.dck` or `.trd` simulation deck.
   ## eventSink : EventSink
   ##     Destination for all structured events produced by the simulation.
-  ## config : TrnRunConfig, optional
-  ##     Launch detection, monitoring, cleanup, and logging options. Uses
-  ##     `DefaultTrnRunConfig` when omitted.
+  ## settings : RunnerSettings, optional
+  ##     Launch detection, monitoring, cleanup, and logging settings. Uses
+  ##     `DefaultRunnerSettings` when omitted.
   ##
   ## Returns
   ## -------
@@ -211,13 +151,14 @@ proc simulate*(
   ## ValueError
   ##     If `deckFile` is not a `.dck` or `.trd` file.
   let deckFile = validateDeck(deckFile)
-  let trnexePath = validateTrnexe(config.trnexePath)
+  let trnexePath = validateTrnexe(settings.trnexePath)
 
   try:
     initJobGuard()
   except OSError as e:
     stderr.writeLine("Warning: orphan guard unavailable, TrnEXE64.exe may outlive trnrun: ", e.msg)
 
+  eventSink(settingEvent(settings, trnexePath))
   eventSink(statusEvent(statusPending))
 
   var process: Process = default(Process)
@@ -228,7 +169,7 @@ proc simulate*(
     eventSink(statusEvent(statusLaunching))
 
     try:
-      process = launchTrnexe(deckFile, trnexePath, config.guiVisibility)
+      process = launchTrnexe(deckFile, trnexePath, settings.guiVisibility)
     except TrnexeLaunchError:
       eventSink(statusEvent(statusError))
       return monitorFatal
@@ -237,11 +178,11 @@ proc simulate*(
     let waitStatus = waitReady(
       process = process,
       deckFile = deckFile,
-      waitForGui = config.waitForGui,
-      waitForLst = config.waitForLst,
-      waitForTmp = config.waitForTmp,
-      timeoutMs = config.detectTimeoutMs,
-      extraDelayMs = config.extraDelayMs,
+      waitForGui = settings.waitForGui,
+      waitForLst = settings.waitForLst,
+      waitForTmp = settings.waitForTmp,
+      timeoutMs = settings.detectTimeoutMs,
+      extraDelayMs = settings.extraDelayMs,
     )
 
     case waitStatus
@@ -251,14 +192,14 @@ proc simulate*(
         eventSink(statusEvent(statusError))
         return monitorFatal
     of wrTimeout:
-      if process.running and config.killOnTimeout:
+      if process.running and settings.killOnTimeout:
         process.kill()
         eventSink(statusEvent(statusTimeout))
         return monitorTimeout
     else:
       discard
 
-    if config.guiVisibility.wantsMinimize() and process.running:
+    if settings.guiVisibility.wantsMinimize() and process.running:
       discard minimizeGui(process)
 
     eventSink(statusEvent(statusRunning))
@@ -268,38 +209,38 @@ proc simulate*(
     deckFile = deckFile,
     startTime = startTime,
     eventSink = eventSink,
-    watchLog = config.watchLog,
-    watchTmp = config.watchTmp,
-    pollMs = config.pollMs,
-    severity = config.severity,
-    watchTimeoutMs = config.watchTimeoutMs,
-    stallTimeoutMs = config.stallTimeoutMs,
+    watchLog = settings.watchLog,
+    watchTmp = settings.watchTmp,
+    pollMs = settings.pollMs,
+    severity = settings.severity,
+    watchTimeoutMs = settings.watchTimeoutMs,
+    stallTimeoutMs = settings.stallTimeoutMs,
   )
 
   case monitorResult
   of monitorDone:
     eventSink(statusEvent(statusDone))
-    if config.cleanOnSuccess:
+    if settings.cleanOnSuccess:
       unlinkFiles(deckFile)
   of monitorFatal:
     eventSink(statusEvent(statusError))
   of monitorCancelled:
     eventSink(statusEvent(statusCancelled))
   of monitorStalled:
-    if process.running and config.killOnStall:
+    if process.running and settings.killOnStall:
       process.kill()
 
     eventSink(statusEvent(statusStalled))
 
-    if process.running and not config.killOnStall:
+    if process.running and not settings.killOnStall:
       discard process.waitForExit()
   of monitorTimeout:
-    if process.running and config.killOnTimeout:
+    if process.running and settings.killOnTimeout:
       process.kill()
 
     eventSink(statusEvent(statusTimeout))
 
-    if process.running and not config.killOnTimeout:
+    if process.running and not settings.killOnTimeout:
       discard process.waitForExit()
 
   return monitorResult
@@ -307,12 +248,12 @@ proc simulate*(
 # ---------------------------------------------------------------------------
 when isMainModule:
   let deckFile = absolutePath(r"examples\dck\example_w_plot_w_tracking.dck")
-  var config = DefaultTrnRunConfig
-  config.guiVisibility = guiMinimizedAuto
+  var settings = DefaultRunnerSettings
+  settings.guiVisibility = guiMinimizedAuto
 
   let simResult = simulate(
     deckFile = deckFile,
     eventSink = stdoutEventSink(),
-    config = config,
+    settings = settings,
   )
   echo fmt"Simulation finished with result: {simResult}"

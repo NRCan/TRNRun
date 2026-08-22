@@ -27,6 +27,27 @@ type
     Warning = "Warning"
     Fatal = "Fatal"
 
+  SettingEvent* = object
+    ## Runner settings applied to a simulation.
+    timestamp*: DateTime
+    trnexePath*: string
+    guiVisibility*: string
+    waitForGui*: bool
+    waitForLst*: bool
+    waitForTmp*: bool
+    detectTimeoutMs*: int
+    extraDelayMs*: int
+    watchLog*: bool
+    watchTmp*: bool
+    watchTimeoutMs*: int
+    stallTimeoutMs*: int
+    pollMs*: int
+    cleanOnSuccess*: bool
+    killOnTimeout*: bool
+    killOnStall*: bool
+    severity*: LogSeverity
+    writeEvents*: bool
+
   StatusEvent* = object
     ## A simulation lifecycle transition.
     timestamp*: DateTime
@@ -60,6 +81,7 @@ type
 
   SimulationEventKind* = enum
     ## Discriminant for a structured simulation event. Values are JSON `kind` tags.
+    eventSetting = "SETTING"
     eventStatus = "STATUS"
     eventConfig = "CONFIG"
     eventProgress = "PROGRESS"
@@ -68,6 +90,8 @@ type
   SimulationEvent* = object
     ## A closed union of events produced during one simulation.
     case kind*: SimulationEventKind
+    of eventSetting:
+      settingData*: SettingEvent
     of eventStatus:
       statusData*: StatusEvent
     of eventConfig:
@@ -77,69 +101,35 @@ type
     of eventLog:
       logData*: LogEvent
 
-proc statusEvent*(
-    status: SimStatus, timestamp: DateTime = now()
-): SimulationEvent =
-  ## Creates a lifecycle status event.
-  result = SimulationEvent(
+proc statusEvent*(status: SimStatus, timestamp: DateTime = now()): SimulationEvent =
+  ## Creates a timestamped lifecycle event.
+  SimulationEvent(
     kind: eventStatus,
     statusData: StatusEvent(timestamp: timestamp, status: status),
   )
 
-proc configEvent*(
-    start, stop, step: float, timestamp: DateTime = now()
-): SimulationEvent =
-  ## Creates an event describing fixed simulation parameters.
-  result = SimulationEvent(
-    kind: eventConfig,
-    configData: ConfigEvent(
-      timestamp: timestamp,
-      start: start,
-      stop: stop,
-      step: step,
-    ),
-  )
-
-proc progressEvent*(
-    time, percent, elapsedMs, etaMs: float,
-    timestamp: DateTime = now(),
-): SimulationEvent =
-  ## Creates a simulation progress event.
-  result = SimulationEvent(
-    kind: eventProgress,
-    progressData: ProgressEvent(
-      timestamp: timestamp,
-      time: time,
-      percent: percent,
-      elapsedMs: elapsedMs,
-      etaMs: etaMs,
-    ),
-  )
-
-proc logEvent*(
-    severity: LogSeverity,
-    time: float,
-    unitId: Option[int] = none(int),
-    typeId: Option[int] = none(int),
-    messageCode: Option[int] = none(int),
-    message: Option[string] = none(string),
-    information: Option[string] = none(string),
-    timestamp: DateTime = now(),
-): SimulationEvent =
-  ## Creates a structured TRNSYS log event.
-  result = SimulationEvent(
-    kind: eventLog,
-    logData: LogEvent(
-      timestamp: timestamp,
-      severity: severity,
-      time: time,
-      unitId: unitId,
-      typeId: typeId,
-      messageCode: messageCode,
-      message: message,
-      information: information,
-    ),
-  )
+proc `%`*(event: SettingEvent): JsonNode =
+  ## Serializes the runner settings applied to a simulation.
+  result = newJObject()
+  result["kind"] = %($eventSetting)
+  result["timestamp"] = %event.timestamp.format(EventTimestampFormat)
+  result["trnexePath"] = %event.trnexePath
+  result["guiVisibility"] = %event.guiVisibility
+  result["waitForGui"] = %event.waitForGui
+  result["waitForLst"] = %event.waitForLst
+  result["waitForTmp"] = %event.waitForTmp
+  result["detectTimeoutMs"] = %event.detectTimeoutMs
+  result["extraDelayMs"] = %event.extraDelayMs
+  result["watchLog"] = %event.watchLog
+  result["watchTmp"] = %event.watchTmp
+  result["watchTimeoutMs"] = %event.watchTimeoutMs
+  result["stallTimeoutMs"] = %event.stallTimeoutMs
+  result["pollMs"] = %event.pollMs
+  result["cleanOnSuccess"] = %event.cleanOnSuccess
+  result["killOnTimeout"] = %event.killOnTimeout
+  result["killOnStall"] = %event.killOnStall
+  result["severity"] = %($event.severity)
+  result["writeEvents"] = %event.writeEvents
 
 proc `%`*(event: StatusEvent): JsonNode =
   ## Serializes a lifecycle status event.
@@ -188,6 +178,8 @@ proc `%`*(event: LogEvent): JsonNode =
 proc `%`*(event: SimulationEvent): JsonNode =
   ## Dispatches a union event to its payload-specific serializer.
   case event.kind
+  of eventSetting:
+    %event.settingData
   of eventStatus:
     %event.statusData
   of eventConfig:

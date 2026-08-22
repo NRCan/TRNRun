@@ -1,8 +1,8 @@
 """Python-side handle for a single TRNRun process.
 
 Provides ``Simulation``, which spawns one TRNRun execution and mirrors its
-stdout event stream (status, progress, config, and log events) behind a
-thread-safe snapshot.
+stdout event stream (status, progress, config, setting, and log events) behind
+a thread-safe snapshot.
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ from trnrun.events import (
     ConfigEvent,
     LogEvent,
     ProgressEvent,
+    SettingEvent,
     StatusEvent,
     TrnRunEvent,
     stream_events,
@@ -57,7 +58,9 @@ class SimulationSnapshot:
     progress : ProgressEvent | None
         Latest progress event, or `None` if none has been received.
     config_event : ConfigEvent | None
-        Latest config event, or `None` if none has been received.
+        Latest simulation config event, or `None` if none has been received.
+    setting_event : SettingEvent | None
+        Latest runner setting event, or `None` if none has been received.
     notices : int
         Number of notice-severity log events observed.
     warnings : int
@@ -81,6 +84,7 @@ class SimulationSnapshot:
     status: StatusEvent | None
     progress: ProgressEvent | None
     config_event: ConfigEvent | None
+    setting_event: SettingEvent | None
     notices: int
     warnings: int
     fatals: int
@@ -96,8 +100,9 @@ class SimulationSnapshot:
 class Simulation:
     """Python representation of one TRNRun execution.
 
-    TRNRun owns simulation state. This class only mirrors the latest
-    events received on stdout, plus local process bookkeeping (PID,
+    TRNRun owns simulation state. This class only mirrors the latest status,
+    progress, simulation config, and runner setting events received on stdout;
+    retains a rolling log window; and tracks local process bookkeeping (PID,
     exit code, cancellation).
 
     Parameters
@@ -133,6 +138,7 @@ class Simulation:
         self._status: StatusEvent | None = None
         self._progress: ProgressEvent | None = None
         self._config_event: ConfigEvent | None = None
+        self._setting_event: SettingEvent | None = None
 
         self._logs: deque[LogEvent] = deque(maxlen=max_log_events)
         self._severity_counts: Counter[str] = Counter()
@@ -210,6 +216,8 @@ class Simulation:
                     self._status = event
                 case ConfigEvent():
                     self._config_event = event
+                case SettingEvent():
+                    self._setting_event = event
                 case ProgressEvent():
                     self._progress = event
                 case LogEvent():
@@ -228,6 +236,7 @@ class Simulation:
                 status=self._status,
                 progress=self._progress,
                 config_event=self._config_event,
+                setting_event=self._setting_event,
                 notices=self._count_severity("notice"),
                 warnings=self._count_severity("warn"),
                 fatals=self._count_severity("fatal"),
@@ -251,9 +260,15 @@ class Simulation:
 
     @property
     def config_event(self) -> ConfigEvent | None:
-        """Latest config event."""
+        """Latest simulation config event."""
         with self._lock:
             return self._config_event
+
+    @property
+    def setting_event(self) -> SettingEvent | None:
+        """Latest runner setting event."""
+        with self._lock:
+            return self._setting_event
 
     @property
     def logs(self) -> list[LogEvent]:

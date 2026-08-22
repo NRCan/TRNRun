@@ -87,6 +87,34 @@ class ConfigEvent:
 
 
 @dataclass(frozen=True)
+class SettingEvent:
+    """A SETTING event reporting the configured runner settings.
+
+    Wire-protocol field names are converted from camelCase to snake_case.
+    Protocol metadata such as ``kind`` and ``seq`` is not retained.
+    """
+
+    timestamp: str
+    trnexe_path: str
+    gui_visibility: str
+    wait_for_gui: bool
+    wait_for_lst: bool
+    wait_for_tmp: bool
+    detect_timeout_ms: int
+    extra_delay_ms: int
+    watch_log: bool
+    watch_tmp: bool
+    watch_timeout_ms: int
+    stall_timeout_ms: int
+    poll_ms: int
+    clean_on_success: bool
+    kill_on_timeout: bool
+    kill_on_stall: bool
+    severity: str
+    write_events: bool
+
+
+@dataclass(frozen=True)
 class LogEvent:
     """A LOG event carrying a severity-tagged message.
 
@@ -123,7 +151,7 @@ class LogEvent:
     information: str | None = None
 
 
-type TrnRunEvent = StatusEvent | ProgressEvent | ConfigEvent | LogEvent
+type TrnRunEvent = StatusEvent | ProgressEvent | ConfigEvent | SettingEvent | LogEvent
 
 
 # -----------------------------------------------------------------
@@ -143,6 +171,16 @@ def _require_str(data: dict[str, object], key: str) -> str:
 
     if not isinstance(value, str):
         raise EventParseError(f"field '{key}' must be a string")
+
+    return value
+
+
+def _require_bool(data: dict[str, object], key: str) -> bool:
+    """Return a required boolean field."""
+    value = _required(data, key)
+
+    if not isinstance(value, bool):
+        raise EventParseError(f"field '{key}' must be a boolean")
 
     return value
 
@@ -218,6 +256,30 @@ def _parse_config(data: dict[str, object]) -> ConfigEvent:
     )
 
 
+def _parse_setting(data: dict[str, object]) -> SettingEvent:
+    """Parse a SETTING event."""
+    return SettingEvent(
+        timestamp=_require_str(data, "timestamp"),
+        trnexe_path=_require_str(data, "trnexePath"),
+        gui_visibility=_require_str(data, "guiVisibility"),
+        wait_for_gui=_require_bool(data, "waitForGui"),
+        wait_for_lst=_require_bool(data, "waitForLst"),
+        wait_for_tmp=_require_bool(data, "waitForTmp"),
+        detect_timeout_ms=_require_int(data, "detectTimeoutMs"),
+        extra_delay_ms=_require_int(data, "extraDelayMs"),
+        watch_log=_require_bool(data, "watchLog"),
+        watch_tmp=_require_bool(data, "watchTmp"),
+        watch_timeout_ms=_require_int(data, "watchTimeoutMs"),
+        stall_timeout_ms=_require_int(data, "stallTimeoutMs"),
+        poll_ms=_require_int(data, "pollMs"),
+        clean_on_success=_require_bool(data, "cleanOnSuccess"),
+        kill_on_timeout=_require_bool(data, "killOnTimeout"),
+        kill_on_stall=_require_bool(data, "killOnStall"),
+        severity=_require_str(data, "severity"),
+        write_events=_require_bool(data, "writeEvents"),
+    )
+
+
 def _parse_log(data: dict[str, object]) -> LogEvent:
     """Parse a LOG event."""
     return LogEvent(
@@ -237,6 +299,7 @@ _PARSERS: Final[dict[str, Callable[[dict[str, object]], TrnRunEvent]]] = {
     "STATUS": _parse_status,
     "PROGRESS": _parse_progress,
     "CONFIG": _parse_config,
+    "SETTING": _parse_setting,
     "LOG": _parse_log,
 }
 
