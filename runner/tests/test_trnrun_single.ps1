@@ -1,29 +1,31 @@
-$RepoRoot = Join-Path $PSScriptRoot ".."
-$ExePath = Join-Path $RepoRoot "build\trnrun.exe"
-$DeckFile = Join-Path $RepoRoot "tests\dck\test_wo_plot_w_tracking.dck"
+$RunnerRoot = Join-Path $PSScriptRoot '..'
+$ExecutablePath = Join-Path $RunnerRoot 'build\trnrun.exe'
+$DeckFile = Join-Path `
+    $RunnerRoot `
+    'tests\dck\test_wo_plot_w_tracking.dck'
 
-$Args = @(
+$CliArguments = @(
     "--deckFile=$DeckFile"
-    "--guiVisibility=auto",
-    "--watchTmp=true",
-    "--detectTimeout=0",
-    "--pollMs=100",
-    "--extraDelay=0"
+    '--guiVisibility=auto'
+    '--watchTmp=true'
+    '--detectTimeout=0'
+    '--pollMs=100'
+    '--extraDelay=0'
 )
 
-
-
-$ExitCodeMeaning = @{
-    0   = "Done"
-    1   = "Fatal"
-    2   = "User Error"
-    124 = "Timeout"
-    125 = "Stalled"
-    130 = "Cancelled"
+$ExitCodeMeanings = @{
+    0 = 'Done'
+    1 = 'Fatal'
+    2 = 'User Error'
+    124 = 'Timeout'
+    125 = 'Stalled'
+    130 = 'Cancelled'
 }
 
-if (-not (Test-Path $ExePath)) {
-    Write-Host "ERROR: Executable not found at $ExePath" -ForegroundColor Red
+if (-not (Test-Path $ExecutablePath)) {
+    Write-Host `
+        "ERROR: Executable not found at $ExecutablePath" `
+        -ForegroundColor Red
     exit 1
 }
 if (-not (Test-Path $DeckFile)) {
@@ -31,17 +33,25 @@ if (-not (Test-Path $DeckFile)) {
     exit 1
 }
 
-Write-Host "Running:" -ForegroundColor Cyan
-Write-Host "  $ExePath $($Args -join ' ')" -ForegroundColor DarkGray
-Write-Host ""
+Write-Host 'Running:' -ForegroundColor Cyan
+Write-Host "  $ExecutablePath $($CliArguments -join ' ')" `
+    -ForegroundColor DarkGray
+Write-Host ''
 
-$start = Get-Date
-& $ExePath @Args          # streams stdout/stderr straight to console, no buffering
-$exitCode = $LASTEXITCODE
-$duration = (Get-Date) - $start
+$StartedAt = Get-Date
+# Run synchronously and stream native output to the console.
+& $ExecutablePath @CliArguments
+$ExitCode = $LASTEXITCODE
+$Duration = (Get-Date) - $StartedAt
 
-$meaning = if ($ExitCodeMeaning.ContainsKey($exitCode)) { $ExitCodeMeaning[$exitCode] } else { "Unknown($exitCode)" }
-$color = if ($exitCode -eq 0) { "Green" } else { "Red" }
+$ExitMeaning = if ($ExitCodeMeanings.ContainsKey($ExitCode)) {
+    $ExitCodeMeanings[$ExitCode]
+} else {
+    "Unknown($ExitCode)"
+}
+$ResultColor = if ($ExitCode -eq 0) { 'Green' } else { 'Red' }
 
-Write-Host ""
-Write-Host "Exit code: $exitCode ($meaning)  Duration: $([math]::Round($duration.TotalSeconds,1))s" -ForegroundColor $color
+Write-Host ''
+Write-Host `
+    "Exit code: $ExitCode ($ExitMeaning)  Duration: $([math]::Round($Duration.TotalSeconds,1))s" `
+    -ForegroundColor $ResultColor
