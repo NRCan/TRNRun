@@ -43,15 +43,13 @@ import ./monitor
 import ./settings
 import ./status
 
-export settings, status
-
 # Types and constants
 type
-  TrnexeLaunchError* = object of CatchableError
+  TrnexeLaunchError = object of CatchableError
     ## Raised when TrnEXE fails to start.
 
 const
-  Extensions = [
+  SidecarExtensions = [
     ".tmp", # Temporary progress file
     ".log", # Simulation log containing notice, warnings, and Fatal errors
     ".lst", # Simulation list file
@@ -77,10 +75,10 @@ proc validateTrnexe*(trnexePath: string): string =
     raise newException(IOError, fmt"TRNEXE not found: '{result}'")
 
 # Process launch
-proc launchTrnexe*(
+proc launchTrnexe(
     deckFile: string,
-    trnexePath: string = DefaultTrnexePath,
-    guiVisibility: TrnexeGuiVisibility = DefaultGuiVisibility,
+    trnexePath: string,
+    guiVisibility: TrnexeGuiVisibility,
 ): Process =
   ## Spawns TrnEXE for `deckFile` and returns the process; raises
   ## `TrnexeLaunchError` on failure.
@@ -99,12 +97,14 @@ proc launchTrnexe*(
       TrnexeLaunchError, "Failed to launch TRNSYS: " & getCurrentExceptionMsg()
     )
 
-proc unlinkFiles*(deckFile: string) =
+proc removeSidecarFiles(deckFile: string) =
   ## Deletes TRNSYS sidecar files for a deck, ignoring missing ones.
-  for ext in Extensions:
-    let f = deckFile.changeFileExt(ext)
-    if fileExists(f) and not tryRemoveFile(f):
-      stderr.writeLine(fmt"Warning: Could not delete {f} (likely in use).")
+  for extension in SidecarExtensions:
+    let sidecarPath = deckFile.changeFileExt(extension)
+    if fileExists(sidecarPath) and not tryRemoveFile(sidecarPath):
+      stderr.writeLine(
+        fmt"Warning: Could not delete {sidecarPath} (likely in use)."
+      )
 
 
 # Simulation
@@ -163,7 +163,7 @@ proc simulate*(
   var startTime: Time = default(Time)
 
   withLaunchLock:
-    unlinkFiles(deckFile)
+    removeSidecarFiles(deckFile)
     eventSink(statusEvent(statusLaunching))
 
     try:
@@ -220,7 +220,7 @@ proc simulate*(
   of simDone:
     eventSink(statusEvent(monitorResult.status))
     if settings.cleanOnSuccess:
-      unlinkFiles(deckFile)
+      removeSidecarFiles(deckFile)
   of simFatal, simCancelled:
     eventSink(statusEvent(monitorResult.status))
   of simStalled:

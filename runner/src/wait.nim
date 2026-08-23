@@ -40,7 +40,7 @@ type
     wrTimeout # Process still running but did not meet conditions in time.
     wrDied # Process crashed or exited prematurely.
 
-const DefaultGuiClasses* = ["TProg32", "TOnlineWindow"]
+const DefaultGuiClasses = ["TProg32", "TOnlineWindow"]
   ## Window class names recognised as TRNSYS top-level windows.
 
 # Win32 API
@@ -73,7 +73,7 @@ type PollCondition = proc(): bool {.closure, gcsafe.}
 proc poll(
     process: Process,
     condition: PollCondition,
-    timeoutMs: int = 0,
+    timeoutMs: int,
     initialIntervalMs: int = 10,
     maxIntervalMs: int = 500,
     backoff: float = 1.3,
@@ -138,7 +138,7 @@ proc waitLst(process: Process, deckFile: string, timeoutMs: int): bool =
   let lstFile = changeFileExt(deckFile, "lst")
   var found = false
 
-  let cond = proc(): bool =
+  let condition = proc(): bool =
     if checkLst(lstFile):
       found = true
       return true
@@ -146,7 +146,7 @@ proc waitLst(process: Process, deckFile: string, timeoutMs: int): bool =
       return true # Stop polling immediately
     return false
 
-  discard poll(process, cond, timeoutMs)
+  discard poll(process, condition, timeoutMs)
   return found
 
 proc waitTmp(process: Process, deckFile: string, timeoutMs: int): bool =
@@ -155,7 +155,7 @@ proc waitTmp(process: Process, deckFile: string, timeoutMs: int): bool =
   let tmpFile = changeFileExt(deckFile, "tmp")
   var found = false
 
-  let cond = proc(): bool =
+  let condition = proc(): bool =
     if fileExists(tmpFile):
       found = true
       return true
@@ -163,7 +163,7 @@ proc waitTmp(process: Process, deckFile: string, timeoutMs: int): bool =
       return true # Stop polling immediately
     return false
 
-  discard poll(process, cond, timeoutMs)
+  discard poll(process, condition, timeoutMs)
   return found
 
 # GUI readiness
@@ -175,9 +175,6 @@ proc enumCallback(hwnd: Handle, lParam: LPARAM): int32 {.stdcall.} =
   discard getWindowThreadProcessId(hwnd, addr winPid)
 
   if winPid != data.pid: return 1
-
-  # if isWindowVisible(hwnd) == 0: return 1
-  # if getWindowTextLengthW(hwnd) == 0: return 1
 
   var buf = default(array[256, Utf16Char])
   let ws = cast[WideCString](addr buf[0])
@@ -199,7 +196,7 @@ proc waitGui(
     guiClasses: guiClasses.toHashSet,
   )
 
-  let cond = proc(): bool =
+  let condition = proc(): bool =
     if not process.running:
       return true
 
@@ -207,7 +204,7 @@ proc waitGui(
     discard enumWindows(enumCallback, cast[LPARAM](addr data))
     return data.foundHwnd != 0
 
-  discard poll(process, cond, timeoutMs)
+  discard poll(process, condition, timeoutMs)
   return data.foundHwnd != 0
 
 # GUI minimization
@@ -249,7 +246,7 @@ proc minimizeGui*(
   let classes = @guiClasses # openArray can't be captured by the closure below.
   var done = false
 
-  let cond = proc(): bool =
+  let condition = proc(): bool =
     if not process.running:
       return true
     for hwnd in windowsOf(process, classes):
@@ -258,7 +255,7 @@ proc minimizeGui*(
         done = true
     return done
 
-  discard poll(process, cond, timeoutMs)
+  discard poll(process, condition, timeoutMs)
   return done
 
 # Readiness orchestration

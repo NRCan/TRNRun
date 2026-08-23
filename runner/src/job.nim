@@ -103,12 +103,3 @@ proc initJobGuard*() =
     raiseOSError(err, "Failed to place this process in the Job Object.")
 
   jobHandle = h
-
-proc jobGuardActive*(): bool =
-  ## Whether the guard is in force.
-  ##
-  ## Returns
-  ## -------
-  ## bool
-  ##     True once `initJobGuard` has completed successfully.
-  jobHandle != 0

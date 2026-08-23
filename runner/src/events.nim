@@ -7,7 +7,7 @@
 
 import std/[json, math, options, times]
 
-const EventTimestampFormat* = "yyyy-MM-dd'T'HH:mm:ss"
+const EventTimestampFormat = "yyyy-MM-dd'T'HH:mm:ss"
 
 var
   eventTimeFormat {.threadvar.}: TimeFormat
@@ -114,7 +114,7 @@ type
     of eventLog:
       logData*: LogEvent
 
-proc `%`*(event: SettingEvent): JsonNode =
+proc `%`(event: SettingEvent): JsonNode =
   ## Serializes the runner settings applied to a simulation.
   result = newJObject()
   result["kind"] = %($eventSetting)
@@ -137,14 +137,14 @@ proc `%`*(event: SettingEvent): JsonNode =
   result["severity"] = %($event.severity)
   result["writeEvents"] = %event.writeEvents
 
-proc `%`*(event: StatusEvent): JsonNode =
+proc `%`(event: StatusEvent): JsonNode =
   ## Serializes a lifecycle status event.
   result = newJObject()
   result["kind"] = %($eventStatus)
   result["timestamp"] = %event.timestamp.formatEventTimestamp()
   result["status"] = %($event.status)
 
-proc `%`*(event: ConfigEvent): JsonNode =
+proc `%`(event: ConfigEvent): JsonNode =
   ## Serializes fixed simulation parameters.
   result = newJObject()
   result["kind"] = %($eventConfig)
@@ -153,7 +153,7 @@ proc `%`*(event: ConfigEvent): JsonNode =
   result["stop"] = %event.stop
   result["step"] = %event.step
 
-proc `%`*(event: ProgressEvent): JsonNode =
+proc `%`(event: ProgressEvent): JsonNode =
   ## Serializes simulation progress using the established wire precision.
   result = newJObject()
   result["kind"] = %($eventProgress)
@@ -163,7 +163,7 @@ proc `%`*(event: ProgressEvent): JsonNode =
   result["elapsed"] = %event.elapsedMs.round(2)
   result["eta"] = %event.etaMs.round(2)
 
-proc `%`*(event: LogEvent): JsonNode =
+proc `%`(event: LogEvent): JsonNode =
   ## Serializes a log event, omitting fields that are not present.
   result = newJObject()
   result["kind"] = %($eventLog)
@@ -181,7 +181,7 @@ proc `%`*(event: LogEvent): JsonNode =
   if event.information.isSome:
     result["information"] = %event.information.get()
 
-proc `%`*(event: SimulationEvent): JsonNode =
+proc `%`(event: SimulationEvent): JsonNode =
   ## Dispatches a union event to its payload-specific serializer.
   case event.kind
   of eventSetting:

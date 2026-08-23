@@ -54,7 +54,7 @@ proc getLaunchMutex(): Handle =
     result = launchMutex
 
 # Lock operations
-proc acquireLaunchLock*() =
+proc acquireLaunchLock() =
   ## Blocks until the TRNSYS launch mutex is acquired.
   ##
   ## A `WAIT_ABANDONED` result means a previous holder died without
@@ -73,7 +73,7 @@ proc acquireLaunchLock*() =
   elif waitResult != WAIT_OBJECT_0:
     raiseOSError(osLastError(), "Failed to acquire the TRNSYS launch mutex.")
 
-proc releaseLaunchLock*() =
+proc releaseLaunchLock() =
   ## Releases the TRNSYS launch mutex.
   ##
   ## Must be called from the thread that acquired it - Win32 mutex

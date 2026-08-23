@@ -10,7 +10,7 @@ type
   EventSink* = proc(event: SimulationEvent) {.closure, gcsafe.}
     ## Synchronous destination for events produced by a simulation.
 
-  JsonLineSink* = proc(line: string) {.closure, gcsafe.}
+  JsonLineSink = proc(line: string) {.closure, gcsafe.}
     ## Synchronous destination for a serialized JSON line.
 
   JsonlWriter* = ref object
@@ -24,7 +24,7 @@ proc sequencedJsonLine(event: SimulationEvent, sequence: int): string =
   node["seq"] = %sequence
   $node
 
-proc sequencedEventSink*(lineSink: JsonLineSink): EventSink =
+proc sequencedEventSink(lineSink: JsonLineSink): EventSink =
   ## Wraps a JSON-line destination with event serialization and sequencing.
   ##
   ## Each returned sink owns an independent sequence starting at 1. Assigning
@@ -57,7 +57,7 @@ proc close*(writer: JsonlWriter) =
   if file != nil:
     file.close()
 
-proc write*(writer: JsonlWriter, line: string) =
+proc write(writer: JsonlWriter, line: string) =
   ## Writes `line` followed by a newline.
   ##
   ## On failure, the error is reported to standard error and the writer is

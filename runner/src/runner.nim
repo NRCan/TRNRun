@@ -15,10 +15,10 @@ import ./filedialog
 
 const NimblePkgVersion {.strdefine.} = "unknown"
 
-proc parseGuiVisibility(s: string): TrnexeGuiVisibility =
+proc parseGuiVisibility(value: string): TrnexeGuiVisibility =
   ## Parses a CLI visibility string into a `TrnexeGuiVisibility`; raises
   ## `ValueError` on unknown input.
-  case s.toLowerAscii()
+  case value.toLowerAscii()
   of "keep", "keepopen":
     guiKeepOpen
   of "auto", "autoclose":
@@ -30,7 +30,7 @@ proc parseGuiVisibility(s: string): TrnexeGuiVisibility =
   of "hidden":
     guiHidden
   else:
-    raise newException(ValueError, "Invalid guiVisibility: " & s)
+    raise newException(ValueError, "Invalid guiVisibility: " & value)
 
 proc writeHelp() =
   ## Prints CLI usage to stdout.
@@ -86,14 +86,14 @@ proc main(): int =
     deckFile = ""
     settings = DefaultRunnerSettings
 
-  var p = initOptParser()
+  var parser = initOptParser()
   while true:
-    p.next()
-    case p.kind
+    parser.next()
+    case parser.kind
     of cmdEnd:
       break
     of cmdShortOption, cmdLongOption:
-      case p.key
+      case parser.key
       of "help", "h":
         writeHelp()
         return 0
@@ -101,49 +101,49 @@ proc main(): int =
         echo NimblePkgVersion
         return 0
       of "deckFile":
-        deckFile = p.val
+        deckFile = parser.val
       of "trnexePath":
-        settings.trnexePath = p.val
+        settings.trnexePath = parser.val
       of "guiVisibility":
-        settings.guiVisibility = parseGuiVisibility(p.val)
+        settings.guiVisibility = parseGuiVisibility(parser.val)
       of "waitForGui":
-        settings.waitForGui = parseBool(p.val)
+        settings.waitForGui = parseBool(parser.val)
       of "waitForLst":
-        settings.waitForLst = parseBool(p.val)
+        settings.waitForLst = parseBool(parser.val)
       of "waitForTmp":
-        settings.waitForTmp = parseBool(p.val)
+        settings.waitForTmp = parseBool(parser.val)
       of "detectTimeout":
-        settings.detectTimeoutMs = parseInt(p.val)
+        settings.detectTimeoutMs = parseInt(parser.val)
       of "extraDelay":
-        settings.extraDelayMs = parseInt(p.val)
+        settings.extraDelayMs = parseInt(parser.val)
       of "watchLog":
-        settings.watchLog = parseBool(p.val)
+        settings.watchLog = parseBool(parser.val)
       of "watchTmp":
-        settings.watchTmp = parseBool(p.val)
+        settings.watchTmp = parseBool(parser.val)
       of "watchTimeout":
-        settings.watchTimeoutMs = parseInt(p.val)
+        settings.watchTimeoutMs = parseInt(parser.val)
       of "stallTimeout":
-        settings.stallTimeoutMs = parseInt(p.val)
+        settings.stallTimeoutMs = parseInt(parser.val)
       of "pollMs":
-        settings.pollMs = parseInt(p.val)
+        settings.pollMs = parseInt(parser.val)
       of "clean":
-        settings.cleanOnSuccess = parseBool(p.val)
+        settings.cleanOnSuccess = parseBool(parser.val)
       of "killOnTimeout":
-        settings.killOnTimeout = parseBool(p.val)
+        settings.killOnTimeout = parseBool(parser.val)
       of "killOnStall":
-        settings.killOnStall = parseBool(p.val)
+        settings.killOnStall = parseBool(parser.val)
       of "severity":
-        settings.severity = parseEnum[LogSeverity](p.val)
+        settings.severity = parseEnum[LogSeverity](parser.val)
       of "writeEvents":
-        settings.writeEvents = parseBool(p.val)
+        settings.writeEvents = parseBool(parser.val)
       else:
-        stderr.writeLine("Unknown option: ", p.key)
+        stderr.writeLine("Unknown option: ", parser.key)
         return 2
     of cmdArgument:
       if deckFile != "":
-        stderr.writeLine("Unexpected argument: ", p.key)
+        stderr.writeLine("Unexpected argument: ", parser.key)
         return 2
-      deckFile = p.key
+      deckFile = parser.key
 
   if deckFile == "":
     deckFile = openDeckFileDialog()

@@ -39,9 +39,9 @@ type
     writeEvents*: bool
 
 const
-  DefaultTrnexePath* = r"C:\TRNSYS18\Exe\TrnEXE64.exe"
+  DefaultTrnexePath = r"C:\TRNSYS18\Exe\TrnEXE64.exe"
     ## Default TRNSYS 18 executable path.
-  DefaultGuiVisibility* = guiHidden
+  DefaultGuiVisibility = guiHidden
     ## GUI mode used when none is specified.
   DefaultRunnerSettings* = RunnerSettings(
     trnexePath: DefaultTrnexePath,
@@ -75,7 +75,7 @@ func wantsMinimize*(visibility: TrnexeGuiVisibility): bool =
   ## True if the mode requires post-launch Win32 minimization.
   visibility in {guiMinimized, guiMinimizedAuto}
 
-func settingValue(visibility: TrnexeGuiVisibility): string =
+func wireValue(visibility: TrnexeGuiVisibility): string =
   ## Canonical wire value used when reporting the configured GUI setting.
   case visibility
   of guiKeepOpen: "keepOpen"
@@ -93,7 +93,7 @@ proc settingEvent*(
     settingData: SettingEvent(
       timestamp: timestamp,
       trnexePath: trnexePath,
-      guiVisibility: settings.guiVisibility.settingValue(),
+      guiVisibility: settings.guiVisibility.wireValue(),
       waitForGui: settings.waitForGui,
       waitForLst: settings.waitForLst,
       waitForTmp: settings.waitForTmp,

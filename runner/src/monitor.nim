@@ -87,10 +87,10 @@ proc elapsed(self: SimProgress, realStart: Time): float =
 
 proc eta(self: SimProgress, config: SimConfig, realStart: Time): float =
   ## Returns estimated milliseconds remaining, or 0 if progress is negligible.
-  let pct = self.percent(config)
-  if pct < 0.001: return 0.0
-  let elap = self.elapsed(realStart)
-  max(0.0, elap / pct - elap)
+  let percentage = self.percent(config)
+  if percentage < 0.001: return 0.0
+  let elapsedMs = self.elapsed(realStart)
+  max(0.0, elapsedMs / percentage - elapsedMs)
 
 # Event conversion
 proc configEvent(config: SimConfig): SimulationEvent =
@@ -234,14 +234,14 @@ proc splitIntoBlocks(lines: openArray[string]): seq[seq[string]] =
   if current.len > 0:
     result.add(current)
 
-proc parseLogBlock(blck: openArray[string]): Option[SimLog] =
+proc parseLogBlock(blockLines: openArray[string]): Option[SimLog] =
   ## Parses a single TRNSYS log block into a `SimLog`.
-  if blck.len == 0 or not blck[0].startsWith("***"):
+  if blockLines.len == 0 or not blockLines[0].startsWith("***"):
     return none(SimLog)
 
   var entry = SimLog(timestamp: now())
 
-  for line in blck:
+  for line in blockLines:
     let stripped = line.strip()
     let lower = stripped.toLowerAscii()
     for (prefix, parser) in LogFieldParsers:
@@ -287,8 +287,8 @@ iterator readLog(offset: var int64, path: string): SimLog =
   ## Yields log entries appended since the last call with the same `offset`
   ## (nothing if `path` doesn't exist yet).
   if fileExists(path):
-    for blck in splitIntoBlocks(readNewLines(offset, path)):
-      let parsed = parseLogBlock(blck)
+    for blockLines in splitIntoBlocks(readNewLines(offset, path)):
+      let parsed = parseLogBlock(blockLines)
       if parsed.isSome:
         yield parsed.get()
 
@@ -326,11 +326,11 @@ proc parseTmpContent(content: string): Option[TmpSnapshot] =
     )
     return none(TmpSnapshot)
 
-proc readTmp(filepath: string): Option[TmpSnapshot] =
+proc readTmp(path: string): Option[TmpSnapshot] =
   ## Reads and parses a Type3830 tmp file; returns `none` on any I/O or parse
   ## error.
   try:
-    return parseTmpContent(readFile(filepath))
+    return parseTmpContent(readFile(path))
   except CatchableError:
     return none(TmpSnapshot)
 
@@ -339,10 +339,10 @@ proc readTmp(filepath: string): Option[TmpSnapshot] =
 proc pollTmp(state: var MonitorState) =
   ## Reads the tmp file and emits config/progress events as needed, skipping
   ## silently on I/O or parse errors.
-  let snap = readTmp(state.tmpFile)
-  if snap.isNone: return
+  let snapshot = readTmp(state.tmpFile)
+  if snapshot.isNone: return
 
-  let current = snap.get()
+  let current = snapshot.get()
   if state.lastSnapshot.isNone:
     state.eventSink(configEvent(current.config))
 
@@ -386,8 +386,8 @@ proc isStalled(state: MonitorState): bool =
       state.lastSnapshot.isNone:
     return false
 
-  let snap = state.lastSnapshot.get()
-  if snap.progress.percent(snap.config) >= 1.0:
+  let snapshot = state.lastSnapshot.get()
+  if snapshot.progress.percent(snapshot.config) >= 1.0:
     return false
 
   (getTime() - state.lastProgressChange).inMilliseconds >= state.stallTimeoutMs
@@ -474,8 +474,12 @@ proc monitor*(
     watchTmp: watchTmp,
     severity: severity,
     eventSink: eventSink,
-    watchTimeoutMs: clampTimeout(watchTimeoutMs, interval, "watchTimeoutMs"),
-    stallTimeoutMs: clampTimeout(stallTimeoutMs, interval, "stallTimeoutMs"),
+    watchTimeoutMs: clampTimeout(
+      watchTimeoutMs, interval, "watchTimeoutMs"
+    ),
+    stallTimeoutMs: clampTimeout(
+      stallTimeoutMs, interval, "stallTimeoutMs"
+    ),
     lastProgressChange: startTime,
   )
 
@@ -509,8 +513,8 @@ proc monitor*(
   if state.tick(): return simFatal
 
   if state.watchTmp and state.lastSnapshot.isSome:
-    let snap = state.lastSnapshot.get()
-    if snap.progress.percent(snap.config) < 1.0:
+    let snapshot = state.lastSnapshot.get()
+    if snapshot.progress.percent(snapshot.config) < 1.0:
       return simCancelled
 
   return simDone
