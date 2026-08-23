@@ -76,7 +76,7 @@ existing file when the run starts. For example, `model.dck` produces
 Representative event shapes, using the actual JSON value types:
 
 ```json
-{"kind":"SETTING","timestamp":"2026-06-19T19:37:13","trnexePath":"C:\\TRNSYS18\\Exe\\TrnEXE64.exe","guiVisibility":"hidden","waitForGui":true,"waitForLst":true,"waitForTmp":false,"detectTimeoutMs":0,"extraDelayMs":0,"watchLog":true,"watchTmp":true,"watchTimeoutMs":0,"stallTimeoutMs":0,"pollMs":100,"cleanOnSuccess":false,"killOnTimeout":false,"killOnStall":false,"severity":"Notice","writeEvents":false,"seq":1}
+{"kind":"SETTING","timestamp":"2026-06-19T19:37:13","trnexePath":"C:\\TRNSYS18\\Exe\\TrnEXE64.exe","guiVisibility":"hidden","waitForGui":true,"waitForLst":true,"waitForTmp":false,"detectTimeoutMs":300000,"extraDelayMs":0,"watchLog":true,"watchTmp":true,"watchTimeoutMs":0,"stallTimeoutMs":0,"pollMs":100,"cleanOnSuccess":false,"killOnTimeout":false,"killOnStall":false,"severity":"Notice","writeEvents":false,"seq":1}
 {"kind":"STATUS","timestamp":"2026-06-19T19:37:13","status":"PENDING","seq":2}
 {"kind":"CONFIG","timestamp":"2026-06-19T19:37:15","start":0.0,"stop":8760.0,"step":0.25,"seq":3}
 {"kind":"PROGRESS","timestamp":"2026-06-19T19:37:15","time":24.0,"percent":0.0027,"elapsed":287.0,"eta":105576.7,"seq":4}
@@ -118,7 +118,7 @@ Reported as `STATUS` events:
 ### Example
 
 ```json
-{"kind":"SETTING","timestamp":"2026-06-19T19:37:13","trnexePath":"C:\\TRNSYS18\\Exe\\TrnEXE64.exe","guiVisibility":"hidden","waitForGui":true,"waitForLst":true,"waitForTmp":false,"detectTimeoutMs":0,"extraDelayMs":0,"watchLog":true,"watchTmp":true,"watchTimeoutMs":0,"stallTimeoutMs":0,"pollMs":100,"cleanOnSuccess":false,"killOnTimeout":false,"killOnStall":false,"severity":"Notice","writeEvents":false,"seq":1}
+{"kind":"SETTING","timestamp":"2026-06-19T19:37:13","trnexePath":"C:\\TRNSYS18\\Exe\\TrnEXE64.exe","guiVisibility":"hidden","waitForGui":true,"waitForLst":true,"waitForTmp":false,"detectTimeoutMs":300000,"extraDelayMs":0,"watchLog":true,"watchTmp":true,"watchTimeoutMs":0,"stallTimeoutMs":0,"pollMs":100,"cleanOnSuccess":false,"killOnTimeout":false,"killOnStall":false,"severity":"Notice","writeEvents":false,"seq":1}
 {"kind":"STATUS","timestamp":"2026-06-19T19:37:13","status":"PENDING","seq":2}
 {"kind":"STATUS","timestamp":"2026-06-19T19:37:14","status":"LAUNCHING","seq":3}
 {"kind":"STATUS","timestamp":"2026-06-19T19:37:15","status":"RUNNING","seq":4}
@@ -174,7 +174,7 @@ session-scoped launch mutex to be released so another simulation can start.
 | `--waitForGui`    | `boolean` | `true`  | Wait for a recognized TRNSYS top-level window.                            |
 | `--waitForLst`    | `boolean` | `true`  | Wait for the component-order header in the `.lst` file.                   |
 | `--waitForTmp`    | `boolean` | `false` | Wait for the `.tmp` file to appear; requires Type3830.                    |
-| `--detectTimeout` | `integer` | `0`     | Shared readiness deadline in milliseconds; `0` means unlimited.          |
+| `--detectTimeout` | `integer` | `300000` | Shared readiness deadline in milliseconds. `0` means unlimited, which lets one wedged deck hold the session launch mutex. |
 | `--extraDelay`    | `integer` | `0`     | Additional delay in milliseconds after all readiness stages pass.        |
 
 ### Runtime monitoring

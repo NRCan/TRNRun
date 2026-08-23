@@ -41,13 +41,14 @@ type
 const
   DefaultTrnexePath = r"C:\TRNSYS18\Exe\TrnEXE64.exe"
   DefaultGuiVisibility = guiHidden
+  DefaultDetectTimeoutMs = 300_000
   DefaultRunnerSettings* = RunnerSettings(
     trnexePath: DefaultTrnexePath,
     guiVisibility: DefaultGuiVisibility,
     waitForGui: true,
     waitForLst: true,
     waitForTmp: false,
-    detectTimeoutMs: 0,
+    detectTimeoutMs: DefaultDetectTimeoutMs,
     extraDelayMs: 0,
     watchLog: true,
     watchTmp: false,

@@ -28,7 +28,7 @@ type
     ## Outcome of the readiness-detection phase.
     wrReady # All detection conditions passed.
     wrTimeout # Process still running but did not meet conditions in time.
-    wrDied # Process crashed or exited prematurely.
+    wrExited # Process exited during detection; see `waitReady`.
 
 const DefaultGuiClasses = ["TProg32", "TOnlineWindow"]
   ## Window class names recognised as TRNSYS top-level windows.
@@ -263,10 +263,14 @@ proc waitReady*(
   ##
   ## A non-positive `timeoutMs` waits indefinitely. Returns `wrReady` when all
   ## enabled stages pass, `wrTimeout` when the deadline expires while the
-  ## process is running, or `wrDied` if it exits during detection or the
+  ## process is running, or `wrExited` if it exits during detection or the
   ## additional delay.
+  ##
+  ## `wrExited` is not by itself a failure: a run short enough to finish before
+  ## detection completes reports it exactly as a crash does. Callers must
+  ## consult the TRNSYS log to tell the two apart.
   if not process.running:
-    return wrDied
+    return wrExited
 
   let deadline = getMonoTime() + initDuration(milliseconds = timeoutMs)
 
@@ -276,15 +280,15 @@ proc waitReady*(
 
   if waitForGui:
     if not waitGui(process, timeoutMs = remainingMs()):
-      return if process.running: wrTimeout else: wrDied
+      return if process.running: wrTimeout else: wrExited
 
   if waitForLst:
     if not waitLst(process, deckFile, timeoutMs = remainingMs()):
-      return if process.running: wrTimeout else: wrDied
+      return if process.running: wrTimeout else: wrExited
 
   if waitForTmp:
     if not waitTmp(process, deckFile, timeoutMs = remainingMs()):
-      return if process.running: wrTimeout else: wrDied
+      return if process.running: wrTimeout else: wrExited
 
   if extraDelayMs > 0:
     let diedDuringDelay = poll(
@@ -293,6 +297,6 @@ proc waitReady*(
       timeoutMs = extraDelayMs,
     )
     if diedDuringDelay or not process.running:
-      return wrDied
+      return wrExited
 
-  return if process.running: wrReady else: wrDied
+  return if process.running: wrReady else: wrExited

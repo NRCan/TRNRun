@@ -13,7 +13,7 @@
 ## `monitor` blocks until process exit, a fatal log entry, timeout, or stall,
 ## and returns the corresponding `SimResult`.
 
-import std/[os, osproc, strutils, options, times]
+import std/[os, osproc, monotimes, strutils, options, times]
 import ./events
 import ./eventsink
 import ./processwait
@@ -41,7 +41,8 @@ type
 
   SimProgress = object
     ## Current simulation time sampled from a Type3830 tmp file.
-    timestamp: DateTime # Wall-clock time the file was read.
+    timestamp: DateTime # Wall-clock time the file was read; wire payload only.
+    mono: MonoTime # Same instant on the monotonic clock; used for durations.
     time: float # Current simulation time in hours.
 
   TmpSnapshot = object
@@ -53,7 +54,7 @@ type
     ## Mutable book-keeping shared across polling ticks.
     tmpFile: string
     logFile: string
-    startTime: Time
+    startTime: MonoTime
     watchLog: bool
     watchTmp: bool
     severity: LogSeverity
@@ -62,7 +63,7 @@ type
     eventSink: EventSink
     watchTimeoutMs: int
     stallTimeoutMs: int
-    lastProgressChange: Time
+    lastProgressChange: MonoTime
 
 # Progress and TMP data
 proc percent(self: SimProgress, config: SimConfig): float =
@@ -70,11 +71,15 @@ proc percent(self: SimProgress, config: SimConfig): float =
   if config.stop <= config.start: return 0.0
   clamp((self.time - config.start) / (config.stop - config.start), 0.0, 1.0)
 
-proc elapsed(self: SimProgress, realStart: Time): float =
+proc elapsed(self: SimProgress, realStart: MonoTime): float =
   ## Returns milliseconds elapsed since `realStart`.
-  (self.timestamp.toTime() - realStart).inMilliseconds.float
+  ##
+  ## Monotonic on purpose: a wall-clock difference can jump or go negative when
+  ## the system clock is stepped by NTP or a DST change, and this value both
+  ## ships on the wire and divides into `eta`.
+  (self.mono - realStart).inMilliseconds.float
 
-proc eta(self: SimProgress, config: SimConfig, realStart: Time): float =
+proc eta(self: SimProgress, config: SimConfig, realStart: MonoTime): float =
   ## Returns estimated milliseconds remaining, or 0 if progress is negligible.
   let percentage = self.percent(config)
   if percentage < 0.001: return 0.0
@@ -94,7 +99,7 @@ proc configEvent(config: SimConfig): SimulationEvent =
   )
 
 proc progressEvent(
-    progress: SimProgress, config: SimConfig, realStart: Time
+    progress: SimProgress, config: SimConfig, realStart: MonoTime
 ): SimulationEvent =
   SimulationEvent(
     kind: eventProgress,
@@ -237,35 +242,36 @@ proc parseLogBlock(blockLines: openArray[string]): Option[SimLog] =
           discard
         break
 
-  if entry.message.isNone or entry.message.get().isEmptyOrWhitespace:
-    return none(SimLog)
-
   result = some(entry)
 
 proc readNewLines(offset: var int64, path: string): seq[string] =
-  ## Reads newly appended lines from `path`, advancing `offset` and resetting it
-  ## if the file was truncated.
+  ## Reads newly appended *complete* lines from `path`, advancing `offset` and
+  ## resetting it if the file was truncated. A trailing partial line is left
+  ## unconsumed so a record the writer has not finished is never torn in two.
   result = @[]
   var file = default(File)
-  if not open(file, path, fmRead): return @[]
+  if not open(file, path, fmRead): return
   defer: file.close()
 
   let size = file.getFileSize()
-
   if offset > size:
     stderr.writeLine(
       "[Monitor] Log file truncated (", path, "); re-reading from start."
     )
     offset = 0
-  if offset == size: return @[]
+  if offset >= size: return
 
   file.setFilePos(offset)
+  var chunk = newString(int(size - offset))
+  chunk.setLen(file.readBuffer(addr chunk[0], chunk.len))
 
-  var line: string = ""
-  while file.readLine(line):
-    result.add(move(line))
+  let lastNewline = chunk.rfind('\n')
+  if lastNewline < 0: return
 
-  offset = file.getFilePos()
+  offset += int64(lastNewline + 1)
+  result = chunk[0 .. lastNewline].splitLines()
+  result.setLen(result.len - 1)
+
 
 # Iterator
 iterator readLog(offset: var int64, path: string): SimLog =
@@ -293,8 +299,11 @@ proc parseTmpContent(content: string): Option[TmpSnapshot] =
 
   try:
     let ts = now()
+    let mono = getMonoTime()
     return some TmpSnapshot(
-      progress: SimProgress(timestamp: ts, time: parseFloat(parts[0].strip())),
+      progress: SimProgress(
+        timestamp: ts, mono: mono, time: parseFloat(parts[0].strip())
+      ),
       config: SimConfig(
         timestamp: ts,
         start: parseFloat(parts[1].strip()),
@@ -336,7 +345,7 @@ proc pollTmp(state: var MonitorState) =
     state.eventSink(
       progressEvent(current.progress, current.config, state.startTime)
     )
-    state.lastProgressChange = getTime()
+    state.lastProgressChange = getMonoTime()
 
   state.lastSnapshot = some(current)
 
@@ -362,7 +371,7 @@ proc isTimedOut(state: MonitorState): bool =
   ## Returns `true` if the overall monitoring duration has exceeded
   ## `watchTimeoutMs`.
   state.watchTimeoutMs > 0 and
-    (getTime() - state.startTime).inMilliseconds >= state.watchTimeoutMs
+    (getMonoTime() - state.startTime).inMilliseconds >= state.watchTimeoutMs
 
 proc isStalled(state: MonitorState): bool =
   ## Returns `true` if simulation time has not advanced for `stallTimeoutMs`
@@ -375,7 +384,8 @@ proc isStalled(state: MonitorState): bool =
   if snapshot.progress.percent(snapshot.config) >= 1.0:
     return false
 
-  (getTime() - state.lastProgressChange).inMilliseconds >= state.stallTimeoutMs
+  (getMonoTime() - state.lastProgressChange).inMilliseconds >=
+    state.stallTimeoutMs
 
 proc clampTimeout(timeoutMs, pollMs: int, name: string): int =
   ## Raises `timeoutMs` to `pollMs` when smaller, since finer thresholds would
@@ -399,7 +409,7 @@ proc clampTimeout(timeoutMs, pollMs: int, name: string): int =
 proc monitor*(
     process: Process,
     deckFile: string,
-    startTime: Time,
+    startTime: MonoTime,
     eventSink: EventSink,
     watchLog: bool = true,
     watchTmp: bool = true,
@@ -449,7 +459,7 @@ proc monitor*(
     if state.isStalled():
       stderr.writeLine(
         "[Monitor] Stall detected - no progress for ",
-        (getTime() - state.lastProgressChange).inMilliseconds,
+        (getMonoTime() - state.lastProgressChange).inMilliseconds,
         " ms.",
       )
       return simStalled
@@ -457,7 +467,7 @@ proc monitor*(
     if state.isTimedOut():
       stderr.writeLine(
         "[Monitor] Timeout after ",
-        (getTime() - state.startTime).inMilliseconds,
+        (getMonoTime() - state.startTime).inMilliseconds,
         " ms - process still running.",
       )
       return simTimeout

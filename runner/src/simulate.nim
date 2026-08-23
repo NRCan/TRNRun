@@ -4,7 +4,7 @@
 ## for readiness, monitors output, emits structured events, handles terminal
 ## outcomes, and performs optional cleanup.
 
-import std/[os, osproc, strformat, strutils, times]
+import std/[os, osproc, monotimes, strformat, strutils]
 import ./events
 import ./eventsink
 import ./job
@@ -109,7 +109,14 @@ proc simulate*(
   eventSink(statusEvent(statusPending))
 
   var process: Process = default(Process)
-  var startTime: Time = default(Time)
+  var startTime: MonoTime = default(MonoTime)
+
+  defer:
+    if process != nil:
+      try:
+        process.close()
+      except CatchableError:
+        discard
 
   withLaunchLock:
     removeSidecarFiles(deckFile)
@@ -121,7 +128,7 @@ proc simulate*(
       stderr.writeLine("Error: ", e.msg)
       eventSink(statusEvent(simFatal.status))
       return simFatal
-    startTime = getTime()
+    startTime = getMonoTime()
 
     let waitStatus = waitReady(
       process = process,
@@ -134,8 +141,12 @@ proc simulate*(
     )
 
     case waitStatus
-    of wrDied:
+    of wrExited:
+      # Not a failure by itself: the run may simply have finished before
+      # detection did. The monitor below drains the log and reports simFatal
+      # if TRNSYS actually logged one.
       if process.running:
+        # Contradicts wrExited, so the state is unrecoverable rather than fast.
         process.kill()
         eventSink(statusEvent(simFatal.status))
         return simFatal

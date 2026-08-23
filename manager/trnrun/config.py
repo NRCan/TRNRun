@@ -59,10 +59,12 @@ class SimulationConfig:
     wait_for_tmp : bool, default `False`
     Wait for the `*.tmp` file to appear during launch detection
     (`--waitForTmp`). Requires a Progress Tracker (Type3830) in the deck.
-    detect_timeout_ms : int, default `0`
+    detect_timeout_ms : int, default `300000`
         Timeout in milliseconds for the launch-detection stages
         (`--detectTimeout`). `0` means unlimited. Combined with
         `kill_on_timeout`, exceeding this yields a `TIMEOUT` status.
+        Detection runs while TRNRun holds the session-wide launch mutex, so
+        this also caps how long one deck can block other runners.
     extra_delay_ms : int, default `0`
         Additional delay in milliseconds applied after detection passes
         (`--extraDelay`).
@@ -108,7 +110,7 @@ class SimulationConfig:
     wait_for_gui: bool = True
     wait_for_lst: bool = True
     wait_for_tmp: bool = False
-    detect_timeout_ms: int = 0
+    detect_timeout_ms: int = 300_000
     extra_delay_ms: int = 0
     poll_ms: int = 100
     watch_log: bool = True

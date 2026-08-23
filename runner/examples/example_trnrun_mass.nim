@@ -21,7 +21,7 @@ const
     "--killOnTimeout=true",
     "--killOnStall=true",
     "--severity=Notice",
-    "--writeEvents=false",
+    "--writeEvents=true",
   ]
 
 type SimulationRun = tuple[name: string, process: Process]

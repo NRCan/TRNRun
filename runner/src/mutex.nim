@@ -23,10 +23,15 @@ proc releaseMutex(mutex: Handle): cint
   {.importc: "ReleaseMutex", stdcall, dynlib: "kernel32".}
 
 const
-  INFINITE = 0xFFFFFFFF'u32
   WAIT_OBJECT_0 = 0x00000000'u32
   WAIT_ABANDONED = 0x00000080'u32
+  WAIT_TIMEOUT = 0x00000102'u32
   LaunchMutexName = r"Local\TRNRun_LaunchMutex"
+  LaunchLockTimeoutMs = 1_800_000'u32
+    ## Deadlock backstop, not a queueing policy. Every runner in the session
+    ## queues here, so a legitimate wait is (queue depth - 1) x hold time and
+    ## the manager sizes its pool at cpu_count - 1. This must stay well above
+    ## that product; `detectTimeoutMs` is what bounds the hold time itself.
 
 var
   initLock: Lock
@@ -55,14 +60,25 @@ proc acquireLaunchLock() =
   ##
   ## `WAIT_ABANDONED` transfers ownership after a previous holder dies; the
   ## launch continues with a warning. Raises `OSError` if the mutex cannot be
-  ## created, opened, or acquired.
-  let waitResult = waitForSingleObject(getLaunchMutex(), INFINITE)
-  if waitResult == WAIT_ABANDONED:
+  ## created, opened, or acquired, and `IOError` if the wait times out.
+  case waitForSingleObject(getLaunchMutex(), LaunchLockTimeoutMs)
+  of WAIT_OBJECT_0:
+    discard
+  of WAIT_ABANDONED:
     stderr.writeLine(
       "Warning: a previous TRNSYS process did not exit cleanly. " &
         "Proceeding anyway."
     )
-  elif waitResult != WAIT_OBJECT_0:
+  of WAIT_TIMEOUT:
+    # WaitForSingleObject sets no last error on timeout, so osLastError() in the
+    # branch below would report something stale and unrelated.
+    raise newException(
+      IOError,
+      "Timed out after " & $(LaunchLockTimeoutMs div 1000) &
+        " s waiting for the TRNSYS launch mutex. Another trnrun in this logon " &
+        "session is holding it - look for a wedged TrnEXE64.exe."
+    )
+  else:
     raiseOSError(osLastError(), "Failed to acquire the TRNSYS launch mutex.")
 
 proc releaseLaunchLock() =
@@ -84,7 +100,9 @@ template withLaunchLock*(body: untyped) =
   ## Runs `body` while holding the TRNSYS launch mutex.
   ##
   ## Always releases the mutex afterward, including when `body` raises.
-  ## Raises `OSError` if the mutex cannot be created, opened, or acquired.
+  ## Raises `OSError` if the mutex cannot be created, opened, or acquired, and
+  ## `IOError` if another runner holds it past `LaunchLockTimeoutMs`. Both are
+  ## raised before the lock is taken, so `body` never runs unlocked.
   acquireLaunchLock()
   try:
     body

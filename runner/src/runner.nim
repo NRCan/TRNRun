@@ -46,7 +46,7 @@ Usage:
   --waitForGui:BOOL       (default: true)
   --waitForLst:BOOL       (default: true)
   --waitForTmp:BOOL       (default: false)
-  --detectTimeout:MS      Readiness timeout, 0 = unlimited (default: 0)
+  --detectTimeout:MS      Readiness timeout, 0 = unlimited (default: 300000)
   --extraDelay:MS         (default: 0)
   --watchLog:BOOL         (default: true)
   --watchTmp:BOOL         Needed for stall detection (default: false)
@@ -136,10 +136,11 @@ proc main(): int =
     deckFile = openDeckFileDialog()
     if deckFile == "":
       stderr.writeLine("No file selected.")
-      return 0
+      return exitCode(simCancelled)
 
+  # Only the deck is resolved here, because the `.jsonl` path derives from it.
+  # `simulate` validates both this and `trnexePath` itself.
   deckFile = validateDeck(deckFile)
-  settings.trnexePath = validateTrnexe(settings.trnexePath)
 
   var jsonlOutput: JsonlWriter = nil
 
@@ -147,6 +148,8 @@ proc main(): int =
     try:
       jsonlOutput = openJsonlWriter(deckFile.changeFileExt("jsonl"))
     except IOError:
+      # Keep the SETTING event honest: nothing will be written to a file.
+      settings.writeEvents = false
       stderr.writeLine(
         "[JsonlWriter] Could not open event file (logging disabled): ",
         getCurrentExceptionMsg()

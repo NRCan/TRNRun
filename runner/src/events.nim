@@ -164,7 +164,7 @@ proc `%`(event: LogEvent): JsonNode =
   result["kind"] = %($eventLog)
   result["timestamp"] = %event.timestamp.formatEventTimestamp()
   result["severity"] = %($event.severity)
-  result["time"] = %event.time
+  result["time"] = %event.time.round(2)
   if event.unitId.isSome:
     result["unitID"] = %event.unitId.get()
   if event.typeId.isSome:
