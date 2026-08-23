@@ -17,9 +17,7 @@
 import std/[os, osproc, times, monotimes, strutils, sets, winlean]
 import ./processwait
 
-# ---------------------------------------------------------------------------
 # Types
-# ---------------------------------------------------------------------------
 type
   LPARAM = int
   EnumWindowsProc = proc(hwnd: Handle, lParam: LPARAM): int32 {.stdcall.}
@@ -45,9 +43,7 @@ type
 const DefaultGuiClasses* = ["TProg32", "TOnlineWindow"]
   ## Window class names recognised as TRNSYS top-level windows.
 
-# ---------------------------------------------------------------------------
 # Win32 API
-# ---------------------------------------------------------------------------
 proc enumWindows(lpEnumFunc: EnumWindowsProc, lParam: LPARAM): int32
   {.importc: "EnumWindows", dynlib: "user32", stdcall.}
 
@@ -71,9 +67,7 @@ proc getWindowTextLengthW(hWnd: Handle): int32
 
 const SW_SHOWMINNOACTIVE = 7'i32
 
-# ---------------------------------------------------------------------------
-# Poll
-# ---------------------------------------------------------------------------
+# Polling
 type PollCondition = proc(): bool {.closure, gcsafe.}
 
 proc poll(
@@ -84,7 +78,8 @@ proc poll(
     maxIntervalMs: int = 500,
     backoff: float = 1.3,
 ): bool {.gcsafe.} =
-  ## Polls `condition` with exponential backoff until it returns true or `timeoutMs` (0 = forever) expires.
+  ## Polls `condition` with exponential backoff until it returns true or
+  ## `timeoutMs` (0 = forever) expires.
   if initialIntervalMs <= 0:
     raise newException(ValueError, "initialIntervalMs must be positive")
   if maxIntervalMs < initialIntervalMs:
@@ -98,7 +93,7 @@ proc poll(
 
   let deadline =
     if infinite:
-      MonoTime()  # unused placeholder
+      MonoTime() # unused placeholder
     else:
       getMonoTime() + initDuration(milliseconds = timeoutMs)
 
@@ -126,18 +121,20 @@ proc poll(
 
     delay = min(delay * backoff, maxIntervalMs.float)
 
-# ---------------------------------------------------------------------------
-# File-based waiters
-# ---------------------------------------------------------------------------
-const LstHeader = "*** The TRNSYS components will be called in the following order:"
+# File-based readiness
+const LstHeader =
+  "*** The TRNSYS components will be called in the following order:"
 
 proc checkLst(lstFile: string): bool =
   ## Returns true if the .lst file contains the TRNSYS component-order header.
-  try: LstHeader in readFile(lstFile)
-  except IOError: false
+  try:
+    LstHeader in readFile(lstFile)
+  except IOError:
+    false
 
 proc waitLst(process: Process, deckFile: string, timeoutMs: int): bool =
-  ## Waits for the `.lst` header to appear; returns true only if found (stops early if the process exits).
+  ## Waits for the `.lst` header to appear; returns true only if found (stops
+  ## early if the process exits).
   let lstFile = changeFileExt(deckFile, "lst")
   var found = false
 
@@ -153,7 +150,8 @@ proc waitLst(process: Process, deckFile: string, timeoutMs: int): bool =
   return found
 
 proc waitTmp(process: Process, deckFile: string, timeoutMs: int): bool =
-  ## Waits for the `.tmp` file to appear; returns true only if found (stops early if the process exits).
+  ## Waits for the `.tmp` file to appear; returns true only if found (stops
+  ## early if the process exits).
   let tmpFile = changeFileExt(deckFile, "tmp")
   var found = false
 
@@ -168,11 +166,10 @@ proc waitTmp(process: Process, deckFile: string, timeoutMs: int): bool =
   discard poll(process, cond, timeoutMs)
   return found
 
-# ---------------------------------------------------------------------------
-# GUI waiter
-# ---------------------------------------------------------------------------
+# GUI readiness
 proc enumCallback(hwnd: Handle, lParam: LPARAM): int32 {.stdcall.} =
-  ## EnumWindows callback: records the first window matching the target pid and class.
+  ## EnumWindows callback: records the first window matching the target pid and
+  ## class.
   let data = cast[ptr CallbackData](lParam)
   var winPid: int32 = 0
   discard getWindowThreadProcessId(hwnd, addr winPid)
@@ -194,7 +191,8 @@ proc waitGui(
     guiClasses: openArray[string] = DefaultGuiClasses,
     timeoutMs: int = 120_000,
 ): bool =
-  ## Returns true when a top-level window of one of `guiClasses` appears for the process.
+  ## Returns true when a top-level window of one of `guiClasses` appears for the
+  ## process.
   var data = CallbackData(
     pid: int32(process.processID()),
     foundHwnd: 0,
@@ -212,11 +210,10 @@ proc waitGui(
   discard poll(process, cond, timeoutMs)
   return data.foundHwnd != 0
 
-# ---------------------------------------------------------------------------
-# GUI minimize
-# ---------------------------------------------------------------------------
+# GUI minimization
 proc collectCallback(hwnd: Handle, lParam: LPARAM): int32 {.stdcall.} =
-  ## EnumWindows callback: collects *every* window matching the target pid and class.
+  ## EnumWindows callback: collects *every* window matching the target pid and
+  ## class.
   let data = cast[ptr CollectData](lParam)
   var winPid: int32 = 0
   discard getWindowThreadProcessId(hwnd, addr winPid)
@@ -247,7 +244,8 @@ proc minimizeGui*(
     guiClasses: openArray[string] = DefaultGuiClasses,
     timeoutMs: int = 10_000,
 ): bool {.discardable.} =
-  ## Waits for a matching window, then minimizes all matching windows without stealing focus; one-shot, idempotent, false if none appeared in time.
+  ## Waits for a matching window, then minimizes all matching windows without
+  ## stealing focus; one-shot, idempotent, false if none appeared in time.
   let classes = @guiClasses # openArray can't be captured by the closure below.
   var done = false
 
@@ -263,9 +261,7 @@ proc minimizeGui*(
   discard poll(process, cond, timeoutMs)
   return done
 
-# ---------------------------------------------------------------------------
-# waitReady
-# ---------------------------------------------------------------------------
+# Readiness orchestration
 proc waitReady*(
     process: Process,
     deckFile: string,

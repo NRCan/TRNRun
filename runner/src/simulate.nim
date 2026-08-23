@@ -45,9 +45,7 @@ import ./status
 
 export settings, status
 
-# ---------------------------------------------------------------------------
-# Types & constants
-# ---------------------------------------------------------------------------
+# Types and constants
 type
   TrnexeLaunchError* = object of CatchableError
     ## Raised when TrnEXE fails to start.
@@ -60,12 +58,11 @@ const
     ".PTI", # Online Plotter file
   ]
 
-# ---------------------------------------------------------------------------
-# Validation & file helpers
-# ---------------------------------------------------------------------------
+# Validation and file helpers
 proc validateDeck*(deckFile: string): string =
   ## Resolves `deckFile` to an absolute, normalized path.
-  ## Raises `IOError` if it is missing, or `ValueError` if it is not a `.dck`/`.trd`.
+  ## Raises `IOError` if it is missing, or `ValueError` if it is not a
+  ## `.dck`/`.trd`.
   result = deckFile.absolutePath().normalizedPath()
   if not fileExists(result):
     raise newException(IOError, fmt"Deck file not found: '{result}'")
@@ -79,15 +76,14 @@ proc validateTrnexe*(trnexePath: string): string =
   if not fileExists(result):
     raise newException(IOError, fmt"TRNEXE not found: '{result}'")
 
-# ---------------------------------------------------------------------------
-# Launch TRNSYS
-# ---------------------------------------------------------------------------
+# Process launch
 proc launchTrnexe*(
     deckFile: string,
     trnexePath: string = DefaultTrnexePath,
     guiVisibility: TrnexeGuiVisibility = DefaultGuiVisibility,
 ): Process =
-  ## Spawns TrnEXE for `deckFile` and returns the process; raises `TrnexeLaunchError` on failure.
+  ## Spawns TrnEXE for `deckFile` and returns the process; raises
+  ## `TrnexeLaunchError` on failure.
   result = default(Process)
   var args = @[deckFile]
   let switch = guiVisibility.flag()
@@ -111,9 +107,7 @@ proc unlinkFiles*(deckFile: string) =
       stderr.writeLine(fmt"Warning: Could not delete {f} (likely in use).")
 
 
-# ---------------------------------------------------------------------------
-# Main simulation
-# ---------------------------------------------------------------------------
+# Simulation
 proc simulate*(
     deckFile: string,
     eventSink: EventSink,
@@ -157,7 +151,10 @@ proc simulate*(
   try:
     initJobGuard()
   except OSError as e:
-    stderr.writeLine("Warning: orphan guard unavailable, TrnEXE64.exe may outlive trnrun: ", e.msg)
+    stderr.writeLine(
+      "Warning: orphan guard unavailable, TrnEXE64.exe may outlive trnrun: ",
+      e.msg,
+    )
 
   eventSink(settingEvent(settings, trnexePath))
   eventSink(statusEvent(statusPending))
@@ -245,7 +242,7 @@ proc simulate*(
 
   return monitorResult
 
-# ---------------------------------------------------------------------------
+# Direct-run example
 when isMainModule:
   let deckFile = absolutePath(r"examples\dck\example_w_plot_w_tracking.dck")
   var runnerSettings = DefaultRunnerSettings

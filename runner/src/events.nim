@@ -92,7 +92,8 @@ type
     information*: Option[string]
 
   SimulationEventKind* = enum
-    ## Discriminant for a structured simulation event. Values are JSON `kind` tags.
+    ## Discriminant for a structured simulation event. Values are JSON `kind`
+    ## tags.
     eventSetting = "SETTING"
     eventStatus = "STATUS"
     eventConfig = "CONFIG"
@@ -112,7 +113,6 @@ type
       progressData*: ProgressEvent
     of eventLog:
       logData*: LogEvent
-
 
 proc `%`*(event: SettingEvent): JsonNode =
   ## Serializes the runner settings applied to a simulation.

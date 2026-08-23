@@ -30,9 +30,7 @@ import ./eventsink
 import ./processwait
 import ./status
 
-# ---------------------------------------------------------------------------
 # Types
-# ---------------------------------------------------------------------------
 type
   SimLog = object
     ## A single parsed TRNSYS log entry.
@@ -62,7 +60,6 @@ type
     config: SimConfig
     progress: SimProgress
 
-
   MonitorState = object
     ## Mutable book-keeping shared across polling ticks.
     tmpFile: string
@@ -78,9 +75,7 @@ type
     stallTimeoutMs: int
     lastProgressChange: Time
 
-# ---------------------------------------------------------------------------
-# Progress / tmp file
-# ---------------------------------------------------------------------------
+# Progress and TMP data
 proc percent(self: SimProgress, config: SimConfig): float =
   ## Returns simulation progress in [0, 1] relative to `config`.
   if config.stop <= config.start: return 0.0
@@ -97,9 +92,7 @@ proc eta(self: SimProgress, config: SimConfig, realStart: Time): float =
   let elap = self.elapsed(realStart)
   max(0.0, elap / pct - elap)
 
-# ---------------------------------------------------------------------------
 # Event conversion
-# ---------------------------------------------------------------------------
 proc configEvent(config: SimConfig): SimulationEvent =
   ## Creates an event from parsed run parameters.
   SimulationEvent(
@@ -143,12 +136,14 @@ proc logEvent(entry: SimLog): SimulationEvent =
     ),
   )
 
-# ---------------------------------------------------------------------------
 # Log parsing
-# ---------------------------------------------------------------------------
-const LogIgnoredValues = ["Not applicable", "Not available", "Not applicable or not available"]
+const LogIgnoredValues = [
+  "Not applicable",
+  "Not available",
+  "Not applicable or not available",
+]
 
-# -- Utilities --
+# Utilities
 proc splitKeyValue(line: string): tuple[key, val: string] =
   ## Splits `line` at the first `:` into a key and value, both stripped.
   result = ("", "")
@@ -160,7 +155,7 @@ proc splitValue(line: string): string =
   ## Returns the value part of a `key : value` line.
   splitKeyValue(line).val
 
-# -- Field parsers --
+# Field parsers
 proc parseHeader(line: string, log: var SimLog) =
   ## Parses `*** <severity> at time : <time>`.
   let (key, val) = splitKeyValue(line)
@@ -207,8 +202,10 @@ proc parseInformation(line: string, log: var SimLog) =
   if val notin LogIgnoredValues:
     log.information = some(val)
 
-# -- Dispatch table --
-type LogFieldParser = proc(line: string, log: var SimLog) {.noSideEffect, gcsafe.}
+# Dispatch table
+type LogFieldParser = proc(
+    line: string, log: var SimLog
+) {.noSideEffect, gcsafe.}
 
 const LogFieldParsers: array[7, tuple[prefix: string, parser: LogFieldParser]] = [
   ("***", parseHeader),
@@ -220,7 +217,7 @@ const LogFieldParsers: array[7, tuple[prefix: string, parser: LogFieldParser]] =
   ("message", parseMessage),
 ]
 
-# -- Helpers --
+# Helpers
 proc splitIntoBlocks(lines: openArray[string]): seq[seq[string]] =
   ## Groups log lines into blocks, each starting with a `***` header line.
   result = @[]
@@ -246,7 +243,7 @@ proc parseLogBlock(blck: openArray[string]): Option[SimLog] =
 
   for line in blck:
     let stripped = line.strip()
-    let lower    = stripped.toLowerAscii()
+    let lower = stripped.toLowerAscii()
     for (prefix, parser) in LogFieldParsers:
       if lower.startsWith(prefix):
         try:
@@ -261,7 +258,8 @@ proc parseLogBlock(blck: openArray[string]): Option[SimLog] =
   result = some(entry)
 
 proc readNewLines(offset: var int64, path: string): seq[string] =
-  ## Reads newly appended lines from `path`, advancing `offset` and resetting it if the file was truncated.
+  ## Reads newly appended lines from `path`, advancing `offset` and resetting it
+  ## if the file was truncated.
   result = @[]
   var file = default(File)
   if not open(file, path, fmRead): return @[]
@@ -270,7 +268,9 @@ proc readNewLines(offset: var int64, path: string): seq[string] =
   let size = file.getFileSize()
 
   if offset > size:
-    stderr.writeLine("[Monitor] Log file truncated (", path, "); re-reading from start.")
+    stderr.writeLine(
+      "[Monitor] Log file truncated (", path, "); re-reading from start."
+    )
     offset = 0
   if offset == size: return @[]
 
@@ -282,23 +282,28 @@ proc readNewLines(offset: var int64, path: string): seq[string] =
 
   offset = file.getFilePos()
 
-# -- Iterator --
+# Iterator
 iterator readLog(offset: var int64, path: string): SimLog =
-  ## Yields log entries appended since the last call with the same `offset` (nothing if `path` doesn't exist yet).
+  ## Yields log entries appended since the last call with the same `offset`
+  ## (nothing if `path` doesn't exist yet).
   if fileExists(path):
     for blck in splitIntoBlocks(readNewLines(offset, path)):
       let parsed = parseLogBlock(blck)
       if parsed.isSome:
         yield parsed.get()
 
-# ---------------------------------------------------------------------------
-# tmp parsing
-# ---------------------------------------------------------------------------
+# TMP parsing
 proc parseTmpContent(content: string): Option[TmpSnapshot] =
-  ## Parses raw Type3830 tmp content of the form `currentTime, start, stop, step`.
+  ## Parses raw Type3830 tmp content of the form
+  ## `currentTime, start, stop, step`.
   let parts = content.strip().split(',')
   if parts.len != 4:
-    stderr.writeLine("[Monitor] Malformed tmp content (expected 4 fields, got ", parts.len, "): ", content.strip())
+    stderr.writeLine(
+      "[Monitor] Malformed tmp content (expected 4 fields, got ",
+      parts.len,
+      "): ",
+      content.strip(),
+    )
     return none(TmpSnapshot)
 
   try:
@@ -308,27 +313,32 @@ proc parseTmpContent(content: string): Option[TmpSnapshot] =
       config: SimConfig(
         timestamp: ts,
         start: parseFloat(parts[1].strip()),
-        stop:  parseFloat(parts[2].strip()),
-        step:  parseFloat(parts[3].strip()),
+        stop: parseFloat(parts[2].strip()),
+        step: parseFloat(parts[3].strip()),
       ),
     )
   except ValueError as e:
-    stderr.writeLine("[Monitor] Failed to parse tmp fields: ", e.msg, " | content: ", content.strip())
+    stderr.writeLine(
+      "[Monitor] Failed to parse tmp fields: ",
+      e.msg,
+      " | content: ",
+      content.strip(),
+    )
     return none(TmpSnapshot)
 
 proc readTmp(filepath: string): Option[TmpSnapshot] =
-  ## Reads and parses a Type3830 tmp file; returns `none` on any I/O or parse error.
+  ## Reads and parses a Type3830 tmp file; returns `none` on any I/O or parse
+  ## error.
   try:
     return parseTmpContent(readFile(filepath))
   except CatchableError:
     return none(TmpSnapshot)
 
-# ---------------------------------------------------------------------------
-# Poll loop
-# ---------------------------------------------------------------------------
+# Polling
 
 proc pollTmp(state: var MonitorState) =
-  ## Reads the tmp file and emits config/progress events as needed, skipping silently on I/O or parse errors.
+  ## Reads the tmp file and emits config/progress events as needed, skipping
+  ## silently on I/O or parse errors.
   let snap = readTmp(state.tmpFile)
   if snap.isNone: return
 
@@ -336,14 +346,18 @@ proc pollTmp(state: var MonitorState) =
   if state.lastSnapshot.isNone:
     state.eventSink(configEvent(current.config))
 
-  if state.lastSnapshot.isNone or current.progress.time != state.lastSnapshot.get().progress.time:
-    state.eventSink(progressEvent(current.progress, current.config, state.startTime))
+  if state.lastSnapshot.isNone or
+      current.progress.time != state.lastSnapshot.get().progress.time:
+    state.eventSink(
+      progressEvent(current.progress, current.config, state.startTime)
+    )
     state.lastProgressChange = getTime()
 
   state.lastSnapshot = some(current)
 
 proc pollLog(state: var MonitorState, emitLogs: bool = true): bool =
-  ## Processes new log entries, emitting those at or above the severity threshold; returns `true` on a Fatal entry.
+  ## Processes new log entries, emitting those at or above the severity
+  ## threshold; returns `true` on a Fatal entry.
   for entry in readLog(state.logOffset, state.logFile):
     if emitLogs and entry.severity >= state.severity:
       state.eventSink(logEvent(entry))
@@ -360,12 +374,16 @@ proc tick(state: var MonitorState): bool =
   if state.watchLog: result = state.pollLog()
 
 proc isTimedOut(state: MonitorState): bool =
-  ## Returns `true` if the overall monitoring duration has exceeded `watchTimeoutMs`.
-  state.watchTimeoutMs > 0 and (getTime() - state.startTime).inMilliseconds >= state.watchTimeoutMs
+  ## Returns `true` if the overall monitoring duration has exceeded
+  ## `watchTimeoutMs`.
+  state.watchTimeoutMs > 0 and
+    (getTime() - state.startTime).inMilliseconds >= state.watchTimeoutMs
 
 proc isStalled(state: MonitorState): bool =
-  ## Returns `true` if simulation time has not advanced for `stallTimeoutMs` while under 100 % (requires `watchTmp`).
-  if not state.watchTmp or state.stallTimeoutMs <= 0 or state.lastSnapshot.isNone:
+  ## Returns `true` if simulation time has not advanced for `stallTimeoutMs`
+  ## while under 100 % (requires `watchTmp`).
+  if not state.watchTmp or state.stallTimeoutMs <= 0 or
+      state.lastSnapshot.isNone:
     return false
 
   let snap = state.lastSnapshot.get()
@@ -375,16 +393,24 @@ proc isStalled(state: MonitorState): bool =
   (getTime() - state.lastProgressChange).inMilliseconds >= state.stallTimeoutMs
 
 proc clampTimeout(timeoutMs, pollMs: int, name: string): int =
-  ## Raises `timeoutMs` to `pollMs` when smaller, since finer thresholds would trigger prematurely; 0 stays disabled.
+  ## Raises `timeoutMs` to `pollMs` when smaller, since finer thresholds would
+  ## trigger prematurely; 0 stays disabled.
   if timeoutMs > 0 and timeoutMs < pollMs:
-    stderr.writeLine("[Monitor] ", name, " (", timeoutMs, " ms) is less than pollMs (",
-                      pollMs, " ms); using ", pollMs, " ms instead.")
+    stderr.writeLine(
+      "[Monitor] ",
+      name,
+      " (",
+      timeoutMs,
+      " ms) is less than pollMs (",
+      pollMs,
+      " ms); using ",
+      pollMs,
+      " ms instead.",
+    )
     return pollMs
   return timeoutMs
 
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
+# Public API
 proc monitor*(
     process: Process,
     deckFile: string,
@@ -397,7 +423,8 @@ proc monitor*(
     watchTimeoutMs: int = 0,
     stallTimeoutMs: int = 0,
 ): SimResult =
-  ## Polls TRNSYS output files until the process exits, emitting structured events.
+  ## Polls TRNSYS output files until the process exits, emitting structured
+  ## events.
   ##
   ## Watches the Type3830 `.tmp` file and the TRNSYS `.log` file of a
   ## running simulation, delivering structured events through `eventSink`.
@@ -440,12 +467,12 @@ proc monitor*(
   ##     `stallTimeoutMs`.
   let interval = max(1, pollMs)
   var state = MonitorState(
-    tmpFile:   deckFile.changeFileExt("tmp"),
-    logFile:   deckFile.changeFileExt("log"),
+    tmpFile: deckFile.changeFileExt("tmp"),
+    logFile: deckFile.changeFileExt("log"),
     startTime: startTime,
-    watchLog:  watchLog,
-    watchTmp:  watchTmp,
-    severity:  severity,
+    watchLog: watchLog,
+    watchTmp: watchTmp,
+    severity: severity,
     eventSink: eventSink,
     watchTimeoutMs: clampTimeout(watchTimeoutMs, interval, "watchTimeoutMs"),
     stallTimeoutMs: clampTimeout(stallTimeoutMs, interval, "stallTimeoutMs"),
@@ -461,14 +488,19 @@ proc monitor*(
     if state.tick(): return simFatal
 
     if state.isStalled():
-      stderr.writeLine("[Monitor] Stall detected - no progress for ",
-                        (getTime() - state.lastProgressChange).inMilliseconds, " ms.")
+      stderr.writeLine(
+        "[Monitor] Stall detected - no progress for ",
+        (getTime() - state.lastProgressChange).inMilliseconds,
+        " ms.",
+      )
       return simStalled
 
     if state.isTimedOut():
-      stderr.writeLine("[Monitor] Timeout after ",
-                        (getTime() - state.startTime).inMilliseconds,
-                        " ms - process still running.")
+      stderr.writeLine(
+        "[Monitor] Timeout after ",
+        (getTime() - state.startTime).inMilliseconds,
+        " ms - process still running.",
+      )
       return simTimeout
 
     if process.waitForExitNonDestructive(interval):

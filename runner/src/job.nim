@@ -20,9 +20,7 @@ when not defined(windows):
 
 import std/[winlean, oserrors]
 
-# ---------------------------------------------------------------------------
 # Win32 API
-# ---------------------------------------------------------------------------
 type
   JOBOBJECT_BASIC_LIMIT_INFORMATION = object
     perProcessUserTimeLimit: int64
@@ -67,14 +65,10 @@ proc assignProcessToJobObject(
   hJob, hProcess: Handle
 ): int32 {.importc: "AssignProcessToJobObject", dynlib: "kernel32", stdcall.}
 
-# ---------------------------------------------------------------------------
 # Module state
-# ---------------------------------------------------------------------------
 var jobHandle: Handle = 0
 
-# ---------------------------------------------------------------------------
-# Public interface
-# ---------------------------------------------------------------------------
+# Public API
 proc initJobGuard*() =
   ## Creates the kill-on-close job object and places this process in it.
   ##

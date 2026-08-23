@@ -16,9 +16,7 @@
 
 import std/[strutils, winlean]
 
-# ---------------------------------------------------------------------------
 # Win32 API
-# ---------------------------------------------------------------------------
 const
   OFN_PATHMUSTEXIST = 0x00000800'i32
   OFN_FILEMUSTEXIST = 0x00001000'i32
@@ -52,9 +50,7 @@ proc getOpenFileNameW(
   p: ptr OPENFILENAMEW
 ): int32 {.importc: "GetOpenFileNameW", dynlib: "comdlg32", stdcall.}
 
-# ---------------------------------------------------------------------------
-# Public Interface
-# ---------------------------------------------------------------------------
+# Public API
 proc openFileDialog*(
     title: string = "Open File", filter: string = "All Files\0*.*\0"
 ): string =
@@ -94,6 +90,7 @@ proc openDeckFileDialog*(): string =
   openFileDialog(
     title = "Select TRNSYS Deck File",
     filter =
-      "Standard File (*.DCK)\0*.dck\0" & "TRNSED File (*.TRD)\0*.trd\0" &
+      "Standard File (*.DCK)\0*.dck\0" &
+      "TRNSED File (*.TRD)\0*.trd\0" &
       "All files (*.*)\0*.*\0",
   )

@@ -16,9 +16,7 @@
 
 import std/[os, locks, strutils, winlean]
 
-# ---------------------------------------------------------------------------
 # Win32 API
-# ---------------------------------------------------------------------------
 proc createMutex(attributes: pointer; initialOwner: cint; name: WideCString): Handle
   {.importc: "CreateMutexW", stdcall, dynlib: "kernel32".}
 
@@ -40,9 +38,7 @@ var
 
 initLock.initLock()
 
-# ---------------------------------------------------------------------------
-# Initialisation
-# ---------------------------------------------------------------------------
+# Initialization
 proc getLaunchMutex(): Handle =
   ## Returns the session-wide launch mutex, creating or opening it on the
   ## first call. All access to `launchMutex` goes through here, so the
@@ -51,13 +47,13 @@ proc getLaunchMutex(): Handle =
     if launchMutex == 0:
       let handle = createMutex(nil, 0, newWideCString(LaunchMutexName))
       if handle == 0:
-        raiseOSError(osLastError(), "Failed to create or open the TRNSYS launch mutex.")
+        raiseOSError(
+          osLastError(), "Failed to create or open the TRNSYS launch mutex."
+        )
       launchMutex = handle
     result = launchMutex
 
-# ---------------------------------------------------------------------------
-# Acquire / Release
-# ---------------------------------------------------------------------------
+# Lock operations
 proc acquireLaunchLock*() =
   ## Blocks until the TRNSYS launch mutex is acquired.
   ##
@@ -70,7 +66,10 @@ proc acquireLaunchLock*() =
   ##     If the mutex cannot be created, opened, or acquired.
   let waitResult = waitForSingleObject(getLaunchMutex(), INFINITE)
   if waitResult == WAIT_ABANDONED:
-    stderr.writeLine "Warning: a previous TRNSYS process did not exit cleanly. Proceeding anyway."
+    stderr.writeLine(
+      "Warning: a previous TRNSYS process did not exit cleanly. " &
+        "Proceeding anyway."
+    )
   elif waitResult != WAIT_OBJECT_0:
     raiseOSError(osLastError(), "Failed to acquire the TRNSYS launch mutex.")
 
@@ -82,12 +81,13 @@ proc releaseLaunchLock*() =
   ## discarded, because it strands every launcher in the session.
   if releaseMutex(getLaunchMutex()) == 0:
     let err = osLastError()
-    stderr.writeLine "Warning: failed to release the TRNSYS launch mutex (" &
-      osErrorMsg(err).strip() & "). Released from a different thread than acquired it?"
+    stderr.writeLine(
+      "Warning: failed to release the TRNSYS launch mutex (" &
+        osErrorMsg(err).strip() &
+        "). Released from a different thread than acquired it?"
+    )
 
-# ---------------------------------------------------------------------------
-# Public Template
-# ---------------------------------------------------------------------------
+# Public API
 template withLaunchLock*(body: untyped) =
   ## Runs `body` while holding the TRNSYS launch mutex.
   ##

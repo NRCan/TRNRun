@@ -16,7 +16,8 @@ import ./filedialog
 const NimblePkgVersion {.strdefine.} = "unknown"
 
 proc parseGuiVisibility(s: string): TrnexeGuiVisibility =
-  ## Parses a CLI visibility string into a `TrnexeGuiVisibility`; raises `ValueError` on unknown input.
+  ## Parses a CLI visibility string into a `TrnexeGuiVisibility`; raises
+  ## `ValueError` on unknown input.
   case s.toLowerAscii()
   of "keep", "keepopen":
     guiKeepOpen
@@ -30,7 +31,6 @@ proc parseGuiVisibility(s: string): TrnexeGuiVisibility =
     guiHidden
   else:
     raise newException(ValueError, "Invalid guiVisibility: " & s)
-
 
 proc writeHelp() =
   ## Prints CLI usage to stdout.
