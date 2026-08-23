@@ -33,12 +33,9 @@ func exitCode*(outcome: SimResult): int =
   of simTimeout: 124
   of simStalled: 125
 
-proc statusEvent*(
-    status: SimStatus, timestamp: DateTime = now()
-): SimulationEvent =
+proc statusEvent*(status: SimStatus, timestamp: DateTime = now()): SimulationEvent =
   ## Creates a timestamped lifecycle event.
   SimulationEvent(
     kind: eventStatus,
     statusData: StatusEvent(timestamp: timestamp, status: status),
   )
-

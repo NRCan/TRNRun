@@ -48,9 +48,7 @@ proc getLaunchMutex(): Handle =
     if launchMutex == 0:
       let handle = createMutex(nil, 0, newWideCString(LaunchMutexName))
       if handle == 0:
-        raiseOSError(
-          osLastError(), "Failed to create or open the TRNSYS launch mutex."
-        )
+        raiseOSError(osLastError(), "Failed to create or open the TRNSYS launch mutex.")
       launchMutex = handle
     result = launchMutex
 
@@ -65,13 +63,8 @@ proc acquireLaunchLock() =
   of WAIT_OBJECT_0:
     discard
   of WAIT_ABANDONED:
-    stderr.writeLine(
-      "Warning: a previous TRNSYS process did not exit cleanly. " &
-        "Proceeding anyway."
-    )
+    stderr.writeLine("Warning: a previous TRNSYS process did not exit cleanly. Proceeding anyway.")
   of WAIT_TIMEOUT:
-    # WaitForSingleObject sets no last error on timeout, so osLastError() in the
-    # branch below would report something stale and unrelated.
     raise newException(
       IOError,
       "Timed out after " & $(LaunchLockTimeoutMs div 1000) &

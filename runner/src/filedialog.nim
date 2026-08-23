@@ -36,9 +36,7 @@ type OPENFILENAMEW {.pure.} = object
   dwReserved: int32
   flagsEx: int32
 
-proc getOpenFileNameW(
-  p: ptr OPENFILENAMEW
-): int32 {.importc: "GetOpenFileNameW", dynlib: "comdlg32", stdcall.}
+proc getOpenFileNameW(p: ptr OPENFILENAMEW): int32 {.importc: "GetOpenFileNameW", dynlib: "comdlg32", stdcall.}
 
 # Public API
 proc openFileDialog*(

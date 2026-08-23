@@ -98,9 +98,7 @@ proc configEvent(config: SimConfig): SimulationEvent =
     ),
   )
 
-proc progressEvent(
-    progress: SimProgress, config: SimConfig, realStart: MonoTime
-): SimulationEvent =
+proc progressEvent(progress: SimProgress, config: SimConfig, realStart: MonoTime): SimulationEvent =
   SimulationEvent(
     kind: eventProgress,
     progressData: ProgressEvent(
@@ -193,9 +191,7 @@ proc parseInformation(line: string, log: var SimLog) =
     log.information = some(val)
 
 # Dispatch table
-type LogFieldParser = proc(
-    line: string, log: var SimLog
-) {.noSideEffect, gcsafe.}
+type LogFieldParser = proc(line: string, log: var SimLog) {.noSideEffect, gcsafe.}
 
 const LogFieldParsers: array[7, tuple[prefix: string, parser: LogFieldParser]] = [
   ("***", parseHeader),
@@ -255,9 +251,7 @@ proc readNewLines(offset: var int64, path: string): seq[string] =
 
   let size = file.getFileSize()
   if offset > size:
-    stderr.writeLine(
-      "[Monitor] Log file truncated (", path, "); re-reading from start."
-    )
+    stderr.writeLine("[Monitor] Log file truncated (", path, "); re-reading from start.")
     offset = 0
   if offset >= size: return
 
@@ -289,12 +283,7 @@ proc parseTmpContent(content: string): Option[TmpSnapshot] =
   ## `currentTime, start, stop, step`.
   let parts = content.strip().split(',')
   if parts.len != 4:
-    stderr.writeLine(
-      "[Monitor] Malformed tmp content (expected 4 fields, got ",
-      parts.len,
-      "): ",
-      content.strip(),
-    )
+    stderr.writeLine("[Monitor] Malformed tmp content (expected 4 fields, got ", parts.len, "): ", content.strip())
     return none(TmpSnapshot)
 
   try:
@@ -302,22 +291,19 @@ proc parseTmpContent(content: string): Option[TmpSnapshot] =
     let mono = getMonoTime()
     return some TmpSnapshot(
       progress: SimProgress(
-        timestamp: ts, mono: mono, time: parseFloat(parts[0].strip())
+        timestamp: ts,
+        mono: mono,
+        time: parseFloat(parts[0].strip())
       ),
       config: SimConfig(
         timestamp: ts,
         start: parseFloat(parts[1].strip()),
         stop: parseFloat(parts[2].strip()),
-        step: parseFloat(parts[3].strip()),
-      ),
+        step: parseFloat(parts[3].strip())
+      )
     )
   except ValueError as e:
-    stderr.writeLine(
-      "[Monitor] Failed to parse tmp fields: ",
-      e.msg,
-      " | content: ",
-      content.strip(),
-    )
+    stderr.writeLine("[Monitor] Failed to parse tmp fields: ", e.msg, " | content: ", content.strip())
     return none(TmpSnapshot)
 
 proc readTmp(path: string): Option[TmpSnapshot] =
@@ -329,22 +315,23 @@ proc readTmp(path: string): Option[TmpSnapshot] =
     return none(TmpSnapshot)
 
 # Polling
-
 proc pollTmp(state: var MonitorState) =
   ## Reads the tmp file and emits config/progress events as needed, skipping
   ## silently on I/O or parse errors.
   let snapshot = readTmp(state.tmpFile)
-  if snapshot.isNone: return
+  if snapshot.isNone:
+    return
 
   let current = snapshot.get()
-  if state.lastSnapshot.isNone:
+  let isFirstSnapshot = state.lastSnapshot.isNone
+
+  if isFirstSnapshot:
     state.eventSink(configEvent(current.config))
 
-  if state.lastSnapshot.isNone or
-      current.progress.time != state.lastSnapshot.get().progress.time:
-    state.eventSink(
-      progressEvent(current.progress, current.config, state.startTime)
-    )
+  let progressChanged = isFirstSnapshot or current.progress.time != state.lastSnapshot.get().progress.time
+
+  if progressChanged:
+    state.eventSink(progressEvent(current.progress, current.config, state.startTime))
     state.lastProgressChange = getMonoTime()
 
   state.lastSnapshot = some(current)
@@ -370,38 +357,25 @@ proc tick(state: var MonitorState): bool =
 proc isTimedOut(state: MonitorState): bool =
   ## Returns `true` if the overall monitoring duration has exceeded
   ## `watchTimeoutMs`.
-  state.watchTimeoutMs > 0 and
-    (getMonoTime() - state.startTime).inMilliseconds >= state.watchTimeoutMs
+  state.watchTimeoutMs > 0 and (getMonoTime() - state.startTime).inMilliseconds >= state.watchTimeoutMs
 
 proc isStalled(state: MonitorState): bool =
   ## Returns `true` if simulation time has not advanced for `stallTimeoutMs`
   ## while under 100 % (requires `watchTmp`).
-  if not state.watchTmp or state.stallTimeoutMs <= 0 or
-      state.lastSnapshot.isNone:
+  if not state.watchTmp or state.stallTimeoutMs <= 0 or state.lastSnapshot.isNone:
     return false
 
   let snapshot = state.lastSnapshot.get()
   if snapshot.progress.percent(snapshot.config) >= 1.0:
     return false
 
-  (getMonoTime() - state.lastProgressChange).inMilliseconds >=
-    state.stallTimeoutMs
+  return (getMonoTime() - state.lastProgressChange).inMilliseconds >= state.stallTimeoutMs
 
 proc clampTimeout(timeoutMs, pollMs: int, name: string): int =
   ## Raises `timeoutMs` to `pollMs` when smaller, since finer thresholds would
   ## trigger prematurely; 0 stays disabled.
   if timeoutMs > 0 and timeoutMs < pollMs:
-    stderr.writeLine(
-      "[Monitor] ",
-      name,
-      " (",
-      timeoutMs,
-      " ms) is less than pollMs (",
-      pollMs,
-      " ms); using ",
-      pollMs,
-      " ms instead.",
-    )
+    stderr.writeLine("[Monitor] ", name, " (", timeoutMs, " ms) is less than pollMs (", pollMs, " ms); using ", pollMs, " ms instead.")
     return pollMs
   return timeoutMs
 
@@ -439,12 +413,8 @@ proc monitor*(
     watchTmp: watchTmp,
     severity: severity,
     eventSink: eventSink,
-    watchTimeoutMs: clampTimeout(
-      watchTimeoutMs, interval, "watchTimeoutMs"
-    ),
-    stallTimeoutMs: clampTimeout(
-      stallTimeoutMs, interval, "stallTimeoutMs"
-    ),
+    watchTimeoutMs: clampTimeout(watchTimeoutMs, interval, "watchTimeoutMs"),
+    stallTimeoutMs: clampTimeout(stallTimeoutMs, interval, "stallTimeoutMs"),
     lastProgressChange: startTime,
   )
 
@@ -457,19 +427,11 @@ proc monitor*(
     if state.tick(): return simFatal
 
     if state.isStalled():
-      stderr.writeLine(
-        "[Monitor] Stall detected - no progress for ",
-        (getMonoTime() - state.lastProgressChange).inMilliseconds,
-        " ms.",
-      )
+      stderr.writeLine("[Monitor] Stall detected - no progress for ", (getMonoTime() - state.lastProgressChange).inMilliseconds, " ms.")
       return simStalled
 
     if state.isTimedOut():
-      stderr.writeLine(
-        "[Monitor] Timeout after ",
-        (getMonoTime() - state.startTime).inMilliseconds,
-        " ms - process still running.",
-      )
+      stderr.writeLine("[Monitor] Timeout after ", (getMonoTime() - state.startTime).inMilliseconds, " ms - process still running.")
       return simTimeout
 
     if process.waitForExitNonDestructive(interval):

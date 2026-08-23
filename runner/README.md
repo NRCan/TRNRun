@@ -1,4 +1,4 @@
-# TRNRun - Runner
+# TRNRun Runner
 
 `trnrun.exe` provides a monitored command-line execution layer around the TRNSYS
 executables `TrnEXE64.exe` and `TrnEXE.exe`. It serializes launch and readiness

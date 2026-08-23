@@ -70,6 +70,8 @@ proc poll(
 ): bool {.gcsafe.} =
   ## Polls `condition` with exponential backoff until it returns true or
   ## `timeoutMs` (0 = forever) expires.
+  result = false
+
   if initialIntervalMs <= 0:
     raise newException(ValueError, "initialIntervalMs must be positive")
   if maxIntervalMs < initialIntervalMs:
@@ -88,13 +90,16 @@ proc poll(
       getMonoTime() + initDuration(milliseconds = timeoutMs)
 
   var delay = initialIntervalMs.float
-  result = false
 
   while true:
     if condition():
       return true
 
-    if not infinite:
+    var waitMs: int
+
+    if infinite:
+      waitMs = delay.int
+    else:
       let now = getMonoTime()
       if now >= deadline:
         return false
@@ -103,13 +108,14 @@ proc poll(
       if remaining <= 0:
         return false
 
-      if process.waitForExitNonDestructive(min(delay.int, remaining)):
-        return condition() # Last-chance read of files flushed just before exit.
-    else:
-      if process.waitForExitNonDestructive(delay.int):
-        return condition()
+      waitMs = min(delay.int, remaining)
+
+    if process.waitForExitNonDestructive(waitMs):
+      # Last-chance read of files flushed just before process exit.
+      return condition()
 
     delay = min(delay * backoff, maxIntervalMs.float)
+
 
 # File-based readiness
 const LstHeader =

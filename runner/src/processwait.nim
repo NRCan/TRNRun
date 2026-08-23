@@ -38,10 +38,7 @@ proc waitForExitNonDestructive*(process: Process, timeoutMs: int): bool =
   defer:
     discard closeHandle(handle)
 
-  let waitResult = waitForSingleObject(
-    handle,
-    min(timeoutMs, high(int32).int).int32,
-  )
+  let waitResult = waitForSingleObject(handle, min(timeoutMs, high(int32).int).int32)
   if waitResult == WAIT_FAILED:
     raiseOSError(osLastError(), "Failed while waiting for process exit.")
 

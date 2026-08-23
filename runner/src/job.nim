@@ -13,8 +13,7 @@
 ## let p = startProcess("trnrun.exe", …)   # captured automatically
 ## ```
 
-when not defined(windows):
-  {.error: "job.nim is Windows-only. Guard the import with `when defined(windows)`.".}
+when not defined(windows): {.error: "job.nim is Windows-only. Guard the import with `when defined(windows)`.".}
 
 import std/[winlean, oserrors]
 
@@ -51,17 +50,9 @@ const
   JOB_OBJECT_EXTENDED_LIMIT_INFO_CLASS = 9'i32
   JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000'u32
 
-proc createJobObjectW(
-  lpJobAttributes, lpName: pointer
-): Handle {.importc: "CreateJobObjectW", dynlib: "kernel32", stdcall.}
-
-proc setInformationJobObject(
-  hJob: Handle, infoClass: int32, lpInfo: pointer, cbLen: uint32
-): int32 {.importc: "SetInformationJobObject", dynlib: "kernel32", stdcall.}
-
-proc assignProcessToJobObject(
-  hJob, hProcess: Handle
-): int32 {.importc: "AssignProcessToJobObject", dynlib: "kernel32", stdcall.}
+proc createJobObjectW(lpJobAttributes, lpName: pointer): Handle {.importc: "CreateJobObjectW", dynlib: "kernel32", stdcall.}
+proc setInformationJobObject(hJob: Handle, infoClass: int32, lpInfo: pointer, cbLen: uint32): int32 {.importc: "SetInformationJobObject", dynlib: "kernel32", stdcall.}
+proc assignProcessToJobObject(hJob, hProcess: Handle): int32 {.importc: "AssignProcessToJobObject", dynlib: "kernel32", stdcall.}
 
 # Module state
 var jobHandle: Handle = 0
@@ -79,14 +70,11 @@ proc initJobGuard*() =
     return
 
   let h = createJobObjectW(nil, nil)
-  if h == 0:
-    raiseOSError(osLastError(), "Failed to create Win32 Job Object.")
+  if h == 0: raiseOSError(osLastError(), "Failed to create Win32 Job Object.")
 
   var info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
   info.basicLimitInformation.limitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-  if setInformationJobObject(
-    h, JOB_OBJECT_EXTENDED_LIMIT_INFO_CLASS, addr info, sizeof(info).uint32
-  ) == 0:
+  if setInformationJobObject(h, JOB_OBJECT_EXTENDED_LIMIT_INFO_CLASS, addr info, sizeof(info).uint32) == 0:
     let err = osLastError()
     discard closeHandle(h)
     raiseOSError(err, "Failed to configure Job Object limits.")

@@ -60,22 +60,16 @@ proc launchTrnexe(
     args.add(switch)
 
   try:
-    return startProcess(
-      trnexePath, workingDir = deckFile.parentDir(), args = args, options = {}
-    )
+    return startProcess(trnexePath, workingDir = deckFile.parentDir(), args = args, options = {})
   except OSError, IOError:
-    raise newException(
-      TrnexeLaunchError, "Failed to launch TRNSYS: " & getCurrentExceptionMsg()
-    )
+    raise newException(TrnexeLaunchError, "Failed to launch TRNSYS: " & getCurrentExceptionMsg())
 
 proc removeSidecarFiles(deckFile: string) =
   ## Deletes TRNSYS sidecar files for a deck, ignoring missing ones.
   for extension in SidecarExtensions:
     let sidecarPath = deckFile.changeFileExt(extension)
     if fileExists(sidecarPath) and not tryRemoveFile(sidecarPath):
-      stderr.writeLine(
-        fmt"Warning: Could not delete {sidecarPath} (likely in use)."
-      )
+      stderr.writeLine(fmt"Warning: Could not delete {sidecarPath} (likely in use).")
 
 
 # Simulation
@@ -100,10 +94,7 @@ proc simulate*(
   try:
     initJobGuard()
   except OSError as e:
-    stderr.writeLine(
-      "Warning: orphan guard unavailable, TrnEXE64.exe may outlive trnrun: ",
-      e.msg,
-    )
+    stderr.writeLine("Warning: orphan guard unavailable, TrnEXE64.exe may outlive trnrun: ", e.msg)
 
   eventSink(settingEvent(settings, trnexePath))
   eventSink(statusEvent(statusPending))
@@ -176,35 +167,37 @@ proc simulate*(
     stallTimeoutMs = settings.stallTimeoutMs,
   )
 
+  var shouldKillProcess = false
+  var shouldWaitForProcess = false
+
   case monitorResult
-  of simDone:
-    eventSink(statusEvent(monitorResult.status))
-    if settings.cleanOnSuccess:
-      removeSidecarFiles(deckFile)
-  of simFatal, simCancelled:
-    eventSink(statusEvent(monitorResult.status))
+  of simDone, simFatal, simCancelled:
+    discard
+
   of simStalled:
-    if process.running and settings.killOnStall:
-      process.kill()
+    shouldKillProcess = settings.killOnStall
+    shouldWaitForProcess = not shouldKillProcess
 
-    eventSink(statusEvent(monitorResult.status))
-
-    if process.running and not settings.killOnStall:
-      discard process.waitForExit()
   of simTimeout:
-    if process.running and settings.killOnTimeout:
-      process.kill()
+    shouldKillProcess = settings.killOnTimeout
+    shouldWaitForProcess = not shouldKillProcess
 
-    eventSink(statusEvent(monitorResult.status))
+  if process.running and shouldKillProcess:
+    process.kill()
 
-    if process.running and not settings.killOnTimeout:
-      discard process.waitForExit()
+  eventSink(statusEvent(monitorResult.status))
+
+  if process.running and shouldWaitForProcess:
+    discard process.waitForExit()
+
+  if monitorResult == simDone and settings.cleanOnSuccess:
+    removeSidecarFiles(deckFile)
 
   return monitorResult
 
 # Direct-run example
 when isMainModule:
-  let deckFile = absolutePath(r"examples\dck\example_w_plot_w_tracking.dck")
+  let deckFile = absolutePath(r"runner\examples\dck\example_w_plot_w_tracking.dck")
   var runnerSettings = DefaultRunnerSettings
   runnerSettings.guiVisibility = guiMinimizedAuto
 

@@ -42,7 +42,7 @@ const
   DefaultTrnexePath = r"C:\TRNSYS18\Exe\TrnEXE64.exe"
   DefaultGuiVisibility = guiHidden
   DefaultDetectTimeoutMs = 300_000
-  DefaultRunnerSettings* = RunnerSettings(
+  DefaultRunnerSettings* = RunnerSettings( # Default settings for TRNSYS simulation runs.
     trnexePath: DefaultTrnexePath,
     guiVisibility: DefaultGuiVisibility,
     waitForGui: true,
@@ -61,7 +61,6 @@ const
     severity: Notice,
     writeEvents: false,
   )
-    ## Default settings for TRNSYS simulation runs.
 
 func flag*(visibility: TrnexeGuiVisibility): string =
   ## The TrnEXE command-line switch for a visibility mode ("" = no switch).
@@ -83,9 +82,7 @@ func wireValue(visibility: TrnexeGuiVisibility): string =
   of guiMinimizedAuto: "minimizedAuto"
   of guiHidden: "hidden"
 
-proc settingEvent*(
-    settings: RunnerSettings, trnexePath: string, timestamp: DateTime = now()
-): SimulationEvent =
+proc settingEvent*(settings: RunnerSettings, trnexePath: string, timestamp: DateTime = now()): SimulationEvent =
   ## Converts settings to wire values using the resolved executable path.
   SimulationEvent(
     kind: eventSetting,

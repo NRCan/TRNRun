@@ -5,7 +5,6 @@
 
 import std/json
 import ./events
-
 type
   EventSink* = proc(event: SimulationEvent) {.closure, gcsafe.}
     ## Synchronous destination for events produced by a simulation.
