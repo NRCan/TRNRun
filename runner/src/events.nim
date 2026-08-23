@@ -1,9 +1,7 @@
-## events.nim - typed simulation events and JSON serialization.
+## Defines typed simulation events and their JSON payload serialization.
 ##
-## Defines the events produced during a TRNSYS simulation independently of
-## their delivery destination. The standalone runner serializes these values
-## as one JSON object per line; the daemon can later wrap the same events with
-## run-specific routing metadata.
+## Events are delivery-independent. Sinks may add sequence or routing metadata
+## without changing the event payload.
 
 import std/[json, math, options, times]
 
@@ -115,7 +113,6 @@ type
       logData*: LogEvent
 
 proc `%`(event: SettingEvent): JsonNode =
-  ## Serializes the runner settings applied to a simulation.
   result = newJObject()
   result["kind"] = %($eventSetting)
   result["timestamp"] = %event.timestamp.formatEventTimestamp()
@@ -138,14 +135,12 @@ proc `%`(event: SettingEvent): JsonNode =
   result["writeEvents"] = %event.writeEvents
 
 proc `%`(event: StatusEvent): JsonNode =
-  ## Serializes a lifecycle status event.
   result = newJObject()
   result["kind"] = %($eventStatus)
   result["timestamp"] = %event.timestamp.formatEventTimestamp()
   result["status"] = %($event.status)
 
 proc `%`(event: ConfigEvent): JsonNode =
-  ## Serializes fixed simulation parameters.
   result = newJObject()
   result["kind"] = %($eventConfig)
   result["timestamp"] = %event.timestamp.formatEventTimestamp()
@@ -182,7 +177,6 @@ proc `%`(event: LogEvent): JsonNode =
     result["information"] = %event.information.get()
 
 proc `%`(event: SimulationEvent): JsonNode =
-  ## Dispatches a union event to its payload-specific serializer.
   case event.kind
   of eventSetting:
     %event.settingData
@@ -196,8 +190,5 @@ proc `%`(event: SimulationEvent): JsonNode =
     %event.logData
 
 proc toJson*(event: SimulationEvent): JsonNode {.inline.} =
-  ## Readable alias for the standard `std/json` serialization operator.
-  ##
-  ## This is the event's payload only. Sinks add the delivery metadata that
-  ## completes a wire line; see `sequencedEventSink` in `eventsink`.
+  ## Named boundary for payload serialization; sinks add delivery metadata.
   %event

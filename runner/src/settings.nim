@@ -40,9 +40,7 @@ type
 
 const
   DefaultTrnexePath = r"C:\TRNSYS18\Exe\TrnEXE64.exe"
-    ## Default TRNSYS 18 executable path.
   DefaultGuiVisibility = guiHidden
-    ## GUI mode used when none is specified.
   DefaultRunnerSettings* = RunnerSettings(
     trnexePath: DefaultTrnexePath,
     guiVisibility: DefaultGuiVisibility,
@@ -87,7 +85,7 @@ func wireValue(visibility: TrnexeGuiVisibility): string =
 proc settingEvent*(
     settings: RunnerSettings, trnexePath: string, timestamp: DateTime = now()
 ): SimulationEvent =
-  ## Creates an event containing the configured runner settings.
+  ## Converts settings to wire values using the resolved executable path.
   SimulationEvent(
     kind: eventSetting,
     settingData: SettingEvent(

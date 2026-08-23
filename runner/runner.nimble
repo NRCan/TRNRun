@@ -3,7 +3,7 @@ import std/strutils
 # Package
 version = "0.4.0"
 author = "Alex Lachance"
-description = "Process wrapper for TRNSYS TRNEXE with simulation monitoring and status reporting"
+description = "Process wrapper for TRNSYS TrnEXE with simulation monitoring and status reporting"
 license = "../LICENSE"
 srcDir = "src"
 bin = @["trnrun"]
@@ -11,7 +11,7 @@ bin = @["trnrun"]
 # Dependencies
 requires "nim >= 2.2.10"
 
-# Config
+# Build configuration
 const
   exeName = "trnrun"
   buildDir = "build"
@@ -51,5 +51,5 @@ proc compileExe() =
   exec args.join(" ")
 
 # Tasks
-task zigbuild, "Build with zig cc":
+task zigbuild, "Build with Zig cc":
   compileExe()

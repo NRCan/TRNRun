@@ -1,37 +1,8 @@
-## simulate.nim - high-level TRNSYS execution engine.
+## Orchestrates the complete TRNSYS simulation lifecycle.
 ##
-## This module provides a high-level interface for launching, monitoring,
-## and managing TRNSYS simulations via TrnEXE. It wraps process execution,
-## readiness detection, and runtime monitoring into a single controlled
-## workflow with structured status reporting.
-##
-## Key features:
-## - Safe execution of TRNSYS decks (.dck / .trd)
-## - Automatic validation of inputs and executable paths
-## - Global execution locking to prevent concurrent conflicts
-## - GUI visibility control, including synthesized "minimized" modes
-## - Multi-signal readiness detection:
-##     * GUI window detection
-##     * .lst file creation
-##     * .tmp file creation
-## - Continuous runtime monitoring of:
-##     * .log streaming events
-##     * .tmp progress/config updates
-## - Structured setting, lifecycle, progress, and log events through an `EventSink`
-## - Graceful handling of:
-##     * Normal completion
-##     * Crashes / fatal errors
-##     * Timeouts (launch or runtime)
-##     * Stalls (simulation time stops advancing)
-##     * Cancellation
-##
-## Execution model:
-##   simulate() orchestrates the full lifecycle:
-##     VALIDATION → LAUNCH → RUNNING → COMPLETED
-##
-## Output:
-## - Delivers structured lifecycle, progress, and log events through an
-##   `EventSink` supplied by the caller.
+## Validates inputs, guards process lifetime, serializes TrnEXE launch, waits
+## for readiness, monitors output, emits structured events, handles terminal
+## outcomes, and performs optional cleanup.
 
 import std/[os, osproc, strformat, strutils, times]
 import ./events
@@ -113,38 +84,16 @@ proc simulate*(
     eventSink: EventSink,
     settings: RunnerSettings = DefaultRunnerSettings,
 ): SimResult =
-  ## Launches and monitors a TRNSYS simulation, emitting structured events.
+  ## Runs one TRNSYS simulation and returns its final outcome.
   ##
-  ## Validates the deck and executable, acquires the global launch lock,
-  ## starts TrnEXE, waits for the configured readiness signals (GUI window,
-  ## `.lst` header, `.tmp` file), then monitors the run until completion,
-  ## failure, cancellation, timeout, or stall. A `SETTING` event is emitted
-  ## first, followed by `STATUS` events on every state transition;
-  ## `CONFIG`/`PROGRESS`/`LOG` events are emitted while monitoring.
+  ## Emits `SETTING` first, followed by lifecycle `STATUS` transitions and
+  ## enabled `CONFIG`, `PROGRESS`, and `LOG` events. Launch, readiness,
+  ## monitoring, timeout, stall, process-termination, and cleanup decisions
+  ## remain within this lifecycle boundary.
   ##
-  ## Parameters
-  ## ----------
-  ## deckFile : string
-  ##     Path to a `.dck` or `.trd` simulation deck.
-  ## eventSink : EventSink
-  ##     Destination for all structured events produced by the simulation.
-  ## settings : RunnerSettings, optional
-  ##     Launch detection, monitoring, cleanup, and logging settings. Uses
-  ##     `DefaultRunnerSettings` when omitted.
-  ##
-  ## Returns
-  ## -------
-  ## SimResult
-  ##     Final outcome: `simDone` (completed), `simFatal` (crashed or failed),
-  ##     `simCancelled` (exited early), `simTimeout` (watch timeout reached),
-  ##     or `simStalled` (progress stopped).
-  ##
-  ## Raises
-  ## ------
-  ## IOError
-  ##     If the deck file or TRNSYS executable does not exist.
-  ## ValueError
-  ##     If `deckFile` is not a `.dck` or `.trd` file.
+  ## Missing files raise `IOError`, and an unsupported deck extension raises
+  ## `ValueError`. TrnEXE launch failures are converted to `simFatal` after
+  ## emitting the terminal status event.
   let deckFile = validateDeck(deckFile)
   let trnexePath = validateTrnexe(settings.trnexePath)
 

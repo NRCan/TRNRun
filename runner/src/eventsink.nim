@@ -82,8 +82,8 @@ proc write(writer: JsonlWriter, line: string) =
       discard
 
 proc stdoutEventSink*(writer: JsonlWriter = nil): EventSink =
-  ## Returns a sink that writes each event to standard output as one JSON line,
-  ## numbered from 1 in emission order. Each line is flushed immediately.
+  ## Returns a sink that numbers events from 1, writes and immediately flushes
+  ## each JSON line to stdout, and optionally mirrors the same line to `writer`.
   result = sequencedEventSink(
     proc(line: string) {.gcsafe.} =
       stdout.writeLine(line)

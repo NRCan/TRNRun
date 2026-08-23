@@ -1,16 +1,7 @@
-## monitor.nim - TRNSYS simulation monitor.
+## Monitors a running TRNSYS process by polling Type3830 `.tmp` and TRNSYS
+## `.log` output and emitting `CONFIG`, `PROGRESS`, and `LOG` events.
 ##
-## Wraps a running TRNSYS process and produces structured events through an
-## `EventSink` by polling two output files:
-##
-## - **`.tmp`**: a Type3830 temp file written periodically by TRNSYS,
-##   containing the current simulation time and the fixed run parameters
-##   (start, stop, step). Parsed into `CONFIG` and `PROGRESS` events.
-## - **`.log`**: the TRNSYS message log, appended throughout the run.
-##   Parsed into `LOG` events carrying severity, simulation time, unit/type
-##   IDs, message code, and free-text fields.
-##
-## The supplied sink decides how each event is delivered. Event kinds:
+## Event shapes:
 ##
 ## ```
 ## {"kind":"CONFIG",   "timestamp":…, "start":…, "stop":…, "step":…}
@@ -18,11 +9,9 @@
 ## {"kind":"LOG",      "timestamp":…, "severity":…, "time":…, …}
 ## ```
 ##
-## `elapsed` and `eta` are in milliseconds. `percent` is in [0, 1].
-##
-## The main entry point is `monitor`. Call it after launching TRNSYS; it
-## blocks until the process exits (or a fatal log entry, timeout, or stall
-## is encountered) and returns a `SimResult` indicating the outcome.
+## `elapsed` and `eta` are milliseconds; `percent` is in `[0, 1]`.
+## `monitor` blocks until process exit, a fatal log entry, timeout, or stall,
+## and returns the corresponding `SimResult`.
 
 import std/[os, osproc, strutils, options, times]
 import ./events
@@ -94,7 +83,6 @@ proc eta(self: SimProgress, config: SimConfig, realStart: Time): float =
 
 # Event conversion
 proc configEvent(config: SimConfig): SimulationEvent =
-  ## Creates an event from parsed run parameters.
   SimulationEvent(
     kind: eventConfig,
     configData: ConfigEvent(
@@ -108,7 +96,6 @@ proc configEvent(config: SimConfig): SimulationEvent =
 proc progressEvent(
     progress: SimProgress, config: SimConfig, realStart: Time
 ): SimulationEvent =
-  ## Creates an event from a progress sample and its run context.
   SimulationEvent(
     kind: eventProgress,
     progressData: ProgressEvent(
@@ -121,7 +108,6 @@ proc progressEvent(
   )
 
 proc logEvent(entry: SimLog): SimulationEvent =
-  ## Creates an event from a parsed TRNSYS log entry.
   SimulationEvent(
     kind: eventLog,
     logData: LogEvent(
@@ -152,7 +138,6 @@ proc splitKeyValue(line: string): tuple[key, val: string] =
     result = (line[0 ..< i].strip(), line[i + 1 .. ^1].strip())
 
 proc splitValue(line: string): string =
-  ## Returns the value part of a `key : value` line.
   splitKeyValue(line).val
 
 # Field parsers
@@ -356,8 +341,8 @@ proc pollTmp(state: var MonitorState) =
   state.lastSnapshot = some(current)
 
 proc pollLog(state: var MonitorState, emitLogs: bool = true): bool =
-  ## Processes new log entries, emitting those at or above the severity
-  ## threshold; returns `true` on a Fatal entry.
+  ## Drains new log entries and returns `true` on a Fatal entry. When
+  ## `emitLogs` is true, entries at or above the threshold are also emitted.
   for entry in readLog(state.logOffset, state.logFile):
     if emitLogs and entry.severity >= state.severity:
       state.eventSink(logEvent(entry))
@@ -368,7 +353,7 @@ proc pollLog(state: var MonitorState, emitLogs: bool = true): bool =
   return false
 
 proc tick(state: var MonitorState): bool =
-  ## Runs one polling step; returns `true` if a fatal log entry was encountered.
+  ## Polls TMP before log output and returns `true` if the log contains Fatal.
   result = false
   if state.watchTmp: state.pollTmp()
   if state.watchLog: result = state.pollLog()
@@ -423,48 +408,18 @@ proc monitor*(
     watchTimeoutMs: int = 0,
     stallTimeoutMs: int = 0,
 ): SimResult =
-  ## Polls TRNSYS output files until the process exits, emitting structured
-  ## events.
+  ## Polls the deck's `.tmp` and `.log` files until the process exits or a
+  ## fatal entry, timeout, or stall is detected.
   ##
-  ## Watches the Type3830 `.tmp` file and the TRNSYS `.log` file of a
-  ## running simulation, delivering structured events through `eventSink`.
-  ## A final tick runs after the process exits to drain any output written
-  ## just before termination.
+  ## Available output is drained once more after process exit. `pollMs` is
+  ## clamped to at least 1 ms, and positive timeout thresholds shorter than
+  ## the polling interval are raised to that interval. Stall and cancellation
+  ## determination require a successful TMP snapshot.
   ##
-  ## Parameters
-  ## ----------
-  ## process : Process
-  ##     Running TRNSYS process, as returned by `launchTrnexe`.
-  ## deckFile : string
-  ##     Deck path; the `.tmp` and `.log` paths are derived from it.
-  ## startTime : Time
-  ##     Wall-clock launch time, used for `elapsed`/`eta` and the watch
-  ##     timeout.
-  ## eventSink : EventSink
-  ##     Destination for structured events produced while monitoring.
-  ## watchLog : bool, optional
-  ##     Emit `LOG` events parsed from the `.log` file (default: true).
-  ## watchTmp : bool, optional
-  ##     Emit `CONFIG`/`PROGRESS` events parsed from the `.tmp` file
-  ##     (default: true).
-  ## pollMs : int, optional
-  ##     Polling interval in milliseconds, clamped to >= 1 (default: 100).
-  ## severity : LogSeverity, optional
-  ##     Minimum severity a log entry must have to be emitted
-  ##     (default: Notice).
-  ## watchTimeoutMs : int, optional
-  ##     Maximum total monitoring time in ms; 0 disables (default: 0).
-  ## stallTimeoutMs : int, optional
-  ##     Maximum time simulation time may stay unchanged before the run is
-  ##     reported as stalled; 0 disables, requires `watchTmp` (default: 0).
-  ##
-  ## Returns
-  ## -------
-  ## SimResult
-  ##     `simDone` on normal completion, `simCancelled` if the process exited
-  ##     before reaching 100 %, `simFatal` on a fatal log entry, `simTimeout`
-  ##     if `watchTimeoutMs` elapsed, or `simStalled` if progress stopped for
-  ##     `stallTimeoutMs`.
+  ## Returns `simDone` on completion, `simCancelled` when a TMP snapshot shows
+  ## that the process exited before reaching 100 percent, `simFatal` on a fatal
+  ## log entry, `simTimeout` on the watch timeout, or `simStalled` when progress
+  ## stops.
   let interval = max(1, pollMs)
   var state = MonitorState(
     tmpFile: deckFile.changeFileExt("tmp"),

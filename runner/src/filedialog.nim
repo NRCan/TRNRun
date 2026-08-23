@@ -1,18 +1,8 @@
-## filedialog.nim - native Windows file-picker dialogs for TRNSYS input files.
+## Provides native Windows file pickers for TRNSYS input files.
 ##
-## Wraps `GetOpenFileNameW` from `comdlg32` to show the standard Windows
-## "Open File" dialog.
-##
-## Two procs are exported:
-##
-## - `openFileDialog` - general-purpose picker; caller supplies the title
-##   and a `\0`-delimited filter string in the Win32 `OPENFILENAME` format
-##   (e.g. `"Text Files\0*.txt\0All Files\0*.*\0"`).
-## - `openDeckFileDialog` - convenience wrapper pre-configured for TRNSYS
-##   deck files (`.dck`, `.trd`).
-##
-## Both return the chosen path as a `string`, or `""` if the user cancels
-## or closes the dialog. No exception is raised on cancellation.
+## `openFileDialog` accepts Win32 `\0`-delimited filter pairs, while
+## `openDeckFileDialog` supplies deck-specific filters. Cancellation returns
+## `""` rather than raising.
 
 import std/[strutils, winlean]
 
@@ -54,21 +44,11 @@ proc getOpenFileNameW(
 proc openFileDialog*(
     title: string = "Open File", filter: string = "All Files\0*.*\0"
 ): string =
-  ## Shows the native Windows "Open File" dialog and returns the chosen path.
+  ## Shows the native Windows file picker.
   ##
-  ## Parameters
-  ## ----------
-  ## title : string, optional
-  ##     Dialog window title (default: "Open File").
-  ## filter : string, optional
-  ##     `\0`-delimited Win32 filter pairs of display name and pattern,
-  ##     e.g. `"Text Files\0*.txt\0All Files\0*.*\0"` (default: all files).
-  ##
-  ## Returns
-  ## -------
-  ## string
-  ##     Absolute path of the selected file, or `""` if the user cancelled
-  ##     or closed the dialog. Never raises on cancellation.
+  ## `filter` is a `\0`-delimited sequence of Win32 display-name and pattern
+  ## pairs, for example `"Text Files\0*.txt\0All Files\0*.*\0"`.
+  ## Returns the selected absolute path, or `""` if the user cancels.
   var buf = newWideCString('\0'.repeat(1024))
   var ofn = OPENFILENAMEW(
     lStructSize: int32(sizeof(OPENFILENAMEW)),

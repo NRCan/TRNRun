@@ -1,13 +1,9 @@
-## mutex.nim - Windows named-mutex guard for TRNSYS process launches.
+## Serializes TrnEXE launches across processes and threads in one Windows logon
+## session.
 ##
-## TRNSYS does not tolerate simultaneous TrnEXE launches. This module
-## serialises them via a named kernel mutex, `Local\TRNRun_LaunchMutex`.
-## Every `trnrun.exe` opens its own handle to the same kernel object, so
-## the lock holds across processes as well as threads.
-##
-## The mutex is scoped to the logon session, created on first use, and
-## closed by the OS at exit. Win32 mutex ownership is per thread, so
-## release must happen on the acquiring thread; nesting is safe.
+## TRNSYS does not tolerate simultaneous launches, so every runner uses the
+## named `Local\TRNRun_LaunchMutex`. Win32 mutex ownership is per thread:
+## release must occur on the acquiring thread, and nested acquisition is safe.
 ##
 ## ```nim
 ## withLaunchLock:
@@ -57,13 +53,9 @@ proc getLaunchMutex(): Handle =
 proc acquireLaunchLock() =
   ## Blocks until the TRNSYS launch mutex is acquired.
   ##
-  ## A `WAIT_ABANDONED` result means a previous holder died without
-  ## releasing; ownership passes to us and we continue, warning on stderr.
-  ##
-  ## Raises
-  ## ------
-  ## OSError
-  ##     If the mutex cannot be created, opened, or acquired.
+  ## `WAIT_ABANDONED` transfers ownership after a previous holder dies; the
+  ## launch continues with a warning. Raises `OSError` if the mutex cannot be
+  ## created, opened, or acquired.
   let waitResult = waitForSingleObject(getLaunchMutex(), INFINITE)
   if waitResult == WAIT_ABANDONED:
     stderr.writeLine(
@@ -91,18 +83,8 @@ proc releaseLaunchLock() =
 template withLaunchLock*(body: untyped) =
   ## Runs `body` while holding the TRNSYS launch mutex.
   ##
-  ## Acquires the named mutex, executes the body, and always releases the
-  ## mutex afterwards - including when the body raises.
-  ##
-  ## Parameters
-  ## ----------
-  ## body : untyped
-  ##     Statements to execute while the lock is held.
-  ##
-  ## Raises
-  ## ------
-  ## OSError
-  ##     If the mutex cannot be acquired.
+  ## Always releases the mutex afterward, including when `body` raises.
+  ## Raises `OSError` if the mutex cannot be created, opened, or acquired.
   acquireLaunchLock()
   try:
     body

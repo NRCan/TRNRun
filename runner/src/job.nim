@@ -1,12 +1,10 @@
-## job.nim - Windows Job Object lifetime guard for child TRNSYS processes.
+## Keeps this process and inherited descendants in a kill-on-close Windows Job
+## Object.
 ##
-## Ensures that any TRNSYS process spawned by this application is
-## automatically killed by the OS when the parent exits, regardless of how
-## the parent exits (normal return, unhandled exception, or crash).
-##
-## The guard works by placing this process into a kill-on-close job
-## object. Job membership is inherited across `CreateProcess`, so children,
-## grandchildren, and anything TRNSYS starts internally are all covered.
+## Once this process joins the job, child and grandchild membership is
+## inherited. TrnEXE descendants are terminated when the parent process exits
+## and closes the job handle, whether normally, through an unhandled exception,
+## or by crashing.
 ##
 ## Typical usage:
 ##
@@ -77,10 +75,6 @@ proc initJobGuard*() =
   ## process, not the calling thread, so a single call covers every deck any
   ## worker later spawns. Repeat calls are a no-op, which keeps a caller that
   ## runs several decks in sequence from leaking a job per run.
-  ##
-  ## Returns
-  ## -------
-  ## None
   if jobHandle != 0:
     return
 

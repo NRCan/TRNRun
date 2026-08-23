@@ -1,18 +1,8 @@
-## wait.nim - startup detection for TRNSYS processes.
+## Coordinates TRNSYS startup detection and GUI minimization.
 ##
-## The single public entry point is `waitReady`, which runs up to three
-## detection stages in sequence - each bounded by the same shared timeout:
-##
-## 1. **GUI** – waits for a top-level window of a known TRNSYS class to appear.
-## 2. **LST** – waits for the simulation `.lst` file to contain the
-##    component-order header, indicating the deck was parsed successfully.
-## 3. **TMP** – waits for the `.tmp` lock file to appear, indicating
-##    TRNSYS has opened its output files and is ready to be monitored.
-##
-## Returns `wrReady`, `wrTimeout`, or `wrDied`.
-##
-## Also exposes `minimizeGui`, which drives TRNSYS windows into the minimized
-## state, since TrnEXE has no command-line switch for it.
+## `waitReady` checks enabled GUI, `.lst`, and `.tmp` readiness signals in that
+## order against one shared timeout. `minimizeGui` provides the minimized modes
+## that TrnEXE cannot select through its command line.
 
 import std/[os, osproc, times, monotimes, strutils, sets, winlean]
 import ./processwait
@@ -268,36 +258,13 @@ proc waitReady*(
     timeoutMs: int,
     extraDelayMs: int,
 ): WaitResult =
-  ## Waits for a freshly launched TRNSYS process to become ready.
+  ## Runs enabled GUI, `.lst`, and `.tmp` readiness stages in order against one
+  ## shared deadline, followed by the optional fixed delay.
   ##
-  ## Runs up to three detection stages in order - GUI window, `.lst`
-  ## header, `.tmp` file - each bounded by the same shared deadline,
-  ## followed by an optional fixed delay.
-  ##
-  ## Parameters
-  ## ----------
-  ## process : Process
-  ##     The freshly launched TRNSYS process to observe.
-  ## deckFile : string
-  ##     Deck path used to derive the `.lst` and `.tmp` file locations.
-  ## waitForGui : bool
-  ##     Wait for a top-level window of a known TRNSYS class to appear.
-  ## waitForLst : bool
-  ##     Wait for the `.lst` file to contain the component-order header.
-  ## waitForTmp : bool
-  ##     Wait for the `.tmp` file to appear.
-  ## timeoutMs : int
-  ##     Shared deadline across all enabled stages; <= 0 waits indefinitely.
-  ## extraDelayMs : int
-  ##     Additional delay after all stages pass; aborts early if the
-  ##     process dies during the delay.
-  ##
-  ## Returns
-  ## -------
-  ## WaitResult
-  ##     `wrReady` if all enabled stages passed, `wrTimeout` if the
-  ##     deadline expired with the process still running, or `wrDied` if
-  ##     the process exited at any point.
+  ## A non-positive `timeoutMs` waits indefinitely. Returns `wrReady` when all
+  ## enabled stages pass, `wrTimeout` when the deadline expires while the
+  ## process is running, or `wrDied` if it exits during detection or the
+  ## additional delay.
   if not process.running:
     return wrDied
 

@@ -33,7 +33,6 @@ proc parseGuiVisibility(value: string): TrnexeGuiVisibility =
     raise newException(ValueError, "Invalid guiVisibility: " & value)
 
 proc writeHelp() =
-  ## Prints CLI usage to stdout.
   echo """trnrun - launch and monitor TRNSYS simulations
 
 Usage:
@@ -63,25 +62,13 @@ Usage:
 Exit codes: 0 done  1 fatal  2 usage error  124 timeout  125 stalled  130 cancelled"""
 
 proc main(): int =
-  ## Entry point for the TRNRun CLI.
+  ## Parses CLI options, selects a deck when necessary, runs the simulation,
+  ## and returns its process exit code: 0 done, 1 fatal, 2 usage or validation
+  ## error, 124 timeout, 125 stalled, or 130 cancelled.
   ##
-  ## Parses command-line flags into `RunnerSettings`, opens a native file
-  ## picker when no deck file is supplied, and runs the simulation.
-  ##
-  ## Returns
-  ## -------
-  ## int
-  ##     Process exit code describing the outcome: 0 done, 1 fatal,
-  ##     2 usage/validation error, 124 timeout, 125 stalled, 130 cancelled.
-  ##     The caller is responsible for calling `quit` with this value; this
-  ##     proc itself never calls `quit`, so any future `defer`/`finally`
-  ##     cleanup added here is guaranteed to run.
-  ##
-  ## Raises
-  ## ------
-  ## ValueError, IOError
-  ##     Invalid flag values or a missing deck/executable propagate to the
-  ##     top-level handler, which prints one line and exits with code 2.
+  ## This procedure does not call `quit`, ensuring its `defer` and `finally`
+  ## cleanup can run. Invalid values and validation failures propagate to the
+  ## top-level error boundary, which emits one diagnostic and returns code 2.
   var
     deckFile = ""
     settings = DefaultRunnerSettings
