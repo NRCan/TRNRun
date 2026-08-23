@@ -1,4 +1,4 @@
-## status.nim - simulation lifecycle status and outcomes.
+## Defines simulation lifecycle statuses and outcomes.
 ##
 ## Creates lifecycle events and provides the canonical mappings from a final
 ## simulation result to its wire-protocol status and process exit code.
@@ -33,9 +33,13 @@ func exitCode*(outcome: SimResult): int =
   of simTimeout: 124
   of simStalled: 125
 
-proc statusEvent*(status: SimStatus, timestamp: DateTime = now()): SimulationEvent =
+proc statusEvent*(
+    status: SimStatus,
+    timestamp: DateTime = now(),
+): SimulationEvent =
   ## Creates a timestamped lifecycle event.
   SimulationEvent(
     kind: eventStatus,
     statusData: StatusEvent(timestamp: timestamp, status: status),
   )
+

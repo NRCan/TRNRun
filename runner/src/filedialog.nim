@@ -4,39 +4,41 @@
 ## `openDeckFileDialog` supplies deck-specific filters. Cancellation returns
 ## `""` rather than raising.
 
-import std/[strutils, winlean]
+import std/winlean
 
 # Win32 API
 const
-  OFN_PATHMUSTEXIST = 0x00000800'i32
-  OFN_FILEMUSTEXIST = 0x00001000'i32
+  FileBufferChars = 1024
+  OFN_PATHMUSTEXIST = 0x00000800'u32
+  OFN_FILEMUSTEXIST = 0x00001000'u32
 
 type OPENFILENAMEW {.pure.} = object
-  lStructSize: int32
+  lStructSize: uint32
   hwndOwner: Handle
   hInstance: Handle
   lpstrFilter: WideCString
   lpstrCustomFilter: WideCString
-  nMaxCustFilter: int32
-  nFilterIndex: int32
+  nMaxCustFilter: uint32
+  nFilterIndex: uint32
   lpstrFile: WideCString
-  nMaxFile: int32
+  nMaxFile: uint32
   lpstrFileTitle: WideCString
-  nMaxFileTitle: int32
+  nMaxFileTitle: uint32
   lpstrInitialDir: WideCString
   lpstrTitle: WideCString
-  flags: int32
-  nFileOffset: int16
-  nFileExtension: int16
+  flags: uint32
+  nFileOffset: uint16
+  nFileExtension: uint16
   lpstrDefExt: WideCString
   lCustData: int
   lpfnHook: pointer
   lpTemplateName: WideCString
   pvReserved: pointer
-  dwReserved: int32
-  flagsEx: int32
+  dwReserved: uint32
+  flagsEx: uint32
 
-proc getOpenFileNameW(p: ptr OPENFILENAMEW): int32 {.importc: "GetOpenFileNameW", dynlib: "comdlg32", stdcall.}
+proc getOpenFileNameW(p: ptr OPENFILENAMEW): int32
+  {.importc: "GetOpenFileNameW", dynlib: "comdlg32", stdcall.}
 
 # Public API
 proc openFileDialog*(
@@ -47,21 +49,24 @@ proc openFileDialog*(
   ## `filter` is a `\0`-delimited sequence of Win32 display-name and pattern
   ## pairs, for example `"Text Files\0*.txt\0All Files\0*.*\0"`.
   ## Returns the selected absolute path, or `""` if the user cancels.
-  var buf = newWideCString('\0'.repeat(1024))
-  var ofn = OPENFILENAMEW(
-    lStructSize: int32(sizeof(OPENFILENAMEW)),
-    lpstrFile: buf,
-    nMaxFile: 1024,
-    lpstrFilter: newWideCString(filter & "\0"),
-    lpstrTitle: newWideCString(title),
-    lpstrDefExt: nil,
+  var fileBuffer = newWideCString(FileBufferChars)
+  let
+    filterBuffer = newWideCString(filter & "\0")
+    titleBuffer = newWideCString(title)
+
+  var dialog = OPENFILENAMEW(
+    lStructSize: uint32(sizeof(OPENFILENAMEW)),
+    lpstrFile: fileBuffer,
+    nMaxFile: uint32(FileBufferChars),
+    lpstrFilter: filterBuffer,
+    lpstrTitle: titleBuffer,
     flags: OFN_PATHMUSTEXIST or OFN_FILEMUSTEXIST,
   )
-  result =
-    if getOpenFileNameW(addr ofn) != 0:
-      $buf
-    else:
-      ""
+
+  if getOpenFileNameW(addr dialog) == 0:
+    return ""
+
+  $fileBuffer
 
 proc openDeckFileDialog*(): string =
   ## Opens a file picker pre-configured for TRNSYS deck files (`.dck`, `.trd`).

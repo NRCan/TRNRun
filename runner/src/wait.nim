@@ -4,7 +4,10 @@
 ## order against one shared timeout. `minimizeGui` provides the minimized modes
 ## that TrnEXE cannot select through its command line.
 
-import std/[os, osproc, times, monotimes, strutils, sets, winlean]
+when not defined(windows):
+  {.error: "wait.nim is Windows-only.".}
+
+import std/[monotimes, os, osproc, sets, strutils, times, winlean]
 import ./processwait
 
 # Types
@@ -30,15 +33,20 @@ type
     wrTimeout # Process still running but did not meet conditions in time.
     wrExited # Process exited during detection; see `waitReady`.
 
-const DefaultGuiClasses = ["TProg32", "TOnlineWindow"]
-  ## Window class names recognised as TRNSYS top-level windows.
+const
+  DefaultGuiClasses = ["TProg32", "TOnlineWindow"]
+    ## Window class names recognised as TRNSYS top-level windows.
+  WindowClassBufferChars = 256
 
 # Win32 API
 proc enumWindows(lpEnumFunc: EnumWindowsProc, lParam: LPARAM): int32
   {.importc: "EnumWindows", dynlib: "user32", stdcall.}
 
-proc getClassNameW(hWnd: Handle, lpClassName: WideCString, nMaxCount: int32): int32
-  {.importc: "GetClassNameW", dynlib: "user32", stdcall.}
+proc getClassNameW(
+    hWnd: Handle,
+    lpClassName: WideCString,
+    nMaxCount: int32,
+): int32 {.importc: "GetClassNameW", dynlib: "user32", stdcall.}
 
 proc getWindowThreadProcessId(hWnd: Handle, lpdwProcessId: ptr int32): int32
   {.importc: "GetWindowThreadProcessId", dynlib: "user32", stdcall.}
@@ -81,13 +89,9 @@ proc poll(
   if timeoutMs < 0:
     raise newException(ValueError, "timeoutMs must be >= 0")
 
-  let infinite = timeoutMs == 0
-
-  let deadline =
-    if infinite:
-      MonoTime() # unused placeholder
-    else:
-      getMonoTime() + initDuration(milliseconds = timeoutMs)
+  let
+    infinite = timeoutMs == 0
+    deadline = getMonoTime() + initDuration(milliseconds = timeoutMs)
 
   var delay = initialIntervalMs.float
 
@@ -116,7 +120,6 @@ proc poll(
 
     delay = min(delay * backoff, maxIntervalMs.float)
 
-
 # File-based readiness
 const LstHeader =
   "*** The TRNSYS components will be called in the following order:"
@@ -132,49 +135,38 @@ proc waitLst(process: Process, deckFile: string, timeoutMs: int): bool =
   ## Waits for the `.lst` header to appear; returns true only if found (stops
   ## early if the process exits).
   let lstFile = changeFileExt(deckFile, "lst")
-  var found = false
-
-  let condition = proc(): bool =
-    if checkLst(lstFile):
-      found = true
-      return true
-    if not process.running:
-      return true # Stop polling immediately
-    return false
-
-  discard poll(process, condition, timeoutMs)
-  return found
+  let condition = proc(): bool = checkLst(lstFile)
+  return poll(process, condition, timeoutMs)
 
 proc waitTmp(process: Process, deckFile: string, timeoutMs: int): bool =
   ## Waits for the `.tmp` file to appear; returns true only if found (stops
   ## early if the process exits).
   let tmpFile = changeFileExt(deckFile, "tmp")
-  var found = false
-
-  let condition = proc(): bool =
-    if fileExists(tmpFile):
-      found = true
-      return true
-    if not process.running:
-      return true # Stop polling immediately
-    return false
-
-  discard poll(process, condition, timeoutMs)
-  return found
+  let condition = proc(): bool = fileExists(tmpFile)
+  return poll(process, condition, timeoutMs)
 
 # GUI readiness
+proc matchesGuiWindow(
+    hwnd: Handle,
+    pid: int32,
+    guiClasses: HashSet[string],
+): bool =
+  ## Returns true when `hwnd` belongs to `pid` and has a target window class.
+  var windowPid: int32 = 0
+  discard getWindowThreadProcessId(hwnd, addr windowPid)
+  if windowPid != pid:
+    return false
+
+  var classBuffer = default(array[WindowClassBufferChars, Utf16Char])
+  let className = cast[WideCString](addr classBuffer[0])
+  return getClassNameW(hwnd, className, int32(WindowClassBufferChars)) > 0 and
+    $className in guiClasses
+
 proc enumCallback(hwnd: Handle, lParam: LPARAM): int32 {.stdcall.} =
   ## EnumWindows callback: records the first window matching the target pid and
   ## class.
   let data = cast[ptr CallbackData](lParam)
-  var winPid: int32 = 0
-  discard getWindowThreadProcessId(hwnd, addr winPid)
-
-  if winPid != data.pid: return 1
-
-  var buf = default(array[256, Utf16Char])
-  let ws = cast[WideCString](addr buf[0])
-  if getClassNameW(hwnd, ws, 256) > 0 and $ws in data.guiClasses:
+  if matchesGuiWindow(hwnd, data.pid, data.guiClasses):
     data.foundHwnd = hwnd
     return 0
   return 1
@@ -193,32 +185,20 @@ proc waitGui(
   )
 
   let condition = proc(): bool =
-    if not process.running:
-      return true
-
     data.foundHwnd = 0
     discard enumWindows(enumCallback, cast[LPARAM](addr data))
     return data.foundHwnd != 0
 
-  discard poll(process, condition, timeoutMs)
-  return data.foundHwnd != 0
+  return poll(process, condition, timeoutMs)
 
 # GUI minimization
 proc collectCallback(hwnd: Handle, lParam: LPARAM): int32 {.stdcall.} =
-  ## EnumWindows callback: collects *every* window matching the target pid and
-  ## class.
+  ## EnumWindows callback: collects *every* visible, titled window matching the
+  ## target pid and class.
   let data = cast[ptr CollectData](lParam)
-  var winPid: int32 = 0
-  discard getWindowThreadProcessId(hwnd, addr winPid)
-
-  if winPid != data.pid: return 1
-
-  if isWindowVisible(hwnd) == 0: return 1
-  if getWindowTextLengthW(hwnd) == 0: return 1
-
-  var buf = default(array[256, Utf16Char])
-  let ws = cast[WideCString](addr buf[0])
-  if getClassNameW(hwnd, ws, 256) > 0 and $ws in data.guiClasses:
+  if matchesGuiWindow(hwnd, data.pid, data.guiClasses) and
+      isWindowVisible(hwnd) != 0 and
+      getWindowTextLengthW(hwnd) > 0:
     data.found.add(hwnd)
   return 1
 
@@ -240,19 +220,18 @@ proc minimizeGui*(
   ## Waits for a matching window, then minimizes all matching windows without
   ## stealing focus; one-shot, idempotent, false if none appeared in time.
   let classes = @guiClasses # openArray can't be captured by the closure below.
-  var done = false
 
   let condition = proc(): bool =
-    if not process.running:
-      return true
-    for hwnd in windowsOf(process, classes):
+    let windows = windowsOf(process, classes)
+    if windows.len == 0:
+      return false
+
+    for hwnd in windows:
       if isIconic(hwnd) == 0:
         discard showWindow(hwnd, SW_SHOWMINNOACTIVE)
-        done = true
-    return done
+    return true
 
-  discard poll(process, condition, timeoutMs)
-  return done
+  return poll(process, condition, timeoutMs)
 
 # Readiness orchestration
 proc waitReady*(
@@ -278,11 +257,13 @@ proc waitReady*(
   if not process.running:
     return wrExited
 
-  let deadline = getMonoTime() + initDuration(milliseconds = timeoutMs)
+  let deadline = getMonoTime() + initDuration(milliseconds = max(0, timeoutMs))
 
   template remainingMs(): int =
-    (if timeoutMs <= 0: 0
-     else: max(1, (deadline - getMonoTime()).inMilliseconds.int))
+    if timeoutMs <= 0:
+      0
+    else:
+      max(1, (deadline - getMonoTime()).inMilliseconds.int)
 
   if waitForGui:
     if not waitGui(process, timeoutMs = remainingMs()):

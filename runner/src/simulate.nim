@@ -4,15 +4,15 @@
 ## for readiness, monitors output, emits structured events, handles terminal
 ## outcomes, and performs optional cleanup.
 
-import std/[os, osproc, monotimes, strformat, strutils]
+import std/[monotimes, os, osproc, strformat, strutils]
 import ./events
 import ./eventsink
 import ./job
-import ./mutex
-import ./wait
 import ./monitor
+import ./mutex
 import ./settings
 import ./status
+import ./wait
 
 # Types and constants
 type
@@ -22,7 +22,7 @@ type
 const
   SidecarExtensions = [
     ".tmp", # Temporary progress file
-    ".log", # Simulation log containing notice, warnings, and Fatal errors
+    ".log", # Simulation log containing notices, warnings, and fatal errors
     ".lst", # Simulation list file
     ".PTI", # Online Plotter file
   ]
@@ -36,7 +36,9 @@ proc validateDeck*(deckFile: string): string =
   if not fileExists(result):
     raise newException(IOError, fmt"Deck file not found: '{result}'")
   if result.splitFile().ext.toLowerAscii() notin [".dck", ".trd"]:
-    raise newException(ValueError, fmt"Expected .dck or .trd, got: '{deckFile}'")
+    raise newException(
+      ValueError, fmt"Expected .dck or .trd, got: '{deckFile}'"
+    )
 
 proc validateTrnexe*(trnexePath: string): string =
   ## Resolves the TRNSYS executable to an absolute, normalized path.
@@ -60,17 +62,24 @@ proc launchTrnexe(
     args.add(switch)
 
   try:
-    return startProcess(trnexePath, workingDir = deckFile.parentDir(), args = args, options = {})
+    return startProcess(
+      trnexePath,
+      workingDir = deckFile.parentDir(),
+      args = args,
+      options = {},
+    )
   except OSError, IOError:
-    raise newException(TrnexeLaunchError, "Failed to launch TRNSYS: " & getCurrentExceptionMsg())
+    raise newException(
+      TrnexeLaunchError,
+      "Failed to launch TRNSYS: " & getCurrentExceptionMsg(),
+    )
 
 proc removeSidecarFiles(deckFile: string) =
   ## Deletes TRNSYS sidecar files for a deck, ignoring missing ones.
   for extension in SidecarExtensions:
     let sidecarPath = deckFile.changeFileExt(extension)
-    if fileExists(sidecarPath) and not tryRemoveFile(sidecarPath):
+    if not tryRemoveFile(sidecarPath):
       stderr.writeLine(fmt"Warning: Could not delete {sidecarPath} (likely in use).")
-
 
 # Simulation
 proc simulate*(
@@ -93,14 +102,18 @@ proc simulate*(
 
   try:
     initJobGuard()
-  except OSError as e:
-    stderr.writeLine("Warning: orphan guard unavailable, TrnEXE64.exe may outlive trnrun: ", e.msg)
+  except OSError as error:
+    stderr.writeLine(
+      "Warning: orphan guard unavailable, TrnEXE64.exe may outlive trnrun: ",
+      error.msg,
+    )
 
   eventSink(settingEvent(settings, trnexePath))
   eventSink(statusEvent(statusPending))
 
-  var process: Process = default(Process)
-  var startTime: MonoTime = default(MonoTime)
+  var
+    process: Process = default(Process)
+    startTime: MonoTime = default(MonoTime)
 
   defer:
     if process != nil:
@@ -115,8 +128,8 @@ proc simulate*(
 
     try:
       process = launchTrnexe(deckFile, trnexePath, settings.guiVisibility)
-    except TrnexeLaunchError as e:
-      stderr.writeLine("Error: ", e.msg)
+    except TrnexeLaunchError as error:
+      stderr.writeLine("Error: ", error.msg)
       eventSink(statusEvent(simFatal.status))
       return simFatal
     startTime = getMonoTime()
@@ -132,6 +145,8 @@ proc simulate*(
     )
 
     case waitStatus
+    of wrReady:
+      discard
     of wrExited:
       # Not a failure by itself: the run may simply have finished before
       # detection did. The monitor below drains the log and reports simFatal
@@ -146,8 +161,6 @@ proc simulate*(
         process.kill()
         eventSink(statusEvent(simTimeout.status))
         return simTimeout
-    else:
-      discard
 
     if settings.guiVisibility.wantsMinimize() and process.running:
       discard minimizeGui(process)
@@ -167,8 +180,9 @@ proc simulate*(
     stallTimeoutMs = settings.stallTimeoutMs,
   )
 
-  var shouldKillProcess = false
-  var shouldWaitForProcess = false
+  var
+    shouldKillProcess = false
+    shouldWaitForProcess = false
 
   case monitorResult
   of simDone, simFatal, simCancelled:
@@ -197,7 +211,9 @@ proc simulate*(
 
 # Direct-run example
 when isMainModule:
-  let deckFile = absolutePath(r"runner\examples\dck\example_w_plot_w_tracking.dck")
+  let deckFile = absolutePath(
+    r"runner\examples\dck\example_w_plot_w_tracking.dck"
+  )
   var runnerSettings = DefaultRunnerSettings
   runnerSettings.guiVisibility = guiMinimizedAuto
 

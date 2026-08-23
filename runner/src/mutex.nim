@@ -10,24 +10,22 @@
 ##   startProcess("TrnEXE64.exe", …)
 ## ```
 
-import std/[os, locks, strutils, winlean]
+when not defined(windows):
+  {.error: "mutex.nim is Windows-only.".}
+
+import std/[locks, oserrors, strutils, winlean]
 
 # Win32 API
 proc createMutex(attributes: pointer; initialOwner: cint; name: WideCString): Handle
-  {.importc: "CreateMutexW", stdcall, dynlib: "kernel32".}
-
-proc waitForSingleObject(handle: Handle; milliseconds: uint32): uint32
-  {.importc: "WaitForSingleObject", stdcall, dynlib: "kernel32".}
+  {.importc: "CreateMutexW", dynlib: "kernel32", stdcall.}
 
 proc releaseMutex(mutex: Handle): cint
-  {.importc: "ReleaseMutex", stdcall, dynlib: "kernel32".}
+  {.importc: "ReleaseMutex", dynlib: "kernel32", stdcall.}
 
 const
-  WAIT_OBJECT_0 = 0x00000000'u32
-  WAIT_ABANDONED = 0x00000080'u32
-  WAIT_TIMEOUT = 0x00000102'u32
+  WAIT_ABANDONED = 0x00000080'i32
   LaunchMutexName = r"Local\TRNRun_LaunchMutex"
-  LaunchLockTimeoutMs = 1_800_000'u32
+  LaunchLockTimeoutMs = 1_800_000'i32
     ## Deadlock backstop, not a queueing policy. Every runner in the session
     ## queues here, so a legitimate wait is (queue depth - 1) x hold time and
     ## the manager sizes its pool at cpu_count - 1. This must stay well above
@@ -35,31 +33,34 @@ const
 
 var
   initLock: Lock
-  launchMutex: Handle = 0
+  launchMutexHandle: Handle = 0
 
 initLock.initLock()
 
 # Initialization
 proc getLaunchMutex(): Handle =
   ## Returns the session-wide launch mutex, creating or opening it on the
-  ## first call. All access to `launchMutex` goes through here, so the
+  ## first call. All access to `launchMutexHandle` goes through here, so the
   ## handle is never read outside `initLock`.
   withLock initLock:
-    if launchMutex == 0:
-      let handle = createMutex(nil, 0, newWideCString(LaunchMutexName))
+    if launchMutexHandle == 0:
+      let
+        mutexName = newWideCString(LaunchMutexName)
+        handle = createMutex(nil, 0, mutexName)
       if handle == 0:
         raiseOSError(osLastError(), "Failed to create or open the TRNSYS launch mutex.")
-      launchMutex = handle
-    result = launchMutex
+      launchMutexHandle = handle
+    result = launchMutexHandle
 
 # Lock operations
-proc acquireLaunchLock() =
+proc acquireLaunchLock(): Handle =
   ## Blocks until the TRNSYS launch mutex is acquired.
   ##
   ## `WAIT_ABANDONED` transfers ownership after a previous holder dies; the
   ## launch continues with a warning. Raises `OSError` if the mutex cannot be
   ## created, opened, or acquired, and `IOError` if the wait times out.
-  case waitForSingleObject(getLaunchMutex(), LaunchLockTimeoutMs)
+  let mutex = getLaunchMutex()
+  case waitForSingleObject(mutex, LaunchLockTimeoutMs)
   of WAIT_OBJECT_0:
     discard
   of WAIT_ABANDONED:
@@ -74,17 +75,19 @@ proc acquireLaunchLock() =
   else:
     raiseOSError(osLastError(), "Failed to acquire the TRNSYS launch mutex.")
 
-proc releaseLaunchLock() =
+  return mutex
+
+proc releaseLaunchLock(mutex: Handle) =
   ## Releases the TRNSYS launch mutex.
   ##
   ## Must be called from the thread that acquired it - Win32 mutex
   ## ownership is thread-scoped. A failed release is reported rather than
   ## discarded, because it strands every launcher in the session.
-  if releaseMutex(getLaunchMutex()) == 0:
-    let err = osLastError()
+  if releaseMutex(mutex) == 0:
+    let errorCode = osLastError()
     stderr.writeLine(
       "Warning: failed to release the TRNSYS launch mutex (" &
-        osErrorMsg(err).strip() &
+        osErrorMsg(errorCode).strip() &
         "). Released from a different thread than acquired it?"
     )
 
@@ -96,8 +99,8 @@ template withLaunchLock*(body: untyped) =
   ## Raises `OSError` if the mutex cannot be created, opened, or acquired, and
   ## `IOError` if another runner holds it past `LaunchLockTimeoutMs`. Both are
   ## raised before the lock is taken, so `body` never runs unlocked.
-  acquireLaunchLock()
+  let mutex = acquireLaunchLock()
   try:
     body
   finally:
-    releaseLaunchLock()
+    releaseLaunchLock(mutex)

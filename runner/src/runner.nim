@@ -1,4 +1,4 @@
-## runner.nim - command-line interface for TRNRun.
+## Implements the TRNRun command-line interface.
 ##
 ## Command-line entry point for launching and configuring TRNSYS
 ## simulations through the TRNRun execution engine. It acts as a thin
@@ -8,10 +8,10 @@
 import std/[os, parseopt, strutils]
 import ./events
 import ./eventsink
+import ./filedialog
+import ./settings
 import ./simulate
 import ./status
-import ./settings
-import ./filedialog
 
 const NimblePkgVersion {.strdefine.} = "unknown"
 
@@ -32,12 +32,12 @@ proc parseGuiVisibility(value: string): TrnexeGuiVisibility =
   else:
     raise newException(ValueError, "Invalid guiVisibility: " & value)
 
-proc applyOption(
+proc applyCliOption(
     key, value: string,
     deckFile: var string,
     settings: var RunnerSettings,
 ): bool =
-  ## Applies one run option, returning false when `key` is unknown.
+  ## Applies one CLI option, returning false when `key` is unknown.
   case key
   of "deckFile":
     deckFile = value
@@ -78,7 +78,7 @@ proc applyOption(
   else:
     return false
 
-  true
+  return true
 
 proc openEventWriter(deckFile: string, writeEvents: var bool): JsonlWriter =
   ## Opens event output when requested, disabling it if the file cannot open.
@@ -162,7 +162,7 @@ proc main(): int =
         echo NimblePkgVersion
         return 0
       else:
-        if not applyOption(parser.key, parser.val, deckFile, settings):
+        if not applyCliOption(parser.key, parser.val, deckFile, settings):
           stderr.writeLine("Unknown option: ", parser.key)
           return 2
     of cmdArgument:
@@ -193,7 +193,7 @@ proc main(): int =
     settings = settings,
   )
 
-  exitCode(simResult)
+  return exitCode(simResult)
 
 when isMainModule:
   let code =

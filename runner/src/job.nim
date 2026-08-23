@@ -13,9 +13,10 @@
 ## let p = startProcess("trnrun.exe", …)   # captured automatically
 ## ```
 
-when not defined(windows): {.error: "job.nim is Windows-only. Guard the import with `when defined(windows)`.".}
+when not defined(windows):
+  {.error: "job.nim is Windows-only. Guard the import with `when defined(windows)`.".}
 
-import std/[winlean, oserrors]
+import std/[oserrors, winlean]
 
 # Win32 API
 type
@@ -50,9 +51,18 @@ const
   JOB_OBJECT_EXTENDED_LIMIT_INFO_CLASS = 9'i32
   JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000'u32
 
-proc createJobObjectW(lpJobAttributes, lpName: pointer): Handle {.importc: "CreateJobObjectW", dynlib: "kernel32", stdcall.}
-proc setInformationJobObject(hJob: Handle, infoClass: int32, lpInfo: pointer, cbLen: uint32): int32 {.importc: "SetInformationJobObject", dynlib: "kernel32", stdcall.}
-proc assignProcessToJobObject(hJob, hProcess: Handle): int32 {.importc: "AssignProcessToJobObject", dynlib: "kernel32", stdcall.}
+proc createJobObjectW(lpJobAttributes, lpName: pointer): Handle
+  {.importc: "CreateJobObjectW", dynlib: "kernel32", stdcall.}
+
+proc setInformationJobObject(
+    hJob: Handle,
+    infoClass: int32,
+    lpInfo: pointer,
+    cbLen: uint32,
+): int32 {.importc: "SetInformationJobObject", dynlib: "kernel32", stdcall.}
+
+proc assignProcessToJobObject(hJob, hProcess: Handle): int32
+  {.importc: "AssignProcessToJobObject", dynlib: "kernel32", stdcall.}
 
 # Module state
 var jobHandle: Handle = 0
@@ -69,19 +79,26 @@ proc initJobGuard*() =
   if jobHandle != 0:
     return
 
-  let h = createJobObjectW(nil, nil)
-  if h == 0: raiseOSError(osLastError(), "Failed to create Win32 Job Object.")
+  var handle = createJobObjectW(nil, nil)
+  if handle == 0:
+    raiseOSError(osLastError(), "Failed to create Win32 Job Object.")
 
-  var info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
-  info.basicLimitInformation.limitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-  if setInformationJobObject(h, JOB_OBJECT_EXTENDED_LIMIT_INFO_CLASS, addr info, sizeof(info).uint32) == 0:
-    let err = osLastError()
-    discard closeHandle(h)
-    raiseOSError(err, "Failed to configure Job Object limits.")
+  defer:
+    if handle != 0:
+      discard closeHandle(handle)
 
-  if assignProcessToJobObject(h, getCurrentProcess()) == 0:
-    let err = osLastError()
-    discard closeHandle(h)
-    raiseOSError(err, "Failed to place this process in the Job Object.")
+  var limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+  limits.basicLimitInformation.limitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+  if setInformationJobObject(
+    handle,
+    JOB_OBJECT_EXTENDED_LIMIT_INFO_CLASS,
+    addr limits,
+    uint32(sizeof(limits)),
+  ) == 0:
+    raiseOSError(osLastError(), "Failed to configure Job Object limits.")
 
-  jobHandle = h
+  if assignProcessToJobObject(handle, getCurrentProcess()) == 0:
+    raiseOSError(osLastError(), "Failed to place this process in the Job Object.")
+
+  jobHandle = handle
+  handle = 0 # Ownership remains with the module until process exit.

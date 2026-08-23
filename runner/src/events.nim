@@ -112,6 +112,12 @@ type
     of eventLog:
       logData*: LogEvent
 
+
+proc addIfSome[T](node: JsonNode, key: string, value: Option[T]) =
+  ## Adds an optional field only when it has a value.
+  if value.isSome:
+    node[key] = %value.get()
+
 proc `%`(event: SettingEvent): JsonNode =
   result = newJObject()
   result["kind"] = %($eventSetting)
@@ -165,16 +171,11 @@ proc `%`(event: LogEvent): JsonNode =
   result["timestamp"] = %event.timestamp.formatEventTimestamp()
   result["severity"] = %($event.severity)
   result["time"] = %event.time.round(2)
-  if event.unitId.isSome:
-    result["unitID"] = %event.unitId.get()
-  if event.typeId.isSome:
-    result["typeID"] = %event.typeId.get()
-  if event.messageCode.isSome:
-    result["messageCode"] = %event.messageCode.get()
-  if event.message.isSome:
-    result["message"] = %event.message.get()
-  if event.information.isSome:
-    result["information"] = %event.information.get()
+  result.addIfSome("unitID", event.unitId)
+  result.addIfSome("typeID", event.typeId)
+  result.addIfSome("messageCode", event.messageCode)
+  result.addIfSome("message", event.message)
+  result.addIfSome("information", event.information)
 
 proc `%`(event: SimulationEvent): JsonNode =
   case event.kind
