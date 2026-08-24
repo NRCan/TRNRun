@@ -186,6 +186,9 @@ proc waitGui(
   )
 
   let condition = proc(): bool =
+    if not process.running:
+      return false
+
     data.foundHwnd = 0
     discard enumWindows(enumCallback, cast[LPARAM](addr data))
     return data.foundHwnd != 0
@@ -223,6 +226,9 @@ proc minimizeGui*(
   let classes = @guiClasses # openArray can't be captured by the closure below.
 
   let condition = proc(): bool =
+    if not process.running:
+      return false
+
     let windows = windowsOf(process, classes)
     if windows.len == 0:
       return false
