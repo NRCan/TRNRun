@@ -36,9 +36,7 @@ proc validateDeck*(deckFile: string): string =
   if not fileExists(result):
     raise newException(IOError, fmt"Deck file not found: '{result}'")
   if result.splitFile().ext.toLowerAscii() notin [".dck", ".trd"]:
-    raise newException(
-      ValueError, fmt"Expected .dck or .trd, got: '{deckFile}'"
-    )
+    raise newException(ValueError, fmt"Expected .dck or .trd, got: '{deckFile}'")
 
 proc validateTrnexe*(trnexePath: string): string =
   ## Resolves the TRNSYS executable to an absolute, normalized path.
@@ -69,16 +67,15 @@ proc launchTrnexe(
       options = {},
     )
   except OSError, IOError:
-    raise newException(
-      TrnexeLaunchError,
-      "Failed to launch TRNSYS: " & getCurrentExceptionMsg(),
-    )
+    raise newException(TrnexeLaunchError,"Failed to launch TRNSYS: " & getCurrentExceptionMsg())
 
-proc removeSidecarFiles(deckFile: string) =
-  ## Deletes TRNSYS sidecar files for a deck, ignoring missing ones.
+proc removeSidecarFiles(deckFile: string): bool =
+  ## Deletes TRNSYS sidecar files, returning false if any cannot be removed.
+  result = true
   for extension in SidecarExtensions:
     let sidecarPath = deckFile.changeFileExt(extension)
     if not tryRemoveFile(sidecarPath):
+      result = false
       stderr.writeLine(fmt"Warning: Could not delete {sidecarPath} (likely in use).")
 
 # Simulation
@@ -97,16 +94,14 @@ proc simulate*(
   ## Missing files raise `IOError`, and an unsupported deck extension raises
   ## `ValueError`. TrnEXE launch failures are converted to `simFatal` after
   ## emitting the terminal status event.
+  let settings = settings.normalized()
   let deckFile = validateDeck(deckFile)
   let trnexePath = validateTrnexe(settings.trnexePath)
 
   try:
     initJobGuard()
   except OSError as error:
-    stderr.writeLine(
-      "Warning: orphan guard unavailable, TrnEXE64.exe may outlive trnrun: ",
-      error.msg,
-    )
+    stderr.writeLine("Warning: orphan guard unavailable, TrnEXE64.exe may outlive trnrun: ",error.msg)
 
   eventSink(settingEvent(settings, trnexePath))
   eventSink(statusEvent(statusPending))
@@ -123,8 +118,10 @@ proc simulate*(
         discard
 
   withLaunchLock:
-    removeSidecarFiles(deckFile)
     eventSink(statusEvent(statusLaunching))
+    if not removeSidecarFiles(deckFile):
+      eventSink(statusEvent(simFatal.status))
+      return simFatal
 
     try:
       process = launchTrnexe(deckFile, trnexePath, settings.guiVisibility)
@@ -205,7 +202,7 @@ proc simulate*(
     discard process.waitForExit()
 
   if monitorResult == simDone and settings.cleanOnSuccess:
-    removeSidecarFiles(deckFile)
+    discard removeSidecarFiles(deckFile)
 
   return monitorResult
 

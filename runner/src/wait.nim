@@ -76,8 +76,9 @@ proc poll(
     maxIntervalMs: int = 500,
     backoff: float = 1.3,
 ): bool {.gcsafe.} =
-  ## Polls `condition` with exponential backoff until it returns true or
-  ## `timeoutMs` (0 = forever) expires.
+  ## Polls `condition` with exponential backoff until it succeeds, the process
+  ## exits, or `timeoutMs` (0 = forever) expires. Process exit triggers one final
+  ## condition check so data flushed during shutdown can still satisfy it.
   result = false
 
   if initialIntervalMs <= 0:

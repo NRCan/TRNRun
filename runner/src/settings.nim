@@ -59,6 +59,20 @@ const DefaultRunnerSettings* = RunnerSettings(
   )
   ## Default settings for TRNSYS simulation runs.
 
+func normalized*(settings: RunnerSettings): RunnerSettings =
+  ## Returns the effective settings used by readiness and runtime monitoring.
+  result = settings
+  result.detectTimeoutMs = max(0, result.detectTimeoutMs)
+  result.extraDelayMs = max(0, result.extraDelayMs)
+  result.pollMs = max(1, result.pollMs)
+  result.watchTimeoutMs = max(0, result.watchTimeoutMs)
+  result.stallTimeoutMs = max(0, result.stallTimeoutMs)
+
+  if result.watchTimeoutMs > 0 and result.watchTimeoutMs < result.pollMs:
+    result.watchTimeoutMs = result.pollMs
+  if result.stallTimeoutMs > 0 and result.stallTimeoutMs < result.pollMs:
+    result.stallTimeoutMs = result.pollMs
+
 func flag*(visibility: TrnexeGuiVisibility): string =
   ## The TrnEXE command-line switch for a visibility mode ("" = no switch).
   case visibility

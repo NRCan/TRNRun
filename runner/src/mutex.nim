@@ -64,7 +64,10 @@ proc acquireLaunchLock(): Handle =
   of WAIT_OBJECT_0:
     discard
   of WAIT_ABANDONED:
-    stderr.writeLine("Warning: a previous TRNSYS process did not exit cleanly. Proceeding anyway.")
+    try:
+      stderr.writeLine("Warning: a previous TRNSYS process did not exit cleanly. Proceeding anyway.")
+    except IOError:
+      discard # The mutex is already owned and must still be returned.
   of WAIT_TIMEOUT:
     raise newException(
       IOError,
@@ -85,11 +88,14 @@ proc releaseLaunchLock(mutex: Handle) =
   ## discarded, because it strands every launcher in the session.
   if releaseMutex(mutex) == 0:
     let errorCode = osLastError()
-    stderr.writeLine(
-      "Warning: failed to release the TRNSYS launch mutex (" &
-        osErrorMsg(errorCode).strip() &
-        "). Released from a different thread than acquired it?"
-    )
+    try:
+      stderr.writeLine(
+        "Warning: failed to release the TRNSYS launch mutex (" &
+          osErrorMsg(errorCode).strip() &
+          "). Released from a different thread than acquired it?"
+      )
+    except IOError:
+      discard # Do not mask an exception from the protected launch code.
 
 # Public API
 template withLaunchLock*(body: untyped) =

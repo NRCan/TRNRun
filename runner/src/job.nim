@@ -71,11 +71,7 @@ var jobHandle: Handle = 0
 proc initJobGuard*() =
   ## Creates the kill-on-close job object and places this process in it.
   ##
-  ## Call once from the main thread during startup, before spawning any child
-  ## and before starting any worker threads. Job membership belongs to the
-  ## process, not the calling thread, so a single call covers every deck any
-  ## worker later spawns. Repeat calls are a no-op, which keeps a caller that
-  ## runs several decks in sequence from leaking a job per run.
+  ## Call once before spawning TrnEXE. Repeated calls are a no-op.
   if jobHandle != 0:
     return
 

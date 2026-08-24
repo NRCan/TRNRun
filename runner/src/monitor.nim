@@ -453,10 +453,14 @@ proc monitor*(
 
     let currentTime = getMonoTime()
     if state.isStalled(currentTime):
+      if process.waitForExitNonDestructive(0):
+        break
       stderr.writeLine("[Monitor] Stall detected - no progress for ", (currentTime - state.lastProgressChange).inMilliseconds, " ms.")
       return simStalled
 
     if state.isTimedOut(currentTime):
+      if process.waitForExitNonDestructive(0):
+        break
       stderr.writeLine("[Monitor] Timeout after ", (currentTime - state.monitorStartTime).inMilliseconds, " ms - process still running.")
       return simTimeout
 
@@ -466,7 +470,7 @@ proc monitor*(
   if state.tick():
     return simFatal
 
-  if not watchLog and not watchTmp:
+  if not watchLog:
     if state.pollLog(emitLogs = false):
       return simFatal
 
