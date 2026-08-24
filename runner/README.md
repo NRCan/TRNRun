@@ -34,7 +34,7 @@ To build `trnrun.exe` locally, install:
 From the `runner` directory, run:
 
 ```powershell
-nimble zigbuild
+nimble bin
 ```
 
 ## Quick start

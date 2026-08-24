@@ -60,17 +60,8 @@ const
     dllSuffix: "_win32",
   )
 
-  releaseMode = Mode(
-    name: "release",
-    flags: @["-d:release", "--opt:speed"],
-    dirPrefix: "ReleaseDLLs",
-  )
-
-  debugMode = Mode(
-    name: "debug",
-    flags: @["-d:debug", "--linedir:on"],
-    dirPrefix: "DebugDLLs",
-  )
+  releaseMode = Mode(name: "release", flags: @["-d:release", "--opt:speed"], dirPrefix: "ReleaseDLLs")
+  debugMode = Mode(name: "debug", flags: @["-d:debug", "--linedir:on"], dirPrefix: "DebugDLLs")
 
 # Build
 proc compileDll(arch: Arch, mode: Mode) =
@@ -127,14 +118,8 @@ proc assemblePackage(arch: Arch) =
   mkDir debugDlls
   mkDir releaseDlls
 
-  cpFile(
-    proformaSourceDir & "/" & packageBmpFile,
-    proformas & "/" & packageBmpFile,
-  )
-  cpFile(
-    proformaSourceDir & "/" & arch.tmfFile,
-    proformas & "/" & packageTmfFile,
-  )
+  cpFile(proformaSourceDir & "/" & packageBmpFile, proformas & "/" & packageBmpFile)
+  cpFile(proformaSourceDir & "/" & arch.tmfFile, proformas & "/" & packageTmfFile)
   cpFile(
     dllDir & "/" & debugMode.dirPrefix & "/" & builtDllFile,
     debugDlls & "/" & packageDllFile,
@@ -156,13 +141,10 @@ proc deployPackage(arch: Arch) =
     echo "Skipping TRNSYS ", arch.trnsysVersion, ": ", arch.installDir, " not found"
     return
 
-  cpDir(
-    distDir & "/Type3830-TRNSYS" & arch.trnsysVersion & "-v" & version,
-    arch.installDir,
-  )
+  cpDir(distDir & "/Type3830-TRNSYS" & arch.trnsysVersion & "-v" & version, arch.installDir)
 
 # Tasks
-task build, "Build all DLLs":
+task bin, "Build all DLLs":
   compileAllDlls()
 
 task dist, "Build all DLLs and distribution packages":

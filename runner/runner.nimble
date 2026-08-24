@@ -4,9 +4,8 @@ import std/strutils
 version = "0.4.0"
 author = "Alex Lachance"
 description = "Process wrapper for TRNSYS TrnEXE with simulation monitoring and status reporting"
-license = "../LICENSE"
+license = "MIT"
 srcDir = "src"
-bin = @["trnrun"]
 
 # Dependencies
 requires "nim >= 2.2.10"
@@ -16,6 +15,8 @@ const
   exeName = "trnrun"
   buildDir = "build"
   cacheDir = buildDir & "/nimcache"
+  distDir = "dist"
+  managerBinDir = "../manager/trnrun/bin"
   target = "x86_64-windows-gnu"
   zigcc = "scripts/zigcc.bat"
 
@@ -50,6 +51,44 @@ proc compileExe() =
 
   exec args.join(" ")
 
+# Distribution
+proc assemblePackage() =
+  let
+    packageDir = distDir & "/TRNRun-v" & version
+    builtExe = buildDir & "/" & exeName & ".exe"
+
+  if not fileExists(builtExe):
+    quit("Missing built executable: " & builtExe)
+
+  mkDir packageDir
+
+  cpFile(builtExe, packageDir & "/" & exeName & ".exe")
+  cpFile("README.md", packageDir & "/README.md")
+  cpFile("../LICENSE", packageDir & "/LICENSE")
+
+proc assembleDistribution() =
+  if dirExists(distDir):
+    rmDir distDir
+
+  assemblePackage()
+
+proc deployPackage() =
+  mkDir managerBinDir
+
+  cpFile(
+    distDir & "/TRNRun-v" & version & "/" & exeName & ".exe",
+    managerBinDir & "/" & exeName & ".exe",
+  )
+
 # Tasks
-task zigbuild, "Build with Zig cc":
+task bin, "Build the release executable":
   compileExe()
+
+task dist, "Build and assemble the distribution":
+  compileExe()
+  assembleDistribution()
+
+task deploy, "Build, assemble, and deploy to the manager":
+  compileExe()
+  assembleDistribution()
+  deployPackage()
