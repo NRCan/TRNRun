@@ -2,228 +2,185 @@ param(
     [switch]$Force
 )
 
-# ---- Path to the compiled CLI -------------------------------------------------
-$RepoRoot = Join-Path $PSScriptRoot ".."
-$ExePath = Join-Path $RepoRoot "build\trnrun.exe"
+# Paths
+$RunnerRoot = Join-Path $PSScriptRoot '..'
+$ExecutablePath = Join-Path $RunnerRoot 'build\trnrun.exe'
 
-# ---- Deck files to test --------------------------------------------------------
-$DckFiles = @(
-    (Join-Path $PSScriptRoot "dck\example_wo_plot_wo_tracking.dck"),
-    (Join-Path $PSScriptRoot "dck\example_wo_plot_w_tracking.dck"),
-    (Join-Path $PSScriptRoot "dck\example_w_plot_wo_tracking.dck"),
-    (Join-Path $PSScriptRoot "dck\example_w_plot_w_tracking.dck")
+# Decks
+$DeckFiles = @(
+    (Join-Path $PSScriptRoot 'dck\example_wo_plot_wo_tracking.dck')
+    (Join-Path $PSScriptRoot 'dck\example_wo_plot_w_tracking.dck')
+    (Join-Path $PSScriptRoot 'dck\example_w_plot_wo_tracking.dck')
+    (Join-Path $PSScriptRoot 'dck\example_w_plot_w_tracking.dck')
 )
 
-# ---- Fixed parameter values (same for every dck file) --------------------------
-$Params = [ordered]@{
-    guiVisibility  = "Hidden"
-    waitForGui     = $true
-    waitForLst     = $true
-    waitForTmp     = $false
-    detectTimeout  = 0
-    extraDelay     = 0
-    watchLog       = $true
-    watchTmp       = $true
-    watchTimeout   = 0
-    stallTimeout   = 0
-    pollMs         = 100
-    clean          = $false
-    killOnTimeout  = $true
-    killOnStall    = $true
-    severity       = "Notice"
-    writeEvents    = $true
+# CLI options
+$CliOptions = [ordered]@{
+    guiVisibility = 'hidden'
+    waitForGui = $true
+    waitForLst = $true
+    waitForTmp = $false
+    detectTimeout = 0
+    extraDelay = 0
+    watchLog = $true
+    watchTmp = $true
+    watchTimeout = 0
+    stallTimeout = 0
+    pollMs = 100
+    clean = $false
+    killOnTimeout = $true
+    killOnStall = $true
+    severity = 'Notice'
+    writeEvents = $true
 }
 
-# ---- Exit-code meaning ---------------------------------------------------------
-$ExitCodeMeaning = @{
-    0   = "Done"
-    1   = "Fatal"
-    2   = "User Error"
-    124 = "Timeout"
-    125 = "Stalled"
-    130 = "Cancelled"
+# Exit-code meanings reported by trnrun
+$ExitCodeMeanings = @{
+    0 = 'Done'
+    1 = 'Fatal'
+    2 = 'User Error'
+    124 = 'Timeout'
+    125 = 'Stalled'
+    130 = 'Cancelled'
 }
 
-# =================================================================================
-# No need to edit below this line
-# =================================================================================
-
-$Keys = @($Params.Keys)
+$CliOptionNames = @($CliOptions.Keys)
 
 function Format-ArgValue {
     param($Value)
 
     if ($Value -is [bool]) {
-        if ($Value) { "true" } else { "false" }
-    }
-    else {
+        if ($Value) {
+            'true'
+        } else {
+            'false'
+        }
+    } else {
         "$Value"
     }
 }
 
-# ---- Validate deck files -------------------------------------------------------
-
-$DckFiles = $DckFiles | Where-Object {
+# Validate deck files
+$DeckFiles = $DeckFiles | Where-Object {
     if (Test-Path $_) {
         $true
-    }
-    else {
-        Write-Host "WARNING: dck file not found, skipping: $_" -ForegroundColor Yellow
+    } else {
+        Write-Host `
+            "WARNING: dck file not found, skipping: $_" `
+            -ForegroundColor Yellow
         $false
     }
 }
-
-[int]$TotalRuns = $DckFiles.Count
+[int]$TotalRuns = $DeckFiles.Count
 
 Write-Host "Deck files: $TotalRuns" -ForegroundColor Cyan
 Write-Host "Concurrent runs: $TotalRuns" -ForegroundColor Cyan
 
-
-# ---- Safety gate ---------------------------------------------------------------
-
+# Safety gate
 if (-not $Force -and $TotalRuns -gt 500) {
-    $resp = Read-Host "This will launch $TotalRuns simulation runs concurrently. Continue? (y/n)"
-
-    if ($resp -ne "y") {
-        Write-Host "Aborted."
+    $Response = Read-Host `
+        "This will launch $TotalRuns simulation runs concurrently. Continue? (y/n)"
+    if ($Response -ne 'y') {
+        Write-Host 'Aborted.'
         return
     }
 }
 
-
-# ---- Check executable ----------------------------------------------------------
-
-if (-not (Test-Path $ExePath)) {
-    Write-Host "ERROR: Executable not found at $ExePath" -ForegroundColor Red
+if (-not (Test-Path $ExecutablePath)) {
+    Write-Host `
+        "ERROR: Executable not found at $ExecutablePath" `
+        -ForegroundColor Red
     exit 1
 }
 
-
-# ---- Setup results log ----------------------------------------------------------
-
-$ResultsDir = Join-Path $PSScriptRoot "results"
-
-if (-not (Test-Path $ResultsDir)) {
-    New-Item -ItemType Directory -Path $ResultsDir -Force | Out-Null
+# Results log
+$ResultsDirectory = Join-Path $PSScriptRoot 'results'
+if (-not (Test-Path $ResultsDirectory)) {
+    New-Item -ItemType Directory -Path $ResultsDirectory -Force | Out-Null
 }
-
-$ResultsFile = Join-Path $ResultsDir "example_results_$(Get-Date -Format 'yyyyMMdd_HHmmss').csv"
-
+$ResultsFile = Join-Path `
+    $ResultsDirectory `
+    "example_results_$(Get-Date -Format 'yyyyMMdd_HHmmss').csv"
 (
-    "DckFile," +
-    ($Keys -join ",") +
-    ",ExitCode,Meaning,DurationSec,StartTime"
+    'DckFile,' +
+    ($CliOptionNames -join ',') +
+    ',ExitCode,Meaning,DurationSec,StartTime'
 ) | Out-File -FilePath $ResultsFile -Encoding UTF8
 
-
-# ---- Build common arguments ----------------------------------------------------
-
-$cliArgsBase = $Keys | ForEach-Object {
-    "--$_=$(Format-ArgValue $Params[$_])"
+$BaseArguments = $CliOptionNames | ForEach-Object {
+    "--$_=$(Format-ArgValue $CliOptions[$_])"
 }
 
+$BatchStartedAt = Get-Date
+$Runs = @()
+$LaunchCount = 0
 
-# ---- Launch simulations --------------------------------------------------------
+foreach ($DeckFile in $DeckFiles) {
+    $LaunchCount++
+    $DeckName = [System.IO.Path]::GetFileNameWithoutExtension($DeckFile)
+    $CliArguments = @("--deckFile=$DeckFile") + $BaseArguments
 
-$runStart = Get-Date
-$Processes = @()
+    Write-Host ''
+    Write-Host "Launching [$LaunchCount/$TotalRuns] $DeckName" `
+        -ForegroundColor Cyan
+    Write-Host ($CliArguments -join ' ') -ForegroundColor DarkGray
 
-$count = 0
-
-foreach ($dck in $DckFiles) {
-
-    $count++
-
-    $dckName = [System.IO.Path]::GetFileNameWithoutExtension($dck)
-
-    $cliArgs = @("--deckFile=$dck") + $cliArgsBase
-
-    Write-Host ""
-    Write-Host "Launching [$count/$TotalRuns] $dckName" -ForegroundColor Cyan
-    Write-Host ($cliArgs -join " ") -ForegroundColor DarkGray
-
-
-    $start = Get-Date
-
-    $proc = Start-Process `
-        -FilePath $ExePath `
-        -ArgumentList $cliArgs `
+    $StartedAt = Get-Date
+    $Process = Start-Process `
+        -FilePath $ExecutablePath `
+        -ArgumentList $CliArguments `
         -PassThru
 
-
-    $Processes += [PSCustomObject]@{
-        Name  = $dckName
-        Dck   = $dck
-        Start = $start
-        Proc  = $proc
+    $Runs += [PSCustomObject]@{
+        Name = $DeckName
+        DeckFile = $DeckFile
+        StartedAt = $StartedAt
+        Process = $Process
     }
 }
 
+$FailureCount = 0
+$CompletedCount = 0
 
-# ---- Wait for simulations ------------------------------------------------------
+foreach ($Run in $Runs) {
+    $Run.Process.WaitForExit()
+    $CompletedCount++
 
-$failures = 0
-$completed = 0
-
-
-foreach ($run in $Processes) {
-
-    $run.Proc.WaitForExit()
-
-    $completed++
-
-    $duration = (Get-Date) - $run.Start
-    $exitCode = $run.Proc.ExitCode
-
-
-    $meaning = if ($ExitCodeMeaning.ContainsKey($exitCode)) {
-        $ExitCodeMeaning[$exitCode]
-    }
-    else {
-        "Unknown($exitCode)"
+    $Duration = (Get-Date) - $Run.StartedAt
+    $ExitCode = $Run.Process.ExitCode
+    $ExitMeaning = if ($ExitCodeMeanings.ContainsKey($ExitCode)) {
+        $ExitCodeMeanings[$ExitCode]
+    } else {
+        "Unknown($ExitCode)"
     }
 
-
-    Write-Host ""
-
-    if ($exitCode -eq 0) {
-
+    Write-Host ''
+    if ($ExitCode -eq 0) {
         Write-Host `
-            "[$completed/$TotalRuns] $($run.Name): PASS ($([math]::Round($duration.TotalSeconds,1))s)" `
+            "[$CompletedCount/$TotalRuns] $($Run.Name): PASS ($([math]::Round($Duration.TotalSeconds,1))s)" `
             -ForegroundColor Green
-
-    }
-    else {
-
+    } else {
         Write-Host `
-            "[$completed/$TotalRuns] $($run.Name): FAIL ($exitCode - $meaning)" `
+            "[$CompletedCount/$TotalRuns] $($Run.Name): FAIL ($ExitCode - $ExitMeaning)" `
             -ForegroundColor Red
-
-        $failures++
+        $FailureCount++
     }
 
-
-    $row =
-        "$($run.Name)," +
-        (($Keys | ForEach-Object {
-            Format-ArgValue $Params[$_]
-        }) -join ",") +
-        ",$exitCode,$meaning,$([math]::Round($duration.TotalSeconds,1)),$($run.Start)"
-
-
-    $row | Out-File -FilePath $ResultsFile -Append -Encoding UTF8
+    $CsvRow =
+        "$($Run.Name)," +
+        (($CliOptionNames | ForEach-Object {
+            Format-ArgValue $CliOptions[$_]
+        }) -join ',') +
+        ",$ExitCode,$ExitMeaning,$([math]::Round($Duration.TotalSeconds,1)),$($Run.StartedAt)"
+    $CsvRow | Out-File -FilePath $ResultsFile -Append -Encoding UTF8
 }
 
-
-# ---- Summary -------------------------------------------------------------------
-
-$elapsed = (Get-Date) - $runStart
-
-Write-Host ""
-Write-Host "==================================================================" -ForegroundColor Yellow
+$Elapsed = (Get-Date) - $BatchStartedAt
+Write-Host ''
+Write-Host '==================================================================' -ForegroundColor Yellow
 Write-Host `
-    "All runs complete: $completed run(s), $failures failure(s)." `
-    "Elapsed: $($elapsed.ToString())" `
+    "All runs complete: $CompletedCount run(s), $FailureCount failure(s)." `
+    "Elapsed: $($Elapsed.ToString())" `
     -ForegroundColor Yellow
 Write-Host "Results saved to: $ResultsFile" -ForegroundColor Yellow
-Write-Host "==================================================================" -ForegroundColor Yellow
+Write-Host '==================================================================' -ForegroundColor Yellow

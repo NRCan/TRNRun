@@ -1,25 +1,16 @@
-## wait.nim - startup detection for TRNSYS processes.
+## Coordinates TRNSYS startup detection and GUI minimization.
 ##
-## The single public entry point is `waitReady`, which runs up to three
-## detection stages in sequence - each bounded by the same shared timeout:
-##
-## 1. **GUI** – waits for a top-level window of a known TRNSYS class to appear.
-## 2. **LST** – waits for the simulation `.lst` file to contain the
-##    component-order header, indicating the deck was parsed successfully.
-## 3. **TMP** – waits for the `.tmp` lock file to appear, indicating
-##    TRNSYS has opened its output files and is ready to be monitored.
-##
-## Returns `wrReady`, `wrTimeout`, or `wrDied`.
-##
-## Also exposes `minimizeGui`, which drives TRNSYS windows into the minimized
-## state, since TrnEXE has no command-line switch for it.
+## `waitReady` checks enabled GUI, `.lst`, and `.tmp` readiness signals in that
+## order against one shared timeout. `minimizeGui` provides the minimized modes
+## that TrnEXE cannot select through its command line.
 
-import std/[os, osproc, times, monotimes, strutils, sets, winlean]
+when not defined(windows):
+  {.error: "wait.nim is Windows-only.".}
+
+import std/[monotimes, os, osproc, sets, strutils, times, winlean]
 import ./processwait
 
-# ---------------------------------------------------------------------------
 # Types
-# ---------------------------------------------------------------------------
 type
   LPARAM = int
   EnumWindowsProc = proc(hwnd: Handle, lParam: LPARAM): int32 {.stdcall.}
@@ -40,19 +31,22 @@ type
     ## Outcome of the readiness-detection phase.
     wrReady # All detection conditions passed.
     wrTimeout # Process still running but did not meet conditions in time.
-    wrDied # Process crashed or exited prematurely.
+    wrExited # Process exited during detection; see `waitReady`.
 
-const DefaultGuiClasses* = ["TProg32", "TOnlineWindow"]
-  ## Window class names recognised as TRNSYS top-level windows.
+const
+  DefaultGuiClasses = ["TProg32", "TOnlineWindow"]
+    ## Window class names recognised as TRNSYS top-level windows.
+  WindowClassBufferChars = 256
 
-# ---------------------------------------------------------------------------
 # Win32 API
-# ---------------------------------------------------------------------------
 proc enumWindows(lpEnumFunc: EnumWindowsProc, lParam: LPARAM): int32
   {.importc: "EnumWindows", dynlib: "user32", stdcall.}
 
-proc getClassNameW(hWnd: Handle, lpClassName: WideCString, nMaxCount: int32): int32
-  {.importc: "GetClassNameW", dynlib: "user32", stdcall.}
+proc getClassNameW(
+    hWnd: Handle,
+    lpClassName: WideCString,
+    nMaxCount: int32,
+): int32 {.importc: "GetClassNameW", dynlib: "user32", stdcall.}
 
 proc getWindowThreadProcessId(hWnd: Handle, lpdwProcessId: ptr int32): int32
   {.importc: "GetWindowThreadProcessId", dynlib: "user32", stdcall.}
@@ -71,20 +65,22 @@ proc getWindowTextLengthW(hWnd: Handle): int32
 
 const SW_SHOWMINNOACTIVE = 7'i32
 
-# ---------------------------------------------------------------------------
-# Poll
-# ---------------------------------------------------------------------------
+# Polling
 type PollCondition = proc(): bool {.closure, gcsafe.}
 
 proc poll(
     process: Process,
     condition: PollCondition,
-    timeoutMs: int = 0,
+    timeoutMs: int,
     initialIntervalMs: int = 10,
     maxIntervalMs: int = 500,
     backoff: float = 1.3,
 ): bool {.gcsafe.} =
-  ## Polls `condition` with exponential backoff until it returns true or `timeoutMs` (0 = forever) expires.
+  ## Polls `condition` with exponential backoff until it succeeds, the process
+  ## exits, or `timeoutMs` (0 = forever) expires. Process exit triggers one final
+  ## condition check so data flushed during shutdown can still satisfy it.
+  result = false
+
   if initialIntervalMs <= 0:
     raise newException(ValueError, "initialIntervalMs must be positive")
   if maxIntervalMs < initialIntervalMs:
@@ -94,22 +90,21 @@ proc poll(
   if timeoutMs < 0:
     raise newException(ValueError, "timeoutMs must be >= 0")
 
-  let infinite = timeoutMs == 0
-
-  let deadline =
-    if infinite:
-      MonoTime()  # unused placeholder
-    else:
-      getMonoTime() + initDuration(milliseconds = timeoutMs)
+  let
+    infinite = timeoutMs == 0
+    deadline = getMonoTime() + initDuration(milliseconds = timeoutMs)
 
   var delay = initialIntervalMs.float
-  result = false
 
   while true:
     if condition():
       return true
 
-    if not infinite:
+    var waitMs: int
+
+    if infinite:
+      waitMs = delay.int
+    else:
       let now = getMonoTime()
       if now >= deadline:
         return false
@@ -118,73 +113,61 @@ proc poll(
       if remaining <= 0:
         return false
 
-      if process.waitForExitNonDestructive(min(delay.int, remaining)):
-        return condition() # Last-chance read of files flushed just before exit.
-    else:
-      if process.waitForExitNonDestructive(delay.int):
-        return condition()
+      waitMs = min(delay.int, remaining)
+
+    if process.waitForExitNonDestructive(waitMs):
+      # Last-chance read of files flushed just before process exit.
+      return condition()
 
     delay = min(delay * backoff, maxIntervalMs.float)
 
-# ---------------------------------------------------------------------------
-# File-based waiters
-# ---------------------------------------------------------------------------
-const LstHeader = "*** The TRNSYS components will be called in the following order:"
+# File-based readiness
+const LstHeader =
+  "*** The TRNSYS components will be called in the following order:"
 
 proc checkLst(lstFile: string): bool =
   ## Returns true if the .lst file contains the TRNSYS component-order header.
-  try: LstHeader in readFile(lstFile)
-  except IOError: false
+  try:
+    LstHeader in readFile(lstFile)
+  except IOError:
+    false
 
 proc waitLst(process: Process, deckFile: string, timeoutMs: int): bool =
-  ## Waits for the `.lst` header to appear; returns true only if found (stops early if the process exits).
+  ## Waits for the `.lst` header to appear; returns true only if found (stops
+  ## early if the process exits).
   let lstFile = changeFileExt(deckFile, "lst")
-  var found = false
-
-  let cond = proc(): bool =
-    if checkLst(lstFile):
-      found = true
-      return true
-    if not process.running:
-      return true # Stop polling immediately
-    return false
-
-  discard poll(process, cond, timeoutMs)
-  return found
+  let condition = proc(): bool = checkLst(lstFile)
+  return poll(process, condition, timeoutMs)
 
 proc waitTmp(process: Process, deckFile: string, timeoutMs: int): bool =
-  ## Waits for the `.tmp` file to appear; returns true only if found (stops early if the process exits).
+  ## Waits for the `.tmp` file to appear; returns true only if found (stops
+  ## early if the process exits).
   let tmpFile = changeFileExt(deckFile, "tmp")
-  var found = false
+  let condition = proc(): bool = fileExists(tmpFile)
+  return poll(process, condition, timeoutMs)
 
-  let cond = proc(): bool =
-    if fileExists(tmpFile):
-      found = true
-      return true
-    if not process.running:
-      return true # Stop polling immediately
+# GUI readiness
+proc matchesGuiWindow(
+    hwnd: Handle,
+    pid: int32,
+    guiClasses: HashSet[string],
+): bool =
+  ## Returns true when `hwnd` belongs to `pid` and has a target window class.
+  var windowPid: int32 = 0
+  discard getWindowThreadProcessId(hwnd, addr windowPid)
+  if windowPid != pid:
     return false
 
-  discard poll(process, cond, timeoutMs)
-  return found
+  var classBuffer = default(array[WindowClassBufferChars, Utf16Char])
+  let className = cast[WideCString](addr classBuffer[0])
+  return getClassNameW(hwnd, className, int32(WindowClassBufferChars)) > 0 and
+    $className in guiClasses
 
-# ---------------------------------------------------------------------------
-# GUI waiter
-# ---------------------------------------------------------------------------
 proc enumCallback(hwnd: Handle, lParam: LPARAM): int32 {.stdcall.} =
-  ## EnumWindows callback: records the first window matching the target pid and class.
+  ## EnumWindows callback: records the first window matching the target pid and
+  ## class.
   let data = cast[ptr CallbackData](lParam)
-  var winPid: int32 = 0
-  discard getWindowThreadProcessId(hwnd, addr winPid)
-
-  if winPid != data.pid: return 1
-
-  # if isWindowVisible(hwnd) == 0: return 1
-  # if getWindowTextLengthW(hwnd) == 0: return 1
-
-  var buf = default(array[256, Utf16Char])
-  let ws = cast[WideCString](addr buf[0])
-  if getClassNameW(hwnd, ws, 256) > 0 and $ws in data.guiClasses:
+  if matchesGuiWindow(hwnd, data.pid, data.guiClasses):
     data.foundHwnd = hwnd
     return 0
   return 1
@@ -194,41 +177,32 @@ proc waitGui(
     guiClasses: openArray[string] = DefaultGuiClasses,
     timeoutMs: int = 120_000,
 ): bool =
-  ## Returns true when a top-level window of one of `guiClasses` appears for the process.
+  ## Returns true when a top-level window of one of `guiClasses` appears for the
+  ## process.
   var data = CallbackData(
     pid: int32(process.processID()),
     foundHwnd: 0,
     guiClasses: guiClasses.toHashSet,
   )
 
-  let cond = proc(): bool =
+  let condition = proc(): bool =
     if not process.running:
-      return true
+      return false
 
     data.foundHwnd = 0
     discard enumWindows(enumCallback, cast[LPARAM](addr data))
     return data.foundHwnd != 0
 
-  discard poll(process, cond, timeoutMs)
-  return data.foundHwnd != 0
+  return poll(process, condition, timeoutMs)
 
-# ---------------------------------------------------------------------------
-# GUI minimize
-# ---------------------------------------------------------------------------
+# GUI minimization
 proc collectCallback(hwnd: Handle, lParam: LPARAM): int32 {.stdcall.} =
-  ## EnumWindows callback: collects *every* window matching the target pid and class.
+  ## EnumWindows callback: collects *every* visible, titled window matching the
+  ## target pid and class.
   let data = cast[ptr CollectData](lParam)
-  var winPid: int32 = 0
-  discard getWindowThreadProcessId(hwnd, addr winPid)
-
-  if winPid != data.pid: return 1
-
-  if isWindowVisible(hwnd) == 0: return 1
-  if getWindowTextLengthW(hwnd) == 0: return 1
-
-  var buf = default(array[256, Utf16Char])
-  let ws = cast[WideCString](addr buf[0])
-  if getClassNameW(hwnd, ws, 256) > 0 and $ws in data.guiClasses:
+  if matchesGuiWindow(hwnd, data.pid, data.guiClasses) and
+      isWindowVisible(hwnd) != 0 and
+      getWindowTextLengthW(hwnd) > 0:
     data.found.add(hwnd)
   return 1
 
@@ -247,25 +221,26 @@ proc minimizeGui*(
     guiClasses: openArray[string] = DefaultGuiClasses,
     timeoutMs: int = 10_000,
 ): bool {.discardable.} =
-  ## Waits for a matching window, then minimizes all matching windows without stealing focus; one-shot, idempotent, false if none appeared in time.
+  ## Waits for a matching window, then minimizes all matching windows without
+  ## stealing focus; one-shot, idempotent, false if none appeared in time.
   let classes = @guiClasses # openArray can't be captured by the closure below.
-  var done = false
 
-  let cond = proc(): bool =
+  let condition = proc(): bool =
     if not process.running:
-      return true
-    for hwnd in windowsOf(process, classes):
+      return false
+
+    let windows = windowsOf(process, classes)
+    if windows.len == 0:
+      return false
+
+    for hwnd in windows:
       if isIconic(hwnd) == 0:
         discard showWindow(hwnd, SW_SHOWMINNOACTIVE)
-        done = true
-    return done
+    return true
 
-  discard poll(process, cond, timeoutMs)
-  return done
+  return poll(process, condition, timeoutMs)
 
-# ---------------------------------------------------------------------------
-# waitReady
-# ---------------------------------------------------------------------------
+# Readiness orchestration
 proc waitReady*(
     process: Process,
     deckFile: string,
@@ -275,56 +250,39 @@ proc waitReady*(
     timeoutMs: int,
     extraDelayMs: int,
 ): WaitResult =
-  ## Waits for a freshly launched TRNSYS process to become ready.
+  ## Runs enabled GUI, `.lst`, and `.tmp` readiness stages in order against one
+  ## shared deadline, followed by the optional fixed delay.
   ##
-  ## Runs up to three detection stages in order - GUI window, `.lst`
-  ## header, `.tmp` file - each bounded by the same shared deadline,
-  ## followed by an optional fixed delay.
+  ## A non-positive `timeoutMs` waits indefinitely. Returns `wrReady` when all
+  ## enabled stages pass, `wrTimeout` when the deadline expires while the
+  ## process is running, or `wrExited` if it exits during detection or the
+  ## additional delay.
   ##
-  ## Parameters
-  ## ----------
-  ## process : Process
-  ##     The freshly launched TRNSYS process to observe.
-  ## deckFile : string
-  ##     Deck path used to derive the `.lst` and `.tmp` file locations.
-  ## waitForGui : bool
-  ##     Wait for a top-level window of a known TRNSYS class to appear.
-  ## waitForLst : bool
-  ##     Wait for the `.lst` file to contain the component-order header.
-  ## waitForTmp : bool
-  ##     Wait for the `.tmp` file to appear.
-  ## timeoutMs : int
-  ##     Shared deadline across all enabled stages; <= 0 waits indefinitely.
-  ## extraDelayMs : int
-  ##     Additional delay after all stages pass; aborts early if the
-  ##     process dies during the delay.
-  ##
-  ## Returns
-  ## -------
-  ## WaitResult
-  ##     `wrReady` if all enabled stages passed, `wrTimeout` if the
-  ##     deadline expired with the process still running, or `wrDied` if
-  ##     the process exited at any point.
+  ## `wrExited` is not by itself a failure: a run short enough to finish before
+  ## detection completes reports it exactly as a crash does. Callers must
+  ## consult the TRNSYS log to tell the two apart.
   if not process.running:
-    return wrDied
+    return wrExited
 
-  let deadline = getMonoTime() + initDuration(milliseconds = timeoutMs)
+  let deadline = getMonoTime() + initDuration(milliseconds = max(0, timeoutMs))
 
   template remainingMs(): int =
-    (if timeoutMs <= 0: 0
-     else: max(1, (deadline - getMonoTime()).inMilliseconds.int))
+    if timeoutMs <= 0:
+      0
+    else:
+      max(1, (deadline - getMonoTime()).inMilliseconds.int)
 
   if waitForGui:
     if not waitGui(process, timeoutMs = remainingMs()):
-      return if process.running: wrTimeout else: wrDied
+      return if process.running: wrTimeout else: wrExited
 
   if waitForLst:
     if not waitLst(process, deckFile, timeoutMs = remainingMs()):
-      return if process.running: wrTimeout else: wrDied
+      return if process.running: wrTimeout else: wrExited
 
   if waitForTmp:
     if not waitTmp(process, deckFile, timeoutMs = remainingMs()):
-      return if process.running: wrTimeout else: wrDied
+      return if process.running: wrTimeout else: wrExited
 
   if extraDelayMs > 0:
     let diedDuringDelay = poll(
@@ -333,6 +291,6 @@ proc waitReady*(
       timeoutMs = extraDelayMs,
     )
     if diedDuringDelay or not process.running:
-      return wrDied
+      return wrExited
 
-  return if process.running: wrReady else: wrDied
+  return if process.running: wrReady else: wrExited

@@ -1,13 +1,11 @@
-## events.nim - typed simulation events and JSON serialization.
+## Defines typed simulation events and their JSON payload serialization.
 ##
-## Defines the events produced during a TRNSYS simulation independently of
-## their delivery destination. The standalone runner serializes these values
-## as one JSON object per line; the daemon can later wrap the same events with
-## run-specific routing metadata.
+## Events are delivery-independent. Sinks may add sequence or routing metadata
+## without changing the event payload.
 
 import std/[json, math, options, times]
 
-const EventTimestampFormat* = "yyyy-MM-dd'T'HH:mm:ss"
+const EventTimestampFormat = "yyyy-MM-dd'T'HH:mm:ss"
 
 var
   eventTimeFormat {.threadvar.}: TimeFormat
@@ -92,7 +90,8 @@ type
     information*: Option[string]
 
   SimulationEventKind* = enum
-    ## Discriminant for a structured simulation event. Values are JSON `kind` tags.
+    ## Discriminant for a structured simulation event. Values are JSON `kind`
+    ## tags.
     eventSetting = "SETTING"
     eventStatus = "STATUS"
     eventConfig = "CONFIG"
@@ -114,8 +113,12 @@ type
       logData*: LogEvent
 
 
-proc `%`*(event: SettingEvent): JsonNode =
-  ## Serializes the runner settings applied to a simulation.
+proc addIfSome[T](node: JsonNode, key: string, value: Option[T]) =
+  ## Adds an optional field only when it has a value.
+  if value.isSome:
+    node[key] = %value.get()
+
+proc `%`(event: SettingEvent): JsonNode =
   result = newJObject()
   result["kind"] = %($eventSetting)
   result["timestamp"] = %event.timestamp.formatEventTimestamp()
@@ -137,15 +140,13 @@ proc `%`*(event: SettingEvent): JsonNode =
   result["severity"] = %($event.severity)
   result["writeEvents"] = %event.writeEvents
 
-proc `%`*(event: StatusEvent): JsonNode =
-  ## Serializes a lifecycle status event.
+proc `%`(event: StatusEvent): JsonNode =
   result = newJObject()
   result["kind"] = %($eventStatus)
   result["timestamp"] = %event.timestamp.formatEventTimestamp()
   result["status"] = %($event.status)
 
-proc `%`*(event: ConfigEvent): JsonNode =
-  ## Serializes fixed simulation parameters.
+proc `%`(event: ConfigEvent): JsonNode =
   result = newJObject()
   result["kind"] = %($eventConfig)
   result["timestamp"] = %event.timestamp.formatEventTimestamp()
@@ -153,7 +154,7 @@ proc `%`*(event: ConfigEvent): JsonNode =
   result["stop"] = %event.stop
   result["step"] = %event.step
 
-proc `%`*(event: ProgressEvent): JsonNode =
+proc `%`(event: ProgressEvent): JsonNode =
   ## Serializes simulation progress using the established wire precision.
   result = newJObject()
   result["kind"] = %($eventProgress)
@@ -163,26 +164,20 @@ proc `%`*(event: ProgressEvent): JsonNode =
   result["elapsed"] = %event.elapsedMs.round(2)
   result["eta"] = %event.etaMs.round(2)
 
-proc `%`*(event: LogEvent): JsonNode =
+proc `%`(event: LogEvent): JsonNode =
   ## Serializes a log event, omitting fields that are not present.
   result = newJObject()
   result["kind"] = %($eventLog)
   result["timestamp"] = %event.timestamp.formatEventTimestamp()
   result["severity"] = %($event.severity)
-  result["time"] = %event.time
-  if event.unitId.isSome:
-    result["unitID"] = %event.unitId.get()
-  if event.typeId.isSome:
-    result["typeID"] = %event.typeId.get()
-  if event.messageCode.isSome:
-    result["messageCode"] = %event.messageCode.get()
-  if event.message.isSome:
-    result["message"] = %event.message.get()
-  if event.information.isSome:
-    result["information"] = %event.information.get()
+  result["time"] = %event.time.round(2)
+  result.addIfSome("unitID", event.unitId)
+  result.addIfSome("typeID", event.typeId)
+  result.addIfSome("messageCode", event.messageCode)
+  result.addIfSome("message", event.message)
+  result.addIfSome("information", event.information)
 
-proc `%`*(event: SimulationEvent): JsonNode =
-  ## Dispatches a union event to its payload-specific serializer.
+proc `%`(event: SimulationEvent): JsonNode =
   case event.kind
   of eventSetting:
     %event.settingData
@@ -196,8 +191,5 @@ proc `%`*(event: SimulationEvent): JsonNode =
     %event.logData
 
 proc toJson*(event: SimulationEvent): JsonNode {.inline.} =
-  ## Readable alias for the standard `std/json` serialization operator.
-  ##
-  ## This is the event's payload only. Sinks add the delivery metadata that
-  ## completes a wire line; see `sequencedEventSink` in `eventsink`.
+  ## Named boundary for payload serialization; sinks add delivery metadata.
   %event

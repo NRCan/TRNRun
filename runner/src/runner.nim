@@ -1,4 +1,4 @@
-## runner.nim - command-line interface for TRNRun.
+## Implements the TRNRun command-line interface.
 ##
 ## Command-line entry point for launching and configuring TRNSYS
 ## simulations through the TRNRun execution engine. It acts as a thin
@@ -8,16 +8,17 @@
 import std/[os, parseopt, strutils]
 import ./events
 import ./eventsink
+import ./filedialog
+import ./settings
 import ./simulate
 import ./status
-import ./settings
-import ./filedialog
 
 const NimblePkgVersion {.strdefine.} = "unknown"
 
-proc parseGuiVisibility(s: string): TrnexeGuiVisibility =
-  ## Parses a CLI visibility string into a `TrnexeGuiVisibility`; raises `ValueError` on unknown input.
-  case s.toLowerAscii()
+proc parseGuiVisibility(value: string): TrnexeGuiVisibility =
+  ## Parses a CLI visibility string into a `TrnexeGuiVisibility`; raises
+  ## `ValueError` on unknown input.
+  case value.toLowerAscii()
   of "keep", "keepopen":
     guiKeepOpen
   of "auto", "autoclose":
@@ -29,11 +30,83 @@ proc parseGuiVisibility(s: string): TrnexeGuiVisibility =
   of "hidden":
     guiHidden
   else:
-    raise newException(ValueError, "Invalid guiVisibility: " & s)
+    raise newException(ValueError, "Invalid guiVisibility: " & value)
 
+proc applyCliOption(
+    key, value: string,
+    deckFile: var string,
+    settings: var RunnerSettings,
+): bool =
+  ## Applies one CLI option, returning false when `key` is unknown.
+  case key
+  of "deckFile":
+    deckFile = value
+  of "trnexePath":
+    settings.trnexePath = value
+  of "guiVisibility":
+    settings.guiVisibility = parseGuiVisibility(value)
+  of "waitForGui":
+    settings.waitForGui = parseBool(value)
+  of "waitForLst":
+    settings.waitForLst = parseBool(value)
+  of "waitForTmp":
+    settings.waitForTmp = parseBool(value)
+  of "detectTimeout":
+    settings.detectTimeoutMs = parseInt(value)
+  of "extraDelay":
+    settings.extraDelayMs = parseInt(value)
+  of "watchLog":
+    settings.watchLog = parseBool(value)
+  of "watchTmp":
+    settings.watchTmp = parseBool(value)
+  of "watchTimeout":
+    settings.watchTimeoutMs = parseInt(value)
+  of "stallTimeout":
+    settings.stallTimeoutMs = parseInt(value)
+  of "pollMs":
+    settings.pollMs = parseInt(value)
+  of "clean":
+    settings.cleanOnSuccess = parseBool(value)
+  of "killOnTimeout":
+    settings.killOnTimeout = parseBool(value)
+  of "killOnStall":
+    settings.killOnStall = parseBool(value)
+  of "severity":
+    settings.severity = parseEnum[LogSeverity](value)
+  of "writeEvents":
+    settings.writeEvents = parseBool(value)
+  else:
+    return false
+
+  return true
+
+proc openEventWriter(deckFile: string, writeEvents: var bool): JsonlWriter =
+  ## Opens event output when requested, disabling it if the file cannot open.
+  result = nil
+  if not writeEvents:
+    return nil
+
+  try:
+    result = openJsonlWriter(deckFile.changeFileExt("jsonl"))
+  except IOError:
+    # Keep the SETTING event honest: nothing will be written to a file.
+    writeEvents = false
+    stderr.writeLine(
+      "[JsonlWriter] Could not open event file (logging disabled): ",
+      getCurrentExceptionMsg()
+    )
+
+proc closeEventWriter(writer: JsonlWriter) =
+  ## Closes event output while keeping cleanup failures out of the simulation.
+  try:
+    writer.close()
+  except IOError:
+    stderr.writeLine(
+      "[JsonlWriter] Could not close event file: ",
+      getCurrentExceptionMsg()
+    )
 
 proc writeHelp() =
-  ## Prints CLI usage to stdout.
   echo """trnrun - launch and monitor TRNSYS simulations
 
 Usage:
@@ -47,7 +120,7 @@ Usage:
   --waitForGui:BOOL       (default: true)
   --waitForLst:BOOL       (default: true)
   --waitForTmp:BOOL       (default: false)
-  --detectTimeout:MS      Readiness timeout, 0 = unlimited (default: 0)
+  --detectTimeout:MS      Readiness timeout, 0 = unlimited (default: 300000)
   --extraDelay:MS         (default: 0)
   --watchLog:BOOL         (default: true)
   --watchTmp:BOOL         Needed for stall detection (default: false)
@@ -63,116 +136,54 @@ Usage:
 Exit codes: 0 done  1 fatal  2 usage error  124 timeout  125 stalled  130 cancelled"""
 
 proc main(): int =
-  ## Entry point for the TRNRun CLI.
+  ## Parses CLI options, selects a deck when necessary, runs the simulation,
+  ## and returns its process exit code: 0 done, 1 fatal, 2 usage or validation
+  ## error, 124 timeout, 125 stalled, or 130 cancelled.
   ##
-  ## Parses command-line flags into `RunnerSettings`, opens a native file
-  ## picker when no deck file is supplied, and runs the simulation.
-  ##
-  ## Returns
-  ## -------
-  ## int
-  ##     Process exit code describing the outcome: 0 done, 1 fatal,
-  ##     2 usage/validation error, 124 timeout, 125 stalled, 130 cancelled.
-  ##     The caller is responsible for calling `quit` with this value; this
-  ##     proc itself never calls `quit`, so any future `defer`/`finally`
-  ##     cleanup added here is guaranteed to run.
-  ##
-  ## Raises
-  ## ------
-  ## ValueError, IOError
-  ##     Invalid flag values or a missing deck/executable propagate to the
-  ##     top-level handler, which prints one line and exits with code 2.
+  ## This procedure does not call `quit`, ensuring its `defer` and `finally`
+  ## cleanup can run. Invalid values and validation failures propagate to the
+  ## top-level error boundary, which emits one diagnostic and returns code 2.
   var
     deckFile = ""
     settings = DefaultRunnerSettings
 
-  var p = initOptParser()
+  var parser = initOptParser()
   while true:
-    p.next()
-    case p.kind
+    parser.next()
+    case parser.kind
     of cmdEnd:
       break
     of cmdShortOption, cmdLongOption:
-      case p.key
+      case parser.key
       of "help", "h":
         writeHelp()
         return 0
       of "version", "v":
         echo NimblePkgVersion
         return 0
-      of "deckFile":
-        deckFile = p.val
-      of "trnexePath":
-        settings.trnexePath = p.val
-      of "guiVisibility":
-        settings.guiVisibility = parseGuiVisibility(p.val)
-      of "waitForGui":
-        settings.waitForGui = parseBool(p.val)
-      of "waitForLst":
-        settings.waitForLst = parseBool(p.val)
-      of "waitForTmp":
-        settings.waitForTmp = parseBool(p.val)
-      of "detectTimeout":
-        settings.detectTimeoutMs = parseInt(p.val)
-      of "extraDelay":
-        settings.extraDelayMs = parseInt(p.val)
-      of "watchLog":
-        settings.watchLog = parseBool(p.val)
-      of "watchTmp":
-        settings.watchTmp = parseBool(p.val)
-      of "watchTimeout":
-        settings.watchTimeoutMs = parseInt(p.val)
-      of "stallTimeout":
-        settings.stallTimeoutMs = parseInt(p.val)
-      of "pollMs":
-        settings.pollMs = parseInt(p.val)
-      of "clean":
-        settings.cleanOnSuccess = parseBool(p.val)
-      of "killOnTimeout":
-        settings.killOnTimeout = parseBool(p.val)
-      of "killOnStall":
-        settings.killOnStall = parseBool(p.val)
-      of "severity":
-        settings.severity = parseEnum[LogSeverity](p.val)
-      of "writeEvents":
-        settings.writeEvents = parseBool(p.val)
       else:
-        stderr.writeLine("Unknown option: ", p.key)
-        return 2
+        if not applyCliOption(parser.key, parser.val, deckFile, settings):
+          stderr.writeLine("Unknown option: ", parser.key)
+          return 2
     of cmdArgument:
       if deckFile != "":
-        stderr.writeLine("Unexpected argument: ", p.key)
+        stderr.writeLine("Unexpected argument: ", parser.key)
         return 2
-      deckFile = p.key
+      deckFile = parser.key
 
   if deckFile == "":
     deckFile = openDeckFileDialog()
     if deckFile == "":
       stderr.writeLine("No file selected.")
-      return 0
+      return exitCode(simCancelled)
 
+  # Only the deck is resolved here, because the `.jsonl` path derives from it.
+  # `simulate` validates both this and `trnexePath` itself.
   deckFile = validateDeck(deckFile)
-  settings.trnexePath = validateTrnexe(settings.trnexePath)
 
-  var jsonlOutput: JsonlWriter = nil
-
-  if settings.writeEvents:
-    try:
-      jsonlOutput = openJsonlWriter(deckFile.changeFileExt("jsonl"))
-    except IOError:
-      stderr.writeLine(
-        "[JsonlWriter] Could not open event file (logging disabled): ",
-        getCurrentExceptionMsg()
-      )
-
+  let jsonlOutput = openEventWriter(deckFile, settings.writeEvents)
   defer:
-    try:
-      jsonlOutput.close()
-    except IOError:
-      stderr.writeLine(
-        "[JsonlWriter] Could not close event file: ",
-        getCurrentExceptionMsg()
-      )
+    closeEventWriter(jsonlOutput)
 
   let eventSink = stdoutEventSink(jsonlOutput)
 
@@ -182,7 +193,7 @@ proc main(): int =
     settings = settings,
   )
 
-  exitCode(simResult)
+  return exitCode(simResult)
 
 when isMainModule:
   let code =

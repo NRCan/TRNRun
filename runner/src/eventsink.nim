@@ -10,30 +10,9 @@ type
   EventSink* = proc(event: SimulationEvent) {.closure, gcsafe.}
     ## Synchronous destination for events produced by a simulation.
 
-  JsonLineSink* = proc(line: string) {.closure, gcsafe.}
-    ## Synchronous destination for a serialized JSON line.
-
   JsonlWriter* = ref object
     ## Writer that owns an open JSON Lines output file.
     file: File
-
-proc sequencedJsonLine(event: SimulationEvent, sequence: int): string =
-  ## Serializes `event` as a compact single-line JSON object carrying `seq`,
-  ## its position in the emission order.
-  let node = event.toJson()
-  node["seq"] = %sequence
-  $node
-
-proc sequencedEventSink*(lineSink: JsonLineSink): EventSink =
-  ## Wraps a JSON-line destination with event serialization and sequencing.
-  ##
-  ## Each returned sink owns an independent sequence starting at 1. Assigning
-  ## the number here, at the emission boundary, lets a consumer distinguish a
-  ## dropped line from a pause in the stream.
-  var sequence = 0
-  result = proc(event: SimulationEvent) {.gcsafe.} =
-    inc sequence
-    lineSink(event.sequencedJsonLine(sequence))
 
 proc openJsonlWriter*(path: string): JsonlWriter =
   ## Opens `path` for unbuffered output, truncating any existing file.
@@ -57,7 +36,7 @@ proc close*(writer: JsonlWriter) =
   if file != nil:
     file.close()
 
-proc write*(writer: JsonlWriter, line: string) =
+proc writeLine(writer: JsonlWriter, line: string) =
   ## Writes `line` followed by a newline.
   ##
   ## On failure, the error is reported to standard error and the writer is
@@ -75,18 +54,22 @@ proc write*(writer: JsonlWriter, line: string) =
     except IOError:
       discard # Preserve the original write failure and keep the writer disabled.
     try:
-      stderr.writeLine(
-        "[JsonlWriter] Could not write event (writer disabled): ", message
-      )
+      stderr.writeLine("[JsonlWriter] Could not write event (writer disabled): ", message)
     except IOError:
       discard
 
 proc stdoutEventSink*(writer: JsonlWriter = nil): EventSink =
-  ## Returns a sink that writes each event to standard output as one JSON line,
-  ## numbered from 1 in emission order. Each line is flushed immediately.
-  result = sequencedEventSink(
-    proc(line: string) {.gcsafe.} =
-      stdout.writeLine(line)
-      stdout.flushFile()
-      writer.write(line)
-  )
+  ## Returns a sink that numbers events from 1, writes and immediately flushes
+  ## each JSON line to stdout, and optionally mirrors the same line to `writer`.
+  ## Each returned sink owns an independent sequence starting at 1.
+  var sequence = 0
+  result = proc(event: SimulationEvent) {.gcsafe.} =
+    inc sequence
+
+    let node = event.toJson()
+    node["seq"] = %sequence
+    let line = $node
+
+    stdout.writeLine(line)
+    stdout.flushFile()
+    writer.writeLine(line)
