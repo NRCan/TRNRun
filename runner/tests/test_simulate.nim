@@ -3,6 +3,10 @@ import std/[os, sequtils, strutils, unittest]
 import ../src/[events, eventsink, settings, simulate, status]
 
 
+const
+  FakeLongRunMs = 300
+  KillAssertionWaitMs = FakeLongRunMs + 200
+
 when defined(windows):
   proc duplicateFileDescriptor(fd: cint): cint {.importc: "_dup", header: "<io.h>".}
   proc replaceFileDescriptor(source, destination: cint): cint {.
@@ -13,12 +17,22 @@ proc runFakeTrnexe(deckFile: string) =
   let mode = deckFile.splitFile().name.toLowerAscii()
 
   case mode
-  of "done", "cancelled", "cleanup", "args":
+  of "done", "cancelled", "cleanup", "args", "stale":
     let progress =
       if mode == "cancelled":
         "50, 0, 100, 1"
       else:
         "100, 0, 100, 1"
+    if mode == "stale":
+      var staleExtensions = newSeq[string]()
+      for extension in ["tmp", "log", "lst", "PTI"]:
+        if fileExists(deckFile.changeFileExt(extension)):
+          staleExtensions.add(extension)
+      writeFile(
+        deckFile.changeFileExt("stale"),
+        if staleExtensions.len == 0: "clean" else: staleExtensions.join(","),
+      )
+
     writeFile(deckFile.changeFileExt("tmp"), progress)
 
     if mode == "cleanup":
@@ -41,13 +55,13 @@ proc runFakeTrnexe(deckFile: string) =
       "Message : Fake TrnEXE failure\n",
     )
 
-  of "timeout", "no-tmp":
-    sleep(1_000)
+  of "timeout", "timeout-no-kill", "no-tmp":
+    sleep(FakeLongRunMs)
     writeFile(deckFile.changeFileExt("completed"), "completed naturally")
 
-  of "stalled":
+  of "stalled", "stalled-no-kill":
     writeFile(deckFile.changeFileExt("tmp"), "10, 0, 100, 1")
-    sleep(1_000)
+    sleep(FakeLongRunMs)
     writeFile(deckFile.changeFileExt("completed"), "completed naturally")
 
   else:
@@ -68,6 +82,15 @@ proc newEventCollector(): EventCollector =
   let collector = result
   result.sink = proc(event: SimulationEvent) {.gcsafe.} =
     collector.events.add(event)
+
+proc newLaunchFailureCollector(deckFile: string): EventCollector =
+  result = EventCollector(events: @[])
+  let collector = result
+  result.sink = proc(event: SimulationEvent) {.gcsafe.} =
+    collector.events.add(event)
+    if event.kind == eventStatus and event.statusData.status == statusLaunching:
+      removeFile(deckFile)
+      removeDir(deckFile.parentDir())
 
 proc terminalStatuses(events: openArray[SimulationEvent]): seq[SimStatus] =
   result = @[]
@@ -257,11 +280,27 @@ proc runTests() =
       settings.killOnTimeout = true
 
       let outcome = simulate(deckFile, collector.sink, settings)
-      sleep(100)
+      sleep(KillAssertionWaitMs)
 
       check outcome == simTimeout
       check collector.events.terminalStatuses()[^1] == statusTimeout
       check not fileExists(completedFile)
+
+    test "waits for natural exit after a monitoring timeout when kill is disabled":
+      let
+        deckFile = createDeck(testDirectory, "timeout-no-kill.dck")
+        completedFile = deckFile.changeFileExt("completed")
+        collector = newEventCollector()
+      removeIfExists(completedFile)
+      var settings = testSettings()
+      settings.watchTimeoutMs = 50
+      settings.killOnTimeout = false
+
+      let outcome = simulate(deckFile, collector.sink, settings)
+
+      check outcome == simTimeout
+      check collector.events.terminalStatuses()[^1] == statusTimeout
+      check readFile(completedFile) == "completed naturally"
 
     test "kills a stalled process when configured":
       let
@@ -275,11 +314,28 @@ proc runTests() =
       settings.killOnStall = true
 
       let outcome = simulate(deckFile, collector.sink, settings)
-      sleep(100)
+      sleep(KillAssertionWaitMs)
 
       check outcome == simStalled
       check collector.events.terminalStatuses()[^1] == statusStalled
       check not fileExists(completedFile)
+
+    test "waits for natural exit after a stall when kill is disabled":
+      let
+        deckFile = createDeck(testDirectory, "stalled-no-kill.dck")
+        completedFile = deckFile.changeFileExt("completed")
+        collector = newEventCollector()
+      removeIfExists(completedFile)
+      var settings = testSettings()
+      settings.watchTmp = true
+      settings.stallTimeoutMs = 50
+      settings.killOnStall = false
+
+      let outcome = simulate(deckFile, collector.sink, settings)
+
+      check outcome == simStalled
+      check collector.events.terminalStatuses()[^1] == statusStalled
+      check readFile(completedFile) == "completed naturally"
 
     test "returns from readiness timeout before entering running status":
       let
@@ -293,7 +349,7 @@ proc runTests() =
       settings.killOnTimeout = true
 
       let outcome = simulate(deckFile, collector.sink, settings)
-      sleep(100)
+      sleep(KillAssertionWaitMs)
 
       check outcome == simTimeout
       check collector.events.terminalStatuses() == @[
@@ -315,15 +371,34 @@ proc runTests() =
       for extension in ["tmp", "log", "lst", "PTI"]:
         check not fileExists(deckFile.changeFileExt(extension))
 
-    test "converts process launch failures to fatal results":
+    test "removes stale sidecars before launching the process":
       let
-        deckFile = createDeck(testDirectory, "launch-failure.dck")
-        invalidTrnexe = testDirectory / "invalid-TrnEXE64.exe"
+        deckFile = createDeck(testDirectory, "stale.dck")
+        staleCheckFile = deckFile.changeFileExt("stale")
         collector = newEventCollector()
-      writeFile(invalidTrnexe, "not a Windows executable")
-      let errorFile = testDirectory / "launch-failure.stderr"
+      writeFile(deckFile.changeFileExt("tmp"), "50, 0, 100, 1")
+      writeFile(
+        deckFile.changeFileExt("log"),
+        "*** Fatal at time : 0\nMessage : stale failure\n",
+      )
+      writeFile(deckFile.changeFileExt("lst"), "stale list")
+      writeFile(deckFile.changeFileExt("PTI"), "stale plot")
+
       var settings = testSettings()
-      settings.trnexePath = invalidTrnexe
+      settings.watchLog = true
+      settings.watchTmp = true
+
+      check simulate(deckFile, collector.sink, settings) == simDone
+      check readFile(staleCheckFile) == "clean"
+
+    test "converts process launch failures to fatal results":
+      let launchDirectory = testDirectory / "launch-failure"
+      createDir(launchDirectory)
+      let
+        deckFile = createDeck(launchDirectory, "launch-failure.dck")
+        collector = newLaunchFailureCollector(deckFile)
+        errorFile = testDirectory / "launch-failure.stderr"
+        settings = testSettings()
 
       let runSimulation = proc(): SimResult =
         simulate(deckFile, collector.sink, settings)
@@ -331,7 +406,6 @@ proc runTests() =
 
       check captured.outcome == simFatal
       check captured.errorOutput.contains("Error: Failed to launch TRNSYS:")
-      check captured.errorOutput.contains(invalidTrnexe)
       check collector.events.terminalStatuses() == @[
         statusPending,
         statusLaunching,

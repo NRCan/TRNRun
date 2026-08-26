@@ -3,6 +3,7 @@ import std/[os, osproc, strutils, times, unittest]
 const
   Trnsys17Exe = r"C:\Trnsys17\Exe\TrnEXE.exe"
   Trnsys18Exe = r"C:\TRNSYS18\Exe\TrnEXE64.exe"
+  ExpectedTmpRecord = "10000.000000,0.000000,10000.000000,1.000000"
 
 let
   testsDir = currentSourcePath().parentDir
@@ -76,6 +77,16 @@ proc runDeck(spec: tuple[name, deck, trnexe: string]): IntegrationRun =
     result.fail("Runner exited with code " & $result.exitCode)
   if not result.tmpGenerated:
     result.fail("TMP file was not generated: " & tmpPath)
+  else:
+    try:
+      let record = readFile(tmpPath).strip()
+      if record != ExpectedTmpRecord:
+        result.fail(
+          "Unexpected TMP record: expected '" & ExpectedTmpRecord &
+            "', got '" & record & "'"
+        )
+    except CatchableError:
+      result.fail("Unable to read TMP file: " & getCurrentExceptionMsg())
 
 proc reportSummary(runs: openArray[IntegrationRun]) =
   var passedCount = 0
@@ -104,7 +115,7 @@ var runs: seq[IntegrationRun]
 
 suite "Type3830 integration":
   for spec in runSpecs:
-    test spec.name & " deck exits successfully":
+    test spec.name & " deck generates the expected final TMP record":
       let run = runDeck(spec)
       runs.add(run)
       if not run.passed:

@@ -1,5 +1,10 @@
-import std/[os, osproc, streams, strutils, unittest]
+import std/[json, os, osproc, streams, strutils, unittest]
 
+
+if paramCount() >= 1 and
+    paramStr(1).splitFile().ext.toLowerAscii() in [".dck", ".trd"]:
+  sleep(50)
+  quit(QuitSuccess)
 
 type CommandResult = object
   output: string
@@ -27,6 +32,14 @@ proc runCommand(
 proc removeIfExists(path: string) =
   if fileExists(path):
     removeFile(path)
+
+proc findEvent(output, kind: string): JsonNode =
+  result = nil
+  for line in output.splitLines():
+    if line.startsWith("{"):
+      let node = line.parseJson()
+      if node{"kind"}.getStr() == kind:
+        return node
 
 proc runTests() =
   const TestVersion = "runner-test-version"
@@ -194,6 +207,57 @@ proc runTests() =
       check command.exitCode == 2
       check command.output.contains("Deck file not found:")
       check not command.output.contains("Unknown option:")
+
+    test "maps every CLI setting to the emitted SETTING event":
+      let deckFile = testDirectory / "semantic-settings.dck"
+      writeFile(deckFile, "test")
+
+      let command = runCommand(
+        runnerExecutable,
+        [
+          deckFile,
+          "--trnexePath:" & getAppFilename(),
+          "--guiVisibility:hidden",
+          "--waitForGui:false",
+          "--waitForLst:false",
+          "--waitForTmp:false",
+          "--detectTimeout:1234",
+          "--extraDelay:25",
+          "--watchLog:false",
+          "--watchTmp:false",
+          "--watchTimeout:5000",
+          "--stallTimeout:3000",
+          "--pollMs:50",
+          "--clean:true",
+          "--killOnTimeout:true",
+          "--killOnStall:true",
+          "--severity:Warning",
+          "--writeEvents:false",
+        ],
+        testDirectory,
+      )
+
+      check command.exitCode == 0
+      let setting = command.output.findEvent("SETTING")
+      check setting != nil
+      check setting["trnexePath"].getStr() ==
+        getAppFilename().absolutePath().normalizedPath()
+      check setting["guiVisibility"].getStr() == "hidden"
+      check not setting["waitForGui"].getBool()
+      check not setting["waitForLst"].getBool()
+      check not setting["waitForTmp"].getBool()
+      check setting["detectTimeoutMs"].getInt() == 1234
+      check setting["extraDelayMs"].getInt() == 25
+      check not setting["watchLog"].getBool()
+      check not setting["watchTmp"].getBool()
+      check setting["watchTimeoutMs"].getInt() == 5000
+      check setting["stallTimeoutMs"].getInt() == 3000
+      check setting["pollMs"].getInt() == 50
+      check setting["cleanOnSuccess"].getBool()
+      check setting["killOnTimeout"].getBool()
+      check setting["killOnStall"].getBool()
+      check setting["severity"].getStr() == "Warning"
+      check not setting["writeEvents"].getBool()
 
     test "reports missing and unsupported deck files":
       let
