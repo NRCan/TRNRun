@@ -29,17 +29,6 @@ PyPI:
 pip install trnrun
 ```
 
-For development from this repository, rebuild and synchronize the runner before
-testing or packaging the manager:
-
-```powershell
-cd runner
-nimble deploy
-cd ..\manager
-uv sync --dev
-uv run pytest
-```
-
 ## Quick start
 
 Run a single deck:
@@ -82,11 +71,6 @@ with SimulationManager(max_concurrent=4) as manager:
 
     print(f"succeeded: {len(manager.succeeded)}  failed: {len(manager.failed)}")
 ```
-
-Every concurrently scheduled simulation must use a distinct deck path. The
-runner's launch mutex does not cover the full simulation, and each run removes
-and writes sidecars beside its deck; scheduling the same path twice can corrupt
-both runs.
 
 Do your own results aggregation:
 
@@ -187,12 +171,6 @@ is required.
 | `snapshot()`                    | `SimulationSnapshot`    | Consistent view of the snapshot fields below, captured under a single lock.                 |
 | `cancel()`                      | `None`                  | Request termination of the runner process. Safe to call before or after start.              |
 | `run()`                         | `None`                  | Spawn the runner and consume stdout until it exits. Called by the manager's worker thread   |
-
-`Simulation.error` contains Python-side exceptions, not runner diagnostics. A
-runner validation or execution failure may therefore have `error is None`; use
-`exit_code` and the latest `status` to determine its outcome. Plain-text runner
-diagnostics are merged into the event stream and skipped when they are not valid
-JSON events.
 
 ### SimulationSnapshot
 
