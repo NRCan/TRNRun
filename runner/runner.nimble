@@ -92,30 +92,3 @@ task deploy, "Build, assemble, and deploy to the manager":
   compileExe()
   assembleDistribution()
   deployPackage()
-
-task test, "Run the automated test suite":
-  let testFiles = [
-    "tests/test_events.nim",
-    "tests/test_eventsink.nim",
-    "tests/test_job.nim",
-    "tests/test_monitor.nim",
-    "tests/test_mutex.nim",
-    "tests/test_processwait.nim",
-    "tests/test_runner.nim",
-    "tests/test_settings.nim",
-    "tests/test_simulate.nim",
-    "tests/test_status.nim",
-    "tests/test_wait.nim",
-  ]
-
-  for testFile in testFiles:
-    exec "nim r " & testFile
-
-task testGui, "Run the interactive native file-dialog tests":
-  exec "nim r tests/test_filedialog.nim"
-
-task smoke, "Run one real TRNSYS smoke test":
-  exec "nim r tests/smoke_trnrun.nim"
-
-task testTrnrun, "Run the complete real TRNSYS test matrix":
-  exec "nim r tests/test_trnrun.nim"
