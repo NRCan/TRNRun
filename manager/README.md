@@ -5,10 +5,10 @@ pool, mirrors each run's status, progress, config, setting, and log events behin
 and renders a live terminal display while simulations run, making it suitable for batch studies,
 parametric runs, and job orchestration.
 
-Each simulation is executed by its own `trnrun.exe` process, which handles machine-wide launch
-serialization, startup detection, runtime monitoring, and log parsing on its own (see the runner
-documentation). The manager consumes the runner's line-delimited JSON output from stdout and exposes
-it through a typed, thread-safe Python API.
+Each simulation is executed by its own `trnrun.exe` process, which handles launch serialization
+within the current Windows logon session, startup detection, runtime monitoring, and log parsing on
+its own (see the runner documentation). The manager consumes the runner's line-delimited JSON output
+from stdout and exposes it through a typed, thread-safe Python API.
 
 ## Requirements
 
@@ -101,12 +101,12 @@ Reported through `Simulation.status`:
 
 | Status      | Meaning                                                                      |
 | ----------- | ---------------------------------------------------------------------------- |
-| `PENDING`   | Waiting to acquire the global mutex.                                         |
-| `LAUNCHING` | Mutex acquired; TrnEXE is being started.                                     |
-| `RUNNING`   | Startup detection passed; the simulation is being monitored.                 |
-| `DONE`      | Completed successfully.                                                      |
-| `CANCELLED` | The process exited before simulation time reached 100 %.                     |
-| `ERROR`     | Failed to launch, died during startup, or logged a fatal error.              |
+| `PENDING`   | Waiting for the launch mutex in the current Windows logon session.           |
+| `LAUNCHING` | Mutex acquired; stale sidecars are removed and TrnEXE is started.             |
+| `RUNNING`   | The runner entered runtime monitoring.                                        |
+| `DONE`      | Completed successfully.                                                       |
+| `CANCELLED` | The process exited before simulation time reached 100 %.                      |
+| `ERROR`     | Launch or pre-launch cleanup failed, or a fatal log entry was detected.       |
 | `TIMEOUT`   | Exceeded `watch_timeout_ms` (or `detect_timeout_ms` with `kill_on_timeout`). |
 | `STALLED`   | Simulation time stopped advancing for longer than `stall_timeout_ms`.        |
 
@@ -158,7 +158,7 @@ is required.
 | `status`                        | `StatusEvent \| None`   | Latest `STATUS` event.                                                                      |
 | `progress`                      | `ProgressEvent \| None` | Latest `PROGRESS` event. Requires `watch_tmp=True`.                                         |
 | `config_event`                  | `ConfigEvent \| None`   | Latest `CONFIG` event with simulation start / stop / step.                                  |
-| `setting_event`                 | `SettingEvent | None`  | Latest `SETTING` event with the configured runner settings.                                 |
+| `setting_event`                 | `SettingEvent \| None` | Latest `SETTING` event with the configured runner settings.                                 |
 | `logs`                          | `list[LogEvent]`        | Rolling window of `LOG` events (default: last 5 000).                                       |
 | `notices`, `warnings`, `fatals` | `int`                   | Event counters, kept over the whole run — even after older events leave the rolling window. |
 | `exit_code`                     | `int \| None`           | `None` while running; the runner exit code afterwards.                                      |
@@ -193,14 +193,14 @@ documentation for full flag semantics.
 | `wait_for_gui`      | `--waitForGui`    | `True`                         | Launch detection: wait for a TRNSYS GUI.                               |
 | `wait_for_lst`      | `--waitForLst`    | `True`                         | Launch detection: wait for a specific string in the `*.lst`.           |
 | `wait_for_tmp`      | `--waitForTmp`    | `False`                        | Launch detection: wait for the `*.tmp` file. (Requires Type3830.)      |
-| `detect_timeout_ms` | `--detectTimeout` | `0`                            | Timeout in ms for the detection stages; `0` = unlimited.               |
+| `detect_timeout_ms` | `--detectTimeout` | `300000`                       | Timeout in ms for the detection stages; `0` = unlimited.               |
 | `extra_delay_ms`    | `--extraDelay`    | `0`                            | Additional delay in ms after detection passes.                         |
 | `poll_ms`           | `--pollMs`        | `100`                          | Polling interval in ms for the output files and the process.           |
 | `watch_log`         | `--watchLog`      | `True`                         | Stream `*.log` entries as `LOG` events.                                |
 | `watch_tmp`         | `--watchTmp`      | `False`                        | Stream `*.tmp` updates as `CONFIG`/`PROGRESS` events. (Type3830.)      |
 | `watch_timeout_ms`  | `--watchTimeout`  | `0`                            | Maximum monitoring duration in ms; `0` = unlimited.                    |
 | `stall_timeout_ms`  | `--stallTimeout`  | `0`                            | Max wall-clock ms without progress; `0` = disabled. Needs `watch_tmp`. |
-| `clean_on_success`  | `--clean`         | `False`                        | On success, delete `*.tmp`, `*.log`, `*.lst`, and `*.PTI`.             |
+| `clean_on_success`  | `--clean`         | `False`                        | Also delete sidecars after success; stale sidecars are always removed before launch. |
 | `kill_on_timeout`   | `--killOnTimeout` | `False`                        | Kill TRNSYS on a detection or watch timeout.                           |
 | `kill_on_stall`     | `--killOnStall`   | `False`                        | Kill TRNSYS when a stall is detected.                                  |
 | `severity`          | `--severity`      | `"Notice"`                     | Minimum log severity to emit: `Notice`, `Warning`, `Fatal`.            |
