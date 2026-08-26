@@ -1,8 +1,13 @@
-## Launch many copies of the same deck at once and wait for all of them.
+## Launch many copies of the same slow deck at once and wait for all of them.
+##
+## Usage:
+##
+##   nim r tests/manual_concurrent.nim
 
 import std/[os, osproc, strformat, streams, strutils]
 
 const
+  DeckFilename = "test_slow_wo_plot_w_tracking.dck"
   CopyCount = 50
   RemoveStagedCopies = false
   CliOptions = [
@@ -32,10 +37,10 @@ proc forwardOutputLine(run: SimulationRun) =
     echo fmt"[{run.name}] {line}"
 
 let
-  examplesDirectory = currentSourcePath().parentDir()
-  executablePath = examplesDirectory.parentDir() / "build" / "trnrun.exe"
-  sourceDeck = examplesDirectory / "dck" / "example_wo_plot_w_tracking.dck"
-  stagingDirectory = examplesDirectory / "stress"
+  testsDirectory = currentSourcePath().parentDir()
+  executablePath = testsDirectory.parentDir() / "build" / "trnrun.exe"
+  sourceDeck = testsDirectory / "dck" / DeckFilename
+  stagingDirectory = testsDirectory / "runs"
 
 if not fileExists(executablePath):
   quit("Executable not found: " & executablePath)
@@ -52,7 +57,7 @@ let copyNumberWidth = ($CopyCount).len
 for copyIndex in 1 .. CopyCount:
   let
     runName =
-      "example_wo_plot_w_tracking_" &
+      sourceDeck.splitFile().name & "_" &
       align($copyIndex, copyNumberWidth, '0')
     stagedDeck = stagingDirectory / (runName & ".dck")
   copyFile(sourceDeck, stagedDeck)
@@ -95,3 +100,5 @@ echo fmt"Finished {runCount} simulations with {failureCount} failures."
 
 if RemoveStagedCopies:
   removeDir(stagingDirectory)
+
+quit(if failureCount == 0: 0 else: 1)

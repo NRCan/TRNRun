@@ -2,7 +2,7 @@
 ##
 ## Usage:
 ##
-##   nim r tests/test_trnrun.nim
+##   nim r tests/manual_matrix.nim
 
 import std/[monotimes, os, osproc, strutils, terminal, times]
 
@@ -100,10 +100,10 @@ proc runRunner(
 proc requiredDecks(testsDirectory: string): seq[string] =
   result = @[]
   for filename in [
-    "test_wo_plot_wo_tracking.dck",
-    "test_wo_plot_w_tracking.dck",
-    "test_w_plot_wo_tracking.dck",
-    "test_w_plot_w_tracking.dck",
+    "test_fast_wo_plot_wo_tracking.dck",
+    "test_fast_wo_plot_w_tracking.dck",
+    "test_fast_w_plot_wo_tracking.dck",
+    "test_fast_w_plot_w_tracking.dck",
   ]:
     let path = testsDirectory / "dck" / filename
     if not fileExists(path):
@@ -113,7 +113,8 @@ proc requiredDecks(testsDirectory: string): seq[string] =
 proc main(): int =
   if paramCount() > 0:
     stderr.writeLine(
-      "test_trnrun does not accept arguments; run: nim r tests/test_trnrun.nim"
+      "manual_matrix does not accept arguments; run: " &
+        "nim r tests/manual_matrix.nim"
     )
     return 2
 

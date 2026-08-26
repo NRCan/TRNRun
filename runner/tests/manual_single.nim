@@ -1,15 +1,15 @@
-## Runs one representative TRNRun simulation as a quick smoke test.
+## Runs one representative TRNRun simulation as a quick manual check.
 ##
 ## Usage:
 ##
-##   nim r tests/smoke_trnrun.nim
+##   nim r tests/manual_single.nim
 
 import std/[monotimes, os, osproc, strutils, terminal, times]
 
 
-# Smoke-test configuration. Edit these values to try a different runner setup.
+# Manual-run configuration. Edit these values to try a different runner setup.
 const
-  DeckFilename = "test_wo_plot_w_tracking.dck"
+  DeckFilename = "test_slow_wo_plot_w_tracking.dck"
   TrnexePath = r"C:\TRNSYS18\Exe\TrnEXE64.exe"
   GuiVisibility = "auto"
   WaitForGui = true
@@ -44,8 +44,8 @@ proc formatSeconds(milliseconds: int64): string =
 proc main(): int =
   if paramCount() > 0:
     stderr.writeLine(
-      "smoke_trnrun does not accept arguments; run: " &
-        "nim r tests/smoke_trnrun.nim"
+      "manual_single does not accept arguments; run: " &
+        "nim r tests/manual_single.nim"
     )
     return 2
 
@@ -83,7 +83,7 @@ proc main(): int =
     "--writeEvents=" & $WriteEvents,
   ]
 
-  styledWriteLine(stdout, fgCyan, "Running smoke test:")
+  styledWriteLine(stdout, fgCyan, "Running manual check:")
   styledWriteLine(stdout, fgWhite, "  " & executable & " " & arguments.join(" "))
   echo ""
 

@@ -16,15 +16,32 @@ $DeckFiles = @(
 $Worker = {
     param($ExecutablePath, $DeckFile)
 
+    # Runner settings. Time values are milliseconds.
+    $CliOptions = @(
+        '--trnexePath=C:\TRNSYS18\Exe\TrnEXE64.exe'
+        '--guiVisibility=hidden' # keep | auto | min | minauto | hidden
+        '--waitForGui=true'
+        '--waitForLst=true'
+        '--waitForTmp=false'
+        '--detectTimeout=300000'
+        '--extraDelay=0'
+        '--watchLog=true'
+        '--watchTmp=true'
+        '--watchTimeout=7200000'
+        '--stallTimeout=300000'
+        '--pollMs=100'
+        '--clean=true'
+        '--killOnTimeout=true'
+        '--killOnStall=true'
+        '--severity=Notice' # Notice | Warning | Fatal
+        '--writeEvents=false'
+    )
+
+    $CliArguments = @("--deckFile=$DeckFile") + $CliOptions
+
     $DeckName = [IO.Path]::GetFileName($DeckFile)
     $Host.UI.RawUI.WindowTitle = "trnrun - $DeckName"
-    & $ExecutablePath $DeckFile `
-        --watchTmp:true `
-        --watchTimeout:7200000 `
-        --killOnTimeout:true `
-        --stallTimeout:300000 `
-        --killOnStall:true `
-        --clean:true
+    & $ExecutablePath $CliArguments
     if ($LASTEXITCODE) {
         Write-Warning "$DeckName failed with exit code $LASTEXITCODE"
         Read-Host 'Window kept open. Press Enter to close' | Out-Null

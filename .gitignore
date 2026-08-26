@@ -24,7 +24,7 @@ dist
 *.exe
 *.dll
 *.csv
-stress
+runner/tests/runs/
 # Old stuff to sort
 
 # nimcache/

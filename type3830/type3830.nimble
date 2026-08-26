@@ -38,6 +38,9 @@ const
   proformaDir = "Studio/Proformas/Utility (NRCan)/Progress Tracker"
   packageBmpFile = "Type3830.bmp"
   packageTmfFile = "Type3830.tmf"
+  packageReadmeFile = "README.md"
+  licenseSourceFile = "../LICENSE"
+  packageLicenseFile = "LICENSE"
   zigcc = "scripts/zigcc.bat"
 
   arch64 = Arch(
@@ -118,6 +121,8 @@ proc assemblePackage(arch: Arch) =
   mkDir debugDlls
   mkDir releaseDlls
 
+  cpFile(packageReadmeFile, root & "/" & packageReadmeFile)
+  cpFile(licenseSourceFile, root & "/" & packageLicenseFile)
   cpFile(proformaSourceDir & "/" & packageBmpFile, proformas & "/" & packageBmpFile)
   cpFile(proformaSourceDir & "/" & arch.tmfFile, proformas & "/" & packageTmfFile)
   cpFile(
@@ -141,7 +146,9 @@ proc deployPackage(arch: Arch) =
     echo "Skipping TRNSYS ", arch.trnsysVersion, ": ", arch.installDir, " not found"
     return
 
-  cpDir(distDir & "/Type3830-TRNSYS" & arch.trnsysVersion & "-v" & version, arch.installDir)
+  let root = distDir & "/Type3830-TRNSYS" & arch.trnsysVersion & "-v" & version
+  cpDir(root & "/Studio", arch.installDir & "/Studio")
+  cpDir(root & "/UserLib", arch.installDir & "/UserLib")
 
 # Tasks
 task bin, "Build all DLLs":
@@ -156,7 +163,6 @@ task deploy, "Build, deploy, and test installed TRNSYS versions":
   assembleDistributions()
   deployPackage(arch32)
   deployPackage(arch64)
-  exec "nimble test"
 
 task release64, "Build the 64-bit release DLL":
   compileDll(arch64, releaseMode)
