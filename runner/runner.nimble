@@ -1,7 +1,7 @@
 import std/strutils
 
 # Package
-version = "0.4.0"
+version = "0.5.0"
 author = "Alex Lachance"
 description = "Process wrapper for TRNSYS TrnEXE with simulation monitoring and status reporting"
 license = "MIT"
@@ -54,7 +54,7 @@ proc compileExe() =
 # Distribution
 proc assemblePackage() =
   let
-    packageDir = distDir & "/TRNRun-v" & version
+    packageDir = distDir & "/" & exeName & "-v" & version & "-win_amd64"
     builtExe = buildDir & "/" & exeName & ".exe"
 
   if not fileExists(builtExe):
@@ -76,7 +76,7 @@ proc deployPackage() =
   mkDir managerBinDir
 
   cpFile(
-    distDir & "/TRNRun-v" & version & "/" & exeName & ".exe",
+    distDir & "/" & exeName & "-v" & version & "-win_amd64/" & exeName & ".exe",
     managerBinDir & "/" & exeName & ".exe",
   )
 
