@@ -37,6 +37,13 @@ From the `runner` directory, run:
 nimble bin
 ```
 
+To also rebuild the distribution and copy the current executable into the Python
+manager package, run:
+
+```powershell
+nimble deploy
+```
+
 ## Quick start
 
 ```bash
@@ -105,7 +112,7 @@ Reported as `STATUS` events:
 | `RUNNING`   | The runner entered runtime monitoring.                                     |
 | `DONE`      | Completed successfully.                                                   |
 | `CANCELLED` | The process exited and its last TMP snapshot was below 100 percent.        |
-| `ERROR`     | TrnEXE failed to launch or a fatal log entry was detected.                 |
+| `ERROR`     | Launch or pre-launch cleanup failed, or a fatal log entry was detected.    |
 | `TIMEOUT`   | Exceeded `--watchTimeout` (or `--detectTimeout` with `--killOnTimeout`).  |
 | `STALLED`   | Simulation time stopped advancing for longer than `--stallTimeout`.       |
 
@@ -138,7 +145,7 @@ Reported as `STATUS` events:
 | `0`       | Simulation completed successfully.                                            |
 | `1`       | Fatal error during execution.                                                 |
 | `2`       | Usage or validation error (unknown flag, bad value, missing deck/executable). |
-| `124`     | Runtime timeout exceeded (`--watchTimeout`).                                  |
+| `124`     | Runtime timeout, or detection timeout with `--killOnTimeout:true`.            |
 | `125`     | Simulation stalled (`--stallTimeout`).                                        |
 | `130`     | Simulation was cancelled.                                                     |
 
@@ -195,7 +202,7 @@ session-scoped launch mutex to be released so another simulation can start.
 | ------------ | --------- | -------- | ------------------------------------------------------------------- |
 | `--severity`    | `string`  | `Notice` | Minimum emitted log severity: `Notice`, `Warning`, or `Fatal`.                  |
 | `--writeEvents` | `boolean` | `false`  | Mirror events to `.jsonl`, replacing the deck extension and existing file.     |
-| `--clean`       | `boolean` | `false`  | After success, delete the deck's `.tmp`, `.log`, `.lst`, and `.PTI` sidecars. |
+| `--clean`       | `boolean` | `false`  | Also delete `.tmp`, `.log`, `.lst`, and `.PTI` after success; stale copies are always removed before launch. |
 
 ## Recipes
 

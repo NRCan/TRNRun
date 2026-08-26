@@ -25,10 +25,10 @@ class SimulationConfig:
 
     Each field maps to a `trnrun.exe` command-line flag (noted below as
     `--flag`). Flags are passed as `--name:value`. These defaults mirror
-    trnrun's own CLI defaults: the `detect`/`watch`/`stall` timeouts are
-    `0` (unlimited/disabled), progress tracking (`watch_tmp`) is off, and
-    `clean_on_success`, `write_events`, and both kill-on-* behaviors are
-    disabled.
+    trnrun's own CLI defaults: the detection timeout is 300 seconds, the
+    watch/stall timeouts are `0` (unlimited/disabled), progress tracking
+    (`watch_tmp`) is off, and `clean_on_success`, `write_events`, and both
+    kill-on-* behaviors are disabled.
 
     Attributes
     ----------
