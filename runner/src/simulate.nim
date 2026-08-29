@@ -4,61 +4,20 @@
 ## monitors output, emits structured events, handles terminal outcomes, and
 ## performs optional cleanup.
 
-import std/[monotimes, os, osproc, strformat]
+import std/[monotimes, osproc]
+when isMainModule:
+  import std/[os, strformat]
+
 import ./events
 import ./eventsink
 import ./job
 import ./monitor
 import ./mutex
 import ./settings
+import ./sidecar
 import ./status
+import ./trnexe
 import ./wait
-
-# Types and constants
-type
-  TrnexeLaunchError = object of CatchableError
-    ## Raised when TrnEXE fails to start.
-
-const
-  SidecarExtensions = [
-    ".tmp", # Temporary progress file
-    ".log", # Simulation log containing notices, warnings, and fatal errors
-    ".lst", # Simulation list file
-    ".PTI", # Online Plotter file
-  ]
-
-# Process launch
-proc launchTrnexe(
-    deckFile: string,
-    trnexePath: string,
-    guiVisibility: TrnexeGuiVisibility,
-): Process =
-  ## Spawns TrnEXE for `deckFile` and returns the process; raises
-  ## `TrnexeLaunchError` on failure.
-  result = default(Process)
-  var args = @[deckFile]
-  let switch = guiVisibility.flag()
-  if switch.len > 0:
-    args.add(switch)
-
-  try:
-    return startProcess(
-      trnexePath,
-      workingDir = deckFile.parentDir(),
-      args = args,
-      options = {},
-    )
-  except OSError, IOError:
-    raise newException(TrnexeLaunchError,"Failed to launch TRNSYS: " & getCurrentExceptionMsg())
-
-proc removeSidecarFiles(deckFile: string): bool =
-  ## Deletes TRNSYS sidecar files, returning false if any cannot be removed.
-  result = true
-  for extension in SidecarExtensions:
-    let sidecarPath = deckFile.changeFileExt(extension)
-    if not tryRemoveFile(sidecarPath):
-      result = false
-      stderr.writeLine(fmt"Warning: Could not delete {sidecarPath} (likely in use).")
 
 # Simulation
 proc simulate*(
