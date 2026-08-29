@@ -1,10 +1,10 @@
 ## Orchestrates the complete TRNSYS simulation lifecycle.
 ##
-## Validates inputs, guards process lifetime, serializes TrnEXE launch, waits
-## for readiness, monitors output, emits structured events, handles terminal
-## outcomes, and performs optional cleanup.
+## Guards process lifetime, serializes TrnEXE launch, waits for readiness,
+## monitors output, emits structured events, handles terminal outcomes, and
+## performs optional cleanup.
 
-import std/[monotimes, os, osproc, strformat, strutils]
+import std/[monotimes, os, osproc, strformat]
 import ./events
 import ./eventsink
 import ./job
@@ -26,24 +26,6 @@ const
     ".lst", # Simulation list file
     ".PTI", # Online Plotter file
   ]
-
-# Validation and file helpers
-proc validateDeck*(deckFile: string): string =
-  ## Resolves `deckFile` to an absolute, normalized path.
-  ## Raises `IOError` if it is missing, or `ValueError` if it is not a
-  ## `.dck`/`.trd`.
-  result = deckFile.absolutePath().normalizedPath()
-  if not fileExists(result):
-    raise newException(IOError, fmt"Deck file not found: '{result}'")
-  if result.splitFile().ext.toLowerAscii() notin [".dck", ".trd"]:
-    raise newException(ValueError, fmt"Expected .dck or .trd, got: '{deckFile}'")
-
-proc validateTrnexe*(trnexePath: string): string =
-  ## Resolves the TRNSYS executable to an absolute, normalized path.
-  ## Raises `IOError` if it does not exist.
-  result = trnexePath.absolutePath().normalizedPath()
-  if not fileExists(result):
-    raise newException(IOError, fmt"TRNEXE not found: '{result}'")
 
 # Process launch
 proc launchTrnexe(
@@ -91,12 +73,11 @@ proc simulate*(
   ## monitoring, timeout, stall, process-termination, and cleanup decisions
   ## remain within this lifecycle boundary.
   ##
-  ## Missing files raise `IOError`, and an unsupported deck extension raises
-  ## `ValueError`. TrnEXE launch failures are converted to `simFatal` after
-  ## emitting the terminal status event.
+  ## File inputs must be resolved and validated by the caller. TrnEXE launch
+  ## failures are converted to `simFatal` after emitting the terminal status
+  ## event.
   let settings = settings.normalized()
-  let deckFile = validateDeck(deckFile)
-  let trnexePath = validateTrnexe(settings.trnexePath)
+  let trnexePath = settings.trnexePath
 
   try:
     initJobGuard()

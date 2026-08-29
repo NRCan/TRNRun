@@ -12,6 +12,7 @@ import ./filedialog
 import ./settings
 import ./simulate
 import ./status
+import ./validate
 
 const NimblePkgVersion {.strdefine.} = "unknown"
 
@@ -177,8 +178,7 @@ proc main(): int =
       stderr.writeLine("No file selected.")
       return exitCode(simCancelled)
 
-  # Only the deck is resolved here, because the `.jsonl` path derives from it.
-  # `simulate` validates both this and `trnexePath` itself.
+  # Resolve the deck before deriving the `.jsonl` path from it.
   deckFile = validateDeck(deckFile)
 
   let jsonlOutput = openEventWriter(deckFile, settings.writeEvents)
@@ -186,6 +186,8 @@ proc main(): int =
     closeEventWriter(jsonlOutput)
 
   let eventSink = stdoutEventSink(jsonlOutput)
+
+  settings.trnexePath = validateTrnexe(settings.trnexePath)
 
   let simResult = simulate(
     deckFile = deckFile,
