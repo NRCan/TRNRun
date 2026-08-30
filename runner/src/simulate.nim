@@ -60,14 +60,16 @@ proc simulate*(
   withLaunchLock:
     eventSink(statusEvent(statusLaunching))
     if not removeSidecarFiles(deckFile):
-      eventSink(statusEvent(simFatal.status))
+      eventSink(statusEvent(
+        simFatal.status,
+        message = "Could not delete one or more sidecar files",
+      ))
       return simFatal
 
     try:
       process = launchTrnexe(deckFile, trnexePath, settings.guiVisibility)
     except TrnexeLaunchError as error:
-      stderr.writeLine("Error: ", error.msg)
-      eventSink(statusEvent(simFatal.status))
+      eventSink(statusEvent(simFatal.status, message = error.msg))
       return simFatal
     startTime = getMonoTime()
 
@@ -91,12 +93,18 @@ proc simulate*(
       if process.running:
         # Contradicts wrExited, so the state is unrecoverable rather than fast.
         process.kill()
-        eventSink(statusEvent(simFatal.status))
+        eventSink(statusEvent(
+          simFatal.status,
+          message = "TRNSYS reported process exit but remained running",
+        ))
         return simFatal
     of wrTimeout:
       if process.running and settings.killOnTimeout:
         process.kill()
-        eventSink(statusEvent(simTimeout.status))
+        eventSink(statusEvent(
+          simTimeout.status,
+          message = "TRNSYS readiness detection timed out",
+        ))
         return simTimeout
 
     if settings.guiVisibility.wantsMinimize() and process.running:
@@ -136,13 +144,16 @@ proc simulate*(
   if process.running and shouldKillProcess:
     process.kill()
 
-  eventSink(statusEvent(monitorResult.status))
+  var terminalMessage = ""
+  if monitorResult == simDone and settings.cleanOnSuccess and
+      not removeSidecarFiles(deckFile):
+    terminalMessage =
+      "Simulation completed, but one or more sidecar files could not be removed"
+
+  eventSink(statusEvent(monitorResult.status, message = terminalMessage))
 
   if process.running and shouldWaitForProcess:
     discard process.waitForExit()
-
-  if monitorResult == simDone and settings.cleanOnSuccess:
-    discard removeSidecarFiles(deckFile)
 
   return monitorResult
 

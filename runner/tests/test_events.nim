@@ -85,14 +85,36 @@ suite "simulation event JSON serialization":
     for (status, wireValue) in cases:
       let event = SimulationEvent(
         kind: eventStatus,
-        statusData: StatusEvent(timestamp: fixedTimestamp(), status: status),
+        statusData: StatusEvent(
+          timestamp: fixedTimestamp(),
+          status: status,
+          message: "",
+        ),
       )
 
       check event.toJson() == %*{
         "kind": "STATUS",
         "timestamp": "2026-06-19T19:37:13",
         "status": wireValue,
+        "message": "",
       }
+
+  test "serializes a status message when present":
+    let event = SimulationEvent(
+      kind: eventStatus,
+      statusData: StatusEvent(
+        timestamp: fixedTimestamp(),
+        status: statusError,
+        message: "Failed to launch TRNSYS",
+      ),
+    )
+
+    check event.toJson() == %*{
+      "kind": "STATUS",
+      "timestamp": "2026-06-19T19:37:13",
+      "status": "ERROR",
+      "message": "Failed to launch TRNSYS",
+    }
 
   test "serializes a config event without rounding values":
     let event = SimulationEvent(
@@ -186,6 +208,7 @@ suite "simulation event JSON serialization":
       statusData: StatusEvent(
         timestamp: fixedTimestamp(),
         status: statusRunning,
+        message: "",
       ),
     ).toJson()
 

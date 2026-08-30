@@ -7,11 +7,6 @@ const
   FakeLongRunMs = 300
   KillAssertionWaitMs = FakeLongRunMs + 200
 
-when defined(windows):
-  proc duplicateFileDescriptor(fd: cint): cint {.importc: "_dup", header: "<io.h>".}
-  proc replaceFileDescriptor(source, destination: cint): cint {.
-    importc: "_dup2", header: "<io.h>".}
-  proc closeFileDescriptor(fd: cint): cint {.importc: "_close", header: "<io.h>".}
 
 proc runFakeTrnexe(deckFile: string) =
   let mode = deckFile.splitFile().name.toLowerAscii()
@@ -121,43 +116,6 @@ proc removeIfExists(path: string) =
   if fileExists(path):
     removeFile(path)
 
-type
-  SimulationCall = proc(): SimResult {.closure.}
-  CapturedSimulation = object
-    outcome: SimResult
-    errorOutput: string
-
-proc captureStderr(path: string, simulation: SimulationCall): CapturedSimulation =
-  result = CapturedSimulation(outcome: simFatal, errorOutput: "")
-
-  var captureFile: File = nil
-  if not open(captureFile, path, fmWrite, bufSize = 0):
-    raise newException(IOError, "Could not open stderr capture file '" & path & "'")
-
-  let
-    stderrDescriptor = cint(getFileHandle(stderr))
-    captureDescriptor = cint(getFileHandle(captureFile))
-    savedStderrDescriptor = duplicateFileDescriptor(stderrDescriptor)
-
-  if savedStderrDescriptor < 0:
-    captureFile.close()
-    raise newException(IOError, "Could not duplicate stderr")
-
-  stderr.flushFile()
-  if replaceFileDescriptor(captureDescriptor, stderrDescriptor) < 0:
-    discard closeFileDescriptor(savedStderrDescriptor)
-    captureFile.close()
-    raise newException(IOError, "Could not redirect stderr")
-
-  try:
-    result.outcome = simulation()
-  finally:
-    stderr.flushFile()
-    discard replaceFileDescriptor(savedStderrDescriptor, stderrDescriptor)
-    discard closeFileDescriptor(savedStderrDescriptor)
-    captureFile.close()
-
-  result.errorOutput = readFile(path)
 
 proc createDeck(directory, name: string): string =
   result = directory / name
@@ -355,15 +313,12 @@ proc runTests() =
       let
         deckFile = createDeck(launchDirectory, "launch-failure.dck")
         collector = newLaunchFailureCollector(deckFile)
-        errorFile = testDirectory / "launch-failure.stderr"
         settings = testSettings()
 
-      let runSimulation = proc(): SimResult =
-        simulate(deckFile, collector.sink, settings)
-      let captured = captureStderr(errorFile, runSimulation)
-
-      check captured.outcome == simFatal
-      check captured.errorOutput.contains("Error: Failed to launch TRNSYS:")
+      check simulate(deckFile, collector.sink, settings) == simFatal
+      check collector.events[^1].statusData.message.contains(
+        "Failed to launch TRNSYS:",
+      )
       check collector.events.terminalStatuses() == @[
         statusPending,
         statusLaunching,

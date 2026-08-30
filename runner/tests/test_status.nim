@@ -41,7 +41,13 @@ suite "simulation status outcomes":
     check event.statusData == StatusEvent(
       timestamp: fixedTimestamp(),
       status: statusRunning,
+      message: "",
     )
+
+  test "creates a status event with a message":
+    let event = statusEvent(statusError, fixedTimestamp(), "Failed to launch TRNSYS")
+
+    check event.statusData.message == "Failed to launch TRNSYS"
 
   test "timestamps a status event when no timestamp is supplied":
     let before = now().toTime()
@@ -51,5 +57,6 @@ suite "simulation status outcomes":
 
     check event.kind == eventStatus
     check event.statusData.status == statusPending
+    check event.statusData.message == ""
     check eventTime >= before
     check eventTime <= after

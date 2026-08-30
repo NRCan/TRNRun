@@ -36,10 +36,15 @@ func exitCode*(outcome: SimResult): int =
 proc statusEvent*(
     status: SimStatus,
     timestamp: DateTime = now(),
+    message: string = "",
 ): SimulationEvent =
-  ## Creates a timestamped lifecycle event.
+  ## Creates a timestamped lifecycle event; `message` is empty by default.
   SimulationEvent(
     kind: eventStatus,
-    statusData: StatusEvent(timestamp: timestamp, status: status),
+    statusData: StatusEvent(
+      timestamp: timestamp,
+      status: status,
+      message: message,
+    ),
   )
 

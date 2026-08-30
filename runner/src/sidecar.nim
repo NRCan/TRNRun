@@ -1,6 +1,6 @@
 ## Manages files generated alongside a TRNSYS deck.
 
-import std/[os, strformat]
+import std/os
 
 
 const SidecarExtensions = [
@@ -17,4 +17,3 @@ proc removeSidecarFiles*(deckFile: string): bool =
     let sidecarPath = deckFile.changeFileExt(extension)
     if not tryRemoveFile(sidecarPath):
       result = false
-      stderr.writeLine(fmt"Warning: Could not delete {sidecarPath} (likely in use).")
