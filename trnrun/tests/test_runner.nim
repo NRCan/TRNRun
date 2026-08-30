@@ -46,7 +46,7 @@ proc runTests() =
 
   let
     runnerDirectory = currentSourcePath().parentDir().parentDir()
-    runnerSource = runnerDirectory / "src" / "runner.nim"
+    trnrunSource = runnerDirectory / "src" / "trnrun.nim"
     testDirectory = getTempDir() / "trnrun_runner_cli_tests"
     runnerExecutable = testDirectory / "trnrun-test.exe"
     nimCache = testDirectory / "nimcache"
@@ -72,7 +72,7 @@ proc runTests() =
           "--nimcache:" & nimCache,
           "-d:NimblePkgVersion=" & TestVersion,
           "--out:" & runnerExecutable,
-          runnerSource,
+          trnrunSource,
         ],
         runnerDirectory,
       )

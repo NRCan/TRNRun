@@ -190,7 +190,7 @@ proc simulate*(
 # Direct-run example
 when isMainModule:
   let deckFile = absolutePath(
-    r"runner\examples\dck\example_w_plot_w_tracking.dck"
+    r"trnrun\examples\dck\example_w_plot_w_tracking.dck"
   )
   var runnerSettings = DefaultRunnerSettings
   runnerSettings.guiVisibility = guiMinimizedAuto

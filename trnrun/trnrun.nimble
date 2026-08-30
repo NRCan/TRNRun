@@ -24,7 +24,7 @@ const
 proc compileExe() =
   let
     output = buildDir & "/" & exeName & ".exe"
-    source = srcDir & "/runner.nim"
+    source = srcDir & "/trnrun.nim"
 
   if not fileExists(zigcc):
     quit("Missing zig cc wrapper: " & zigcc)
