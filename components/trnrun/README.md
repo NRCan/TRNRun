@@ -1,4 +1,4 @@
-# TRNRun Runner
+# TRNRun CLI
 
 `trnrun.exe` provides a monitored command-line execution layer around the TRNSYS
 executables `TrnEXE64.exe` and `TrnEXE.exe`. It serializes launch and readiness
@@ -31,7 +31,7 @@ To build `trnrun.exe` locally, install:
 - [Nim](https://nim-lang.org/install.html) 2.2.10 or newer.
 - [Zig](https://ziglang.org/download/), used as the C compiler.
 
-From the `runner` directory, run:
+From the `trnrun` directory, run:
 
 ```powershell
 nimble bin

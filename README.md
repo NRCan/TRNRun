@@ -2,13 +2,18 @@
 
 TRNRun is a tool for running [TRNSYS](https://www.trnsys.com/) simulations, built to make batch runs easy to automate, monitor, and orchestrate.
 
-## Components
+## NIM components and packages
 
-| Component                             | Description                                                                                                                                                                       |
-| ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [trnrun-tracker](trnrun-tracker/) | Type3830, custom TRNSYS component that periodically writes simulation `TIME`, `START`, `STOP`, and `STEP` to a `***.tmp` file.                                                    |
-| [trnrun-runner](trnrun-runner/)   | `trnrun.exe` launches a single deck, serializes TRNSYS startup machine-wide, monitors the run, and emits `STATUS` / `CONFIG` / `PROGRESS` / `LOG` events as JSON Lines on stdout. |
-| [trnrun-manager](trnrun-manager/) | `trnrun` Python package runs many decks at once (up to a set limit), with a thread-safe API and a live terminal display.                                                          |
+| Component | Description |
+| --- | --- |
+| [Type3830](components/type3830/) | Custom TRNSYS component that periodically writes simulation `TIME`, `START`, `STOP`, and `STEP` to a `***.tmp` file. |
+| [TRNRun CLI](components/trnrun/) | `trnrun.exe` launches a single deck, serializes TRNSYS startup machine-wide, monitors the run, and emits `STATUS` / `CONFIG` / `PROGRESS` / `LOG` events as JSON Lines on stdout. |
+
+## Libraries
+
+| Library | Description |
+| --- | --- |
+| [Python](libraries/python/) | `trnrun` Python package runs many decks at once (up to a set limit), with a thread-safe API and a live terminal display. |
 
 ## Requirements
 
