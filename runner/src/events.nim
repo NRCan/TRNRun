@@ -59,9 +59,10 @@ type
     writeEvents*: bool
 
   StatusEvent* = object
-    ## A simulation lifecycle transition.
+    ## A simulation lifecycle transition with outcome details.
     timestamp*: DateTime
     status*: SimStatus
+    message*: string
 
   ConfigEvent* = object
     ## Fixed parameters for a simulation run.
@@ -145,6 +146,7 @@ proc `%`(event: StatusEvent): JsonNode =
   result["kind"] = %($eventStatus)
   result["timestamp"] = %event.timestamp.formatEventTimestamp()
   result["status"] = %($event.status)
+  result["message"] = %event.message
 
 proc `%`(event: ConfigEvent): JsonNode =
   result = newJObject()

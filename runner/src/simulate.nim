@@ -4,106 +4,50 @@
 ## for readiness, monitors output, emits structured events, handles terminal
 ## outcomes, and performs optional cleanup.
 
-import std/[monotimes, os, osproc, strformat, strutils]
+import std/[monotimes, osproc]
+when isMainModule:
+  import std/[os, strformat]
+
 import ./events
 import ./eventsink
 import ./job
 import ./monitor
 import ./mutex
 import ./settings
+import ./sidecar
 import ./status
+import ./trnexe
+import ./validate
 import ./wait
 
-# Types and constants
-type
-  TrnexeLaunchError = object of CatchableError
-    ## Raised when TrnEXE fails to start.
-
-const
-  SidecarExtensions = [
-    ".tmp", # Temporary progress file
-    ".log", # Simulation log containing notices, warnings, and fatal errors
-    ".lst", # Simulation list file
-    ".PTI", # Online Plotter file
-  ]
-
-# Validation and file helpers
-proc validateDeck*(deckFile: string): string =
-  ## Resolves `deckFile` to an absolute, normalized path.
-  ## Raises `IOError` if it is missing, or `ValueError` if it is not a
-  ## `.dck`/`.trd`.
-  result = deckFile.absolutePath().normalizedPath()
-  if not fileExists(result):
-    raise newException(IOError, fmt"Deck file not found: '{result}'")
-  if result.splitFile().ext.toLowerAscii() notin [".dck", ".trd"]:
-    raise newException(ValueError, fmt"Expected .dck or .trd, got: '{deckFile}'")
-
-proc validateTrnexe*(trnexePath: string): string =
-  ## Resolves the TRNSYS executable to an absolute, normalized path.
-  ## Raises `IOError` if it does not exist.
-  result = trnexePath.absolutePath().normalizedPath()
-  if not fileExists(result):
-    raise newException(IOError, fmt"TRNEXE not found: '{result}'")
-
-# Process launch
-proc launchTrnexe(
-    deckFile: string,
-    trnexePath: string,
-    guiVisibility: TrnexeGuiVisibility,
-): Process =
-  ## Spawns TrnEXE for `deckFile` and returns the process; raises
-  ## `TrnexeLaunchError` on failure.
-  result = default(Process)
-  var args = @[deckFile]
-  let switch = guiVisibility.flag()
-  if switch.len > 0:
-    args.add(switch)
-
-  try:
-    return startProcess(
-      trnexePath,
-      workingDir = deckFile.parentDir(),
-      args = args,
-      options = {},
-    )
-  except OSError, IOError:
-    raise newException(TrnexeLaunchError,"Failed to launch TRNSYS: " & getCurrentExceptionMsg())
-
-proc removeSidecarFiles(deckFile: string): bool =
-  ## Deletes TRNSYS sidecar files, returning false if any cannot be removed.
-  result = true
-  for extension in SidecarExtensions:
-    let sidecarPath = deckFile.changeFileExt(extension)
-    if not tryRemoveFile(sidecarPath):
-      result = false
-      stderr.writeLine(fmt"Warning: Could not delete {sidecarPath} (likely in use).")
-
-# Simulation
-proc simulate*(
+proc runSimulation*(
     deckFile: string,
     eventSink: EventSink,
     settings: RunnerSettings = DefaultRunnerSettings,
 ): SimResult =
-  ## Runs one TRNSYS simulation and returns its final outcome.
+  ## Validates and runs one simulation, reporting through `eventSink`.
   ##
-  ## Emits `SETTING` first, followed by lifecycle `STATUS` transitions and
-  ## enabled `CONFIG`, `PROGRESS`, and `LOG` events. Launch, readiness,
-  ## monitoring, timeout, stall, process-termination, and cleanup decisions
-  ## remain within this lifecycle boundary.
-  ##
-  ## Missing files raise `IOError`, and an unsupported deck extension raises
-  ## `ValueError`. TrnEXE launch failures are converted to `simFatal` after
-  ## emitting the terminal status event.
-  let settings = settings.normalized()
-  let deckFile = validateDeck(deckFile)
-  let trnexePath = validateTrnexe(settings.trnexePath)
+  ## Emits `SETTING` first, followed by lifecycle `STATUS` transitions and the
+  ## enabled `CONFIG`, `PROGRESS`, and `LOG` events. Every failure reaches the
+  ## caller as a terminal event plus a result rather than as an exception:
+  ## `simInvalid` for a rejected deck or TrnEXE path, `simFatal` for the rest.
+  var settings = settings.normalized()
+
+  var deck = ""
+  try:
+    deck = validateDeck(deckFile)
+    settings.trnexePath = validateTrnexe(settings.trnexePath)
+  except IOError, ValueError:
+    eventSink(statusEvent(simInvalid.status, message = getCurrentExceptionMsg()))
+    return simInvalid
 
   try:
     initJobGuard()
   except OSError as error:
-    stderr.writeLine("Warning: orphan guard unavailable, TrnEXE64.exe may outlive trnrun: ",error.msg)
+    eventSink(statusEvent(simFatal.status, message = "Orphan guard unavailable: " & error.msg))
+    return simFatal
 
-  eventSink(settingEvent(settings, trnexePath))
+  eventSink(settingEvent(settings, settings.trnexePath))
   eventSink(statusEvent(statusPending))
 
   var
@@ -111,100 +55,137 @@ proc simulate*(
     startTime: MonoTime = default(MonoTime)
 
   defer:
-    if process != nil:
-      try:
-        process.close()
-      except CatchableError:
-        discard
-
-  withLaunchLock:
-    eventSink(statusEvent(statusLaunching))
-    if not removeSidecarFiles(deckFile):
-      eventSink(statusEvent(simFatal.status))
-      return simFatal
-
+    # Handle cleanup only: the outcome is already reported, so a failure here
+    # has nothing left to contradict it with.
     try:
-      process = launchTrnexe(deckFile, trnexePath, settings.guiVisibility)
-    except TrnexeLaunchError as error:
-      stderr.writeLine("Error: ", error.msg)
-      eventSink(statusEvent(simFatal.status))
-      return simFatal
-    startTime = getMonoTime()
+      if process != nil:
+        process.close()
+    except CatchableError:
+      discard
 
-    let waitStatus = waitReady(
+  try:
+    withLaunchLock:
+      eventSink(statusEvent(statusLaunching))
+      if not removeSidecarFiles(deck):
+        eventSink(statusEvent(simFatal.status, message = "Could not delete one or more sidecar files"))
+        return simFatal
+
+      process = launchTrnexe(deck, settings.trnexePath, settings.guiVisibility)
+      startTime = getMonoTime()
+
+      case waitReady(
+        process = process,
+        deckFile = deck,
+        waitForGui = settings.waitForGui,
+        waitForLst = settings.waitForLst,
+        waitForTmp = settings.waitForTmp,
+        timeoutMs = settings.detectTimeoutMs,
+        extraDelayMs = settings.extraDelayMs,
+      )
+      of wrReady:
+        discard
+      of wrExited:
+        # Not a failure by itself: the run may simply have finished before
+        # detection did. The monitor below drains the log and reports simFatal
+        # if TRNSYS actually logged one.
+        if process.running:
+          # Contradicts wrExited, so the state is unrecoverable rather than fast.
+          # A kill that fails must not replace the outcome being reported.
+          try:
+            process.kill()
+          except OSError:
+            discard
+          eventSink(statusEvent(simFatal.status, message = "TRNSYS reported process exit but remained running"))
+          return simFatal
+      of wrTimeout:
+        if process.running and settings.killOnTimeout:
+          try:
+            process.kill()
+          except OSError:
+            discard
+          eventSink(statusEvent(simTimeout.status, message = "TRNSYS readiness detection timed out"))
+          return simTimeout
+
+      if settings.guiVisibility.wantsMinimize() and process.running:
+        discard minimizeGui(process)
+
+      eventSink(statusEvent(statusRunning))
+
+    let outcome = monitor(
       process = process,
-      deckFile = deckFile,
-      waitForGui = settings.waitForGui,
-      waitForLst = settings.waitForLst,
-      waitForTmp = settings.waitForTmp,
-      timeoutMs = settings.detectTimeoutMs,
-      extraDelayMs = settings.extraDelayMs,
+      deckFile = deck,
+      startTime = startTime,
+      eventSink = eventSink,
+      watchLog = settings.watchLog,
+      watchTmp = settings.watchTmp,
+      pollMs = settings.pollMs,
+      severity = settings.severity,
+      watchTimeoutMs = settings.watchTimeoutMs,
+      stallTimeoutMs = settings.stallTimeoutMs,
     )
 
-    case waitStatus
-    of wrReady:
+    # A stall or a timeout is the only way out that can leave the process
+    # alive: either we end it, or we let it finish on its own.
+    let killProcess =
+      case outcome
+      of simStalled: settings.killOnStall
+      of simTimeout: settings.killOnTimeout
+      else: false
+    if killProcess and process.running:
+      try:
+        process.kill()
+      except OSError:
+        discard
+
+    var message = ""
+    if outcome == simDone and settings.cleanOnSuccess and
+        not removeSidecarFiles(deck):
+      message =
+        "Simulation completed, but one or more sidecar files could not be removed"
+    eventSink(statusEvent(outcome.status, message = message))
+
+    if not killProcess and outcome in {simStalled, simTimeout}:
+      discard process.waitForExit()
+
+    return outcome
+  except CatchableError:
+    # Launch, mutex, readiness, and monitoring failures all land here: the
+    # process must not outlive the run that can no longer report on it.
+    try:
+      if process != nil and process.running:
+        process.kill()
+    except OSError:
       discard
-    of wrExited:
-      # Not a failure by itself: the run may simply have finished before
-      # detection did. The monitor below drains the log and reports simFatal
-      # if TRNSYS actually logged one.
-      if process.running:
-        # Contradicts wrExited, so the state is unrecoverable rather than fast.
-        process.kill()
-        eventSink(statusEvent(simFatal.status))
-        return simFatal
-    of wrTimeout:
-      if process.running and settings.killOnTimeout:
-        process.kill()
-        eventSink(statusEvent(simTimeout.status))
-        return simTimeout
+    eventSink(statusEvent(simFatal.status, message = getCurrentExceptionMsg()))
+    return simFatal
 
-    if settings.guiVisibility.wantsMinimize() and process.running:
-      discard minimizeGui(process)
+proc simulate*(
+    deckFile: string,
+    settings: RunnerSettings = DefaultRunnerSettings,
+): SimResult =
+  ## Runs one simulation, reporting to stdout and an optional JSONL file.
+  ##
+  ## Each call owns a deck-specific JSONL writer and an independent event sink,
+  ## so repeated calls produce separate event files and sequences.
+  ##
+  ## The file mirror is attached only once the deck path resolves, since the
+  ## deck names both the run and its event file: a rejected deck reports
+  ## `ERROR` on stdout without leaving a file behind. The file therefore either
+  ## does not exist, or holds the whole stream.
+  var settings = settings
 
-    eventSink(statusEvent(statusRunning))
+  let
+    jsonlOutput = newJsonlWriter()
+    eventSink = stdoutEventSink(jsonlOutput)
+  defer:
+    jsonlOutput.close()
 
-  let monitorResult = monitor(
-    process = process,
-    deckFile = deckFile,
-    startTime = startTime,
-    eventSink = eventSink,
-    watchLog = settings.watchLog,
-    watchTmp = settings.watchTmp,
-    pollMs = settings.pollMs,
-    severity = settings.severity,
-    watchTimeoutMs = settings.watchTimeoutMs,
-    stallTimeoutMs = settings.stallTimeoutMs,
-  )
+  try:
+    jsonlOutput.attachEventFile(validateDeck(deckFile), settings.writeEvents)
+  except IOError, ValueError:
+    discard # runSimulation re-validates and reports this as a terminal event.
 
-  var
-    shouldKillProcess = false
-    shouldWaitForProcess = false
-
-  case monitorResult
-  of simDone, simFatal, simCancelled:
-    discard
-
-  of simStalled:
-    shouldKillProcess = settings.killOnStall
-    shouldWaitForProcess = not shouldKillProcess
-
-  of simTimeout:
-    shouldKillProcess = settings.killOnTimeout
-    shouldWaitForProcess = not shouldKillProcess
-
-  if process.running and shouldKillProcess:
-    process.kill()
-
-  eventSink(statusEvent(monitorResult.status))
-
-  if process.running and shouldWaitForProcess:
-    discard process.waitForExit()
-
-  if monitorResult == simDone and settings.cleanOnSuccess:
-    discard removeSidecarFiles(deckFile)
-
-  return monitorResult
+  return runSimulation(deckFile, eventSink, settings)
 
 # Direct-run example
 when isMainModule:
@@ -214,9 +195,5 @@ when isMainModule:
   var runnerSettings = DefaultRunnerSettings
   runnerSettings.guiVisibility = guiMinimizedAuto
 
-  let simResult = simulate(
-    deckFile = deckFile,
-    eventSink = stdoutEventSink(),
-    settings = runnerSettings,
-  )
+  let simResult = simulate(deckFile, runnerSettings)
   stderr.writeLine(fmt"Simulation finished with result: {simResult}")

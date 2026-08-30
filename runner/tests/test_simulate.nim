@@ -1,4 +1,4 @@
-import std/[os, sequtils, strutils, unittest]
+import std/[json, os, sequtils, strutils, unittest]
 
 import ../src/[events, eventsink, settings, simulate, status]
 
@@ -7,11 +7,6 @@ const
   FakeLongRunMs = 300
   KillAssertionWaitMs = FakeLongRunMs + 200
 
-when defined(windows):
-  proc duplicateFileDescriptor(fd: cint): cint {.importc: "_dup", header: "<io.h>".}
-  proc replaceFileDescriptor(source, destination: cint): cint {.
-    importc: "_dup2", header: "<io.h>".}
-  proc closeFileDescriptor(fd: cint): cint {.importc: "_close", header: "<io.h>".}
 
 proc runFakeTrnexe(deckFile: string) =
   let mode = deckFile.splitFile().name.toLowerAscii()
@@ -121,43 +116,6 @@ proc removeIfExists(path: string) =
   if fileExists(path):
     removeFile(path)
 
-type
-  SimulationCall = proc(): SimResult {.closure.}
-  CapturedSimulation = object
-    outcome: SimResult
-    errorOutput: string
-
-proc captureStderr(path: string, simulation: SimulationCall): CapturedSimulation =
-  result = CapturedSimulation(outcome: simFatal, errorOutput: "")
-
-  var captureFile: File = nil
-  if not open(captureFile, path, fmWrite, bufSize = 0):
-    raise newException(IOError, "Could not open stderr capture file '" & path & "'")
-
-  let
-    stderrDescriptor = cint(getFileHandle(stderr))
-    captureDescriptor = cint(getFileHandle(captureFile))
-    savedStderrDescriptor = duplicateFileDescriptor(stderrDescriptor)
-
-  if savedStderrDescriptor < 0:
-    captureFile.close()
-    raise newException(IOError, "Could not duplicate stderr")
-
-  stderr.flushFile()
-  if replaceFileDescriptor(captureDescriptor, stderrDescriptor) < 0:
-    discard closeFileDescriptor(savedStderrDescriptor)
-    captureFile.close()
-    raise newException(IOError, "Could not redirect stderr")
-
-  try:
-    result.outcome = simulation()
-  finally:
-    stderr.flushFile()
-    discard replaceFileDescriptor(savedStderrDescriptor, stderrDescriptor)
-    discard closeFileDescriptor(savedStderrDescriptor)
-    captureFile.close()
-
-  result.errorOutput = readFile(path)
 
 proc createDeck(directory, name: string): string =
   result = directory / name
@@ -173,48 +131,6 @@ proc runTests() =
     if dirExists(testDirectory):
       removeDir(testDirectory)
 
-  suite "simulation validation":
-    test "accepts existing DCK and TRD files case-insensitively":
-      let
-        dckFile = createDeck(testDirectory, "validation.DCK")
-        trdFile = createDeck(testDirectory, "validation.TRd")
-
-      check validateDeck(dckFile) == dckFile.absolutePath().normalizedPath()
-      check validateDeck(trdFile) == trdFile.absolutePath().normalizedPath()
-
-    test "rejects missing and unsupported deck files":
-      let
-        missingDeck = testDirectory / "missing.dck"
-        unsupportedDeck = createDeck(testDirectory, "unsupported.txt")
-      var
-        missingRaised = false
-        unsupportedRaised = false
-
-      try:
-        discard validateDeck(missingDeck)
-      except IOError as error:
-        missingRaised = error.msg.contains("Deck file not found:")
-
-      try:
-        discard validateDeck(unsupportedDeck)
-      except ValueError as error:
-        unsupportedRaised = error.msg.contains("Expected .dck or .trd")
-
-      check missingRaised
-      check unsupportedRaised
-
-    test "validates the TrnEXE path":
-      let missingTrnexe = testDirectory / "missing-TrnEXE64.exe"
-      check validateTrnexe(getAppFilename()) ==
-        getAppFilename().absolutePath().normalizedPath()
-
-      var missingRaised = false
-      try:
-        discard validateTrnexe(missingTrnexe)
-      except IOError as error:
-        missingRaised = error.msg.contains("TRNEXE not found:")
-      check missingRaised
-
   suite "simulation lifecycle":
     test "emits the complete successful lifecycle":
       let
@@ -225,7 +141,7 @@ proc runTests() =
       settings.detectTimeoutMs = -1
       settings.pollMs = 0
 
-      let outcome = simulate(deckFile, collector.sink, settings)
+      let outcome = runSimulation(deckFile, collector.sink, settings)
 
       check outcome == simDone
       check collector.events.terminalStatuses() == @[
@@ -242,6 +158,33 @@ proc runTests() =
       check collector.events.anyIt(it.kind == eventConfig)
       check collector.events.anyIt(it.kind == eventProgress)
 
+    test "owns independent event output for repeated calls":
+      let
+        firstDirectory = testDirectory / "first-run"
+        secondDirectory = testDirectory / "second-run"
+      createDir(firstDirectory)
+      createDir(secondDirectory)
+
+      let
+        firstDeck = createDeck(firstDirectory, "done.dck")
+        secondDeck = createDeck(secondDirectory, "done.dck")
+        firstEventFile = firstDeck.changeFileExt("jsonl")
+        secondEventFile = secondDeck.changeFileExt("jsonl")
+      var settings = testSettings()
+      settings.watchTmp = true
+      settings.writeEvents = true
+
+      check simulate(firstDeck, settings) == simDone
+      check simulate(secondDeck, settings) == simDone
+
+      let
+        firstEvents = readFile(firstEventFile).splitLines()
+        secondEvents = readFile(secondEventFile).splitLines()
+      check firstEvents.len > 0
+      check secondEvents.len > 0
+      check firstEvents[0].parseJson()["seq"].getInt() == 1
+      check secondEvents[0].parseJson()["seq"].getInt() == 1
+
     test "returns cancelled when the process exits before full progress":
       let
         deckFile = createDeck(testDirectory, "cancelled.dck")
@@ -249,7 +192,7 @@ proc runTests() =
       var settings = testSettings()
       settings.watchTmp = true
 
-      let outcome = simulate(deckFile, collector.sink, settings)
+      let outcome = runSimulation(deckFile, collector.sink, settings)
 
       check outcome == simCancelled
       check collector.events.terminalStatuses()[^1] == statusCancelled
@@ -261,7 +204,7 @@ proc runTests() =
       var settings = testSettings()
       settings.watchLog = true
 
-      let outcome = simulate(deckFile, collector.sink, settings)
+      let outcome = runSimulation(deckFile, collector.sink, settings)
 
       check outcome == simFatal
       check collector.events.terminalStatuses()[^1] == statusError
@@ -279,7 +222,7 @@ proc runTests() =
       settings.watchTimeoutMs = 50
       settings.killOnTimeout = true
 
-      let outcome = simulate(deckFile, collector.sink, settings)
+      let outcome = runSimulation(deckFile, collector.sink, settings)
       sleep(KillAssertionWaitMs)
 
       check outcome == simTimeout
@@ -296,7 +239,7 @@ proc runTests() =
       settings.watchTimeoutMs = 50
       settings.killOnTimeout = false
 
-      let outcome = simulate(deckFile, collector.sink, settings)
+      let outcome = runSimulation(deckFile, collector.sink, settings)
 
       check outcome == simTimeout
       check collector.events.terminalStatuses()[^1] == statusTimeout
@@ -313,7 +256,7 @@ proc runTests() =
       settings.stallTimeoutMs = 50
       settings.killOnStall = true
 
-      let outcome = simulate(deckFile, collector.sink, settings)
+      let outcome = runSimulation(deckFile, collector.sink, settings)
       sleep(KillAssertionWaitMs)
 
       check outcome == simStalled
@@ -331,7 +274,7 @@ proc runTests() =
       settings.stallTimeoutMs = 50
       settings.killOnStall = false
 
-      let outcome = simulate(deckFile, collector.sink, settings)
+      let outcome = runSimulation(deckFile, collector.sink, settings)
 
       check outcome == simStalled
       check collector.events.terminalStatuses()[^1] == statusStalled
@@ -348,7 +291,7 @@ proc runTests() =
       settings.detectTimeoutMs = 50
       settings.killOnTimeout = true
 
-      let outcome = simulate(deckFile, collector.sink, settings)
+      let outcome = runSimulation(deckFile, collector.sink, settings)
       sleep(KillAssertionWaitMs)
 
       check outcome == simTimeout
@@ -367,7 +310,7 @@ proc runTests() =
       settings.watchTmp = true
       settings.cleanOnSuccess = true
 
-      check simulate(deckFile, collector.sink, settings) == simDone
+      check runSimulation(deckFile, collector.sink, settings) == simDone
       for extension in ["tmp", "log", "lst", "PTI"]:
         check not fileExists(deckFile.changeFileExt(extension))
 
@@ -388,7 +331,7 @@ proc runTests() =
       settings.watchLog = true
       settings.watchTmp = true
 
-      check simulate(deckFile, collector.sink, settings) == simDone
+      check runSimulation(deckFile, collector.sink, settings) == simDone
       check readFile(staleCheckFile) == "clean"
 
     test "converts process launch failures to fatal results":
@@ -397,15 +340,12 @@ proc runTests() =
       let
         deckFile = createDeck(launchDirectory, "launch-failure.dck")
         collector = newLaunchFailureCollector(deckFile)
-        errorFile = testDirectory / "launch-failure.stderr"
         settings = testSettings()
 
-      let runSimulation = proc(): SimResult =
-        simulate(deckFile, collector.sink, settings)
-      let captured = captureStderr(errorFile, runSimulation)
-
-      check captured.outcome == simFatal
-      check captured.errorOutput.contains("Error: Failed to launch TRNSYS:")
+      check runSimulation(deckFile, collector.sink, settings) == simFatal
+      check collector.events[^1].statusData.message.contains(
+        "Failed to launch TRNSYS:",
+      )
       check collector.events.terminalStatuses() == @[
         statusPending,
         statusLaunching,
@@ -421,7 +361,7 @@ proc runTests() =
       settings.guiVisibility = guiHidden
       settings.watchTmp = true
 
-      check simulate(deckFile, collector.sink, settings) == simDone
+      check runSimulation(deckFile, collector.sink, settings) == simDone
       let arguments = readFile(argsFile).splitLines()
       check arguments[0] == deckFile.absolutePath().normalizedPath()
       check arguments[1] == "/h"

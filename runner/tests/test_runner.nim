@@ -123,6 +123,9 @@ proc runTests() =
 
       check command.exitCode == 2
       check command.output.contains("Unknown option: doesNotExist")
+      let status = command.output.findEvent("STATUS")
+      check status != nil
+      check status["status"].getStr() == "ERROR"
 
     test "rejects a second positional deck argument":
       let command = runCommand(
@@ -133,13 +136,16 @@ proc runTests() =
 
       check command.exitCode == 2
       check command.output.contains("Unexpected argument: second.dck")
+      let status = command.output.findEvent("STATUS")
+      check status != nil
+      check status["status"].getStr() == "ERROR"
 
     test "reports invalid option values through the CLI error boundary":
       let cases = [
         (option: "--guiVisibility:visible", expected: "Invalid guiVisibility: visible"),
-        (option: "--watchLog:maybe", expected: "Error:"),
-        (option: "--pollMs:not-a-number", expected: "Error:"),
-        (option: "--severity:Debug", expected: "Error:"),
+        (option: "--watchLog:maybe", expected: ""),
+        (option: "--pollMs:not-a-number", expected: ""),
+        (option: "--severity:Debug", expected: ""),
       ]
 
       for testCase in cases:
@@ -151,7 +157,12 @@ proc runTests() =
         )
 
         check command.exitCode == 2
-        check command.output.contains(testCase.expected)
+        if testCase.expected.len > 0:
+          check command.output.contains(testCase.expected)
+        let status = command.output.findEvent("STATUS")
+        check status != nil
+        check status["status"].getStr() == "ERROR"
+        check status["message"].getStr().len > 0
 
     test "accepts every documented GUI visibility spelling":
       let missingDeck = testDirectory / "missing.dck"
@@ -281,6 +292,20 @@ proc runTests() =
       check unsupportedCommand.exitCode == 2
       check unsupportedCommand.output.contains("Expected .dck or .trd")
 
+    test "reports validation failures as a terminal ERROR event":
+      let missingDeck = testDirectory / "no-such-deck.dck"
+      let command = runCommand(
+        runnerExecutable,
+        [missingDeck],
+        testDirectory,
+      )
+
+      check command.exitCode == 2
+      let status = command.output.findEvent("STATUS")
+      check status != nil
+      check status["status"].getStr() == "ERROR"
+      check status["message"].getStr().contains("Deck file not found:")
+
     test "does not create an event file when logging is disabled":
       let
         deckFile = testDirectory / "logging-disabled.dck"
@@ -303,7 +328,6 @@ proc runTests() =
       let
         deckFile = testDirectory / "logging-enabled.dck"
         eventFile = deckFile.changeFileExt("jsonl")
-        missingTrnexe = testDirectory / "missing-TrnEXE64.exe"
       writeFile(deckFile, "test")
       removeIfExists(eventFile)
 
@@ -311,16 +335,18 @@ proc runTests() =
         runnerExecutable,
         [
           deckFile,
-          "--trnexePath:" & missingTrnexe,
+          "--trnexePath:" & getAppFilename(),
+          "--waitForGui:false",
+          "--waitForLst:false",
+          "--watchLog:false",
           "--writeEvents:true",
         ],
         testDirectory,
       )
 
-      check command.exitCode == 2
-      check command.output.contains("TRNEXE not found:")
+      check command.exitCode == 0
       check fileExists(eventFile)
-      check readFile(eventFile) == ""
+      check readFile(eventFile).contains("\"kind\":\"SETTING\"")
 
       removeFile(eventFile)
       check not fileExists(eventFile)

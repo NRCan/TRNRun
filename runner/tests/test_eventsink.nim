@@ -21,7 +21,11 @@ proc fixedTimestamp(): DateTime =
 proc statusEvent(status: SimStatus): SimulationEvent =
   SimulationEvent(
     kind: eventStatus,
-    statusData: StatusEvent(timestamp: fixedTimestamp(), status: status),
+    statusData: StatusEvent(
+      timestamp: fixedTimestamp(),
+      status: status,
+      message: "",
+    ),
   )
 
 proc parseJsonLines(content: string): seq[JsonNode] =
@@ -129,12 +133,14 @@ suite "JSONL event sinks":
             "kind": "STATUS",
             "timestamp": "2026-06-19T19:37:13",
             "status": "PENDING",
+            "message": "",
             "seq": 1,
           },
           %*{
             "kind": "STATUS",
             "timestamp": "2026-06-19T19:37:13",
             "status": "DONE",
+            "message": "",
             "seq": 2,
           },
         ]
