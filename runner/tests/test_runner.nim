@@ -303,7 +303,6 @@ proc runTests() =
       let
         deckFile = testDirectory / "logging-enabled.dck"
         eventFile = deckFile.changeFileExt("jsonl")
-        missingTrnexe = testDirectory / "missing-TrnEXE64.exe"
       writeFile(deckFile, "test")
       removeIfExists(eventFile)
 
@@ -311,16 +310,18 @@ proc runTests() =
         runnerExecutable,
         [
           deckFile,
-          "--trnexePath:" & missingTrnexe,
+          "--trnexePath:" & getAppFilename(),
+          "--waitForGui:false",
+          "--waitForLst:false",
+          "--watchLog:false",
           "--writeEvents:true",
         ],
         testDirectory,
       )
 
-      check command.exitCode == 2
-      check command.output.contains("TRNEXE not found:")
+      check command.exitCode == 0
       check fileExists(eventFile)
-      check readFile(eventFile) == ""
+      check readFile(eventFile).contains("\"kind\":\"SETTING\"")
 
       removeFile(eventFile)
       check not fileExists(eventFile)

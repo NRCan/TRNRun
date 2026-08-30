@@ -17,15 +17,16 @@ import ./settings
 import ./sidecar
 import ./status
 import ./trnexe
+import ./validate
 import ./wait
 
-# Simulation
-proc simulate*(
+# Simulation lifecycle
+proc simulateCore*(
     deckFile: string,
     eventSink: EventSink,
     settings: RunnerSettings = DefaultRunnerSettings,
 ): SimResult =
-  ## Runs one TRNSYS simulation and returns its final outcome.
+  ## Runs one validated TRNSYS simulation through the supplied event sink.
   ##
   ## Emits `SETTING` first, followed by lifecycle `STATUS` transitions and
   ## enabled `CONFIG`, `PROGRESS`, and `LOG` events. Launch, readiness,
@@ -157,6 +158,27 @@ proc simulate*(
 
   return monitorResult
 
+proc simulate*(
+    deckFile: string,
+    settings: RunnerSettings = DefaultRunnerSettings,
+): SimResult =
+  ## Validates and runs one self-contained simulation.
+  ##
+  ## Each call owns a deck-specific JSONL writer and an independent event sink,
+  ## allowing repeated calls to produce separate event files and sequences.
+  let deckFile = validateDeck(deckFile)
+  var settings = settings.normalized()
+  settings.trnexePath = validateTrnexe(settings.trnexePath)
+
+  let jsonlOutput = openEventWriter(deckFile, settings.writeEvents)
+  defer: jsonlOutput.close()
+
+  return simulateCore(
+    deckFile = deckFile,
+    eventSink = stdoutEventSink(jsonlOutput),
+    settings = settings,
+  )
+
 # Direct-run example
 when isMainModule:
   let deckFile = absolutePath(
@@ -165,9 +187,5 @@ when isMainModule:
   var runnerSettings = DefaultRunnerSettings
   runnerSettings.guiVisibility = guiMinimizedAuto
 
-  let simResult = simulate(
-    deckFile = deckFile,
-    eventSink = stdoutEventSink(),
-    settings = runnerSettings,
-  )
+  let simResult = simulate(deckFile, runnerSettings)
   stderr.writeLine(fmt"Simulation finished with result: {simResult}")
