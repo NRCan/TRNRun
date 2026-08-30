@@ -141,7 +141,7 @@ proc runTests() =
       settings.detectTimeoutMs = -1
       settings.pollMs = 0
 
-      let outcome = simulateCore(deckFile, collector.sink, settings)
+      let outcome = runSimulation(deckFile, collector.sink, settings)
 
       check outcome == simDone
       check collector.events.terminalStatuses() == @[
@@ -192,7 +192,7 @@ proc runTests() =
       var settings = testSettings()
       settings.watchTmp = true
 
-      let outcome = simulateCore(deckFile, collector.sink, settings)
+      let outcome = runSimulation(deckFile, collector.sink, settings)
 
       check outcome == simCancelled
       check collector.events.terminalStatuses()[^1] == statusCancelled
@@ -204,7 +204,7 @@ proc runTests() =
       var settings = testSettings()
       settings.watchLog = true
 
-      let outcome = simulateCore(deckFile, collector.sink, settings)
+      let outcome = runSimulation(deckFile, collector.sink, settings)
 
       check outcome == simFatal
       check collector.events.terminalStatuses()[^1] == statusError
@@ -222,7 +222,7 @@ proc runTests() =
       settings.watchTimeoutMs = 50
       settings.killOnTimeout = true
 
-      let outcome = simulateCore(deckFile, collector.sink, settings)
+      let outcome = runSimulation(deckFile, collector.sink, settings)
       sleep(KillAssertionWaitMs)
 
       check outcome == simTimeout
@@ -239,7 +239,7 @@ proc runTests() =
       settings.watchTimeoutMs = 50
       settings.killOnTimeout = false
 
-      let outcome = simulateCore(deckFile, collector.sink, settings)
+      let outcome = runSimulation(deckFile, collector.sink, settings)
 
       check outcome == simTimeout
       check collector.events.terminalStatuses()[^1] == statusTimeout
@@ -256,7 +256,7 @@ proc runTests() =
       settings.stallTimeoutMs = 50
       settings.killOnStall = true
 
-      let outcome = simulateCore(deckFile, collector.sink, settings)
+      let outcome = runSimulation(deckFile, collector.sink, settings)
       sleep(KillAssertionWaitMs)
 
       check outcome == simStalled
@@ -274,7 +274,7 @@ proc runTests() =
       settings.stallTimeoutMs = 50
       settings.killOnStall = false
 
-      let outcome = simulateCore(deckFile, collector.sink, settings)
+      let outcome = runSimulation(deckFile, collector.sink, settings)
 
       check outcome == simStalled
       check collector.events.terminalStatuses()[^1] == statusStalled
@@ -291,7 +291,7 @@ proc runTests() =
       settings.detectTimeoutMs = 50
       settings.killOnTimeout = true
 
-      let outcome = simulateCore(deckFile, collector.sink, settings)
+      let outcome = runSimulation(deckFile, collector.sink, settings)
       sleep(KillAssertionWaitMs)
 
       check outcome == simTimeout
@@ -310,7 +310,7 @@ proc runTests() =
       settings.watchTmp = true
       settings.cleanOnSuccess = true
 
-      check simulateCore(deckFile, collector.sink, settings) == simDone
+      check runSimulation(deckFile, collector.sink, settings) == simDone
       for extension in ["tmp", "log", "lst", "PTI"]:
         check not fileExists(deckFile.changeFileExt(extension))
 
@@ -331,7 +331,7 @@ proc runTests() =
       settings.watchLog = true
       settings.watchTmp = true
 
-      check simulateCore(deckFile, collector.sink, settings) == simDone
+      check runSimulation(deckFile, collector.sink, settings) == simDone
       check readFile(staleCheckFile) == "clean"
 
     test "converts process launch failures to fatal results":
@@ -342,7 +342,7 @@ proc runTests() =
         collector = newLaunchFailureCollector(deckFile)
         settings = testSettings()
 
-      check simulateCore(deckFile, collector.sink, settings) == simFatal
+      check runSimulation(deckFile, collector.sink, settings) == simFatal
       check collector.events[^1].statusData.message.contains(
         "Failed to launch TRNSYS:",
       )
@@ -361,7 +361,7 @@ proc runTests() =
       settings.guiVisibility = guiHidden
       settings.watchTmp = true
 
-      check simulateCore(deckFile, collector.sink, settings) == simDone
+      check runSimulation(deckFile, collector.sink, settings) == simDone
       let arguments = readFile(argsFile).splitLines()
       check arguments[0] == deckFile.absolutePath().normalizedPath()
       check arguments[1] == "/h"

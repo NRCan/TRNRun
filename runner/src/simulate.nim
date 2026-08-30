@@ -21,22 +21,23 @@ import ./validate
 import ./wait
 
 # Simulation lifecycle
-proc simulateCore*(
+proc runSimulation*(
     deckFile: string,
     eventSink: EventSink,
     settings: RunnerSettings = DefaultRunnerSettings,
 ): SimResult =
-  ## Runs one validated TRNSYS simulation through the supplied event sink.
+  ## Validates and runs one TRNSYS simulation, reporting through `eventSink`.
   ##
   ## Emits `SETTING` first, followed by lifecycle `STATUS` transitions and
   ## enabled `CONFIG`, `PROGRESS`, and `LOG` events. Launch, readiness,
   ## monitoring, timeout, stall, process-termination, and cleanup decisions
   ## remain within this lifecycle boundary.
   ##
-  ## File inputs must be resolved and validated by the caller. TrnEXE launch
-  ## failures are converted to `simFatal` after emitting the terminal status
-  ## event.
-  let settings = settings.normalized()
+  ## TrnEXE launch failures are converted to `simFatal` after emitting the
+  ## terminal status event.
+  let deckFile = validateDeck(deckFile)
+  var settings = settings.normalized()
+  settings.trnexePath = validateTrnexe(settings.trnexePath)
   let trnexePath = settings.trnexePath
 
   try:
@@ -162,7 +163,7 @@ proc simulate*(
     deckFile: string,
     settings: RunnerSettings = DefaultRunnerSettings,
 ): SimResult =
-  ## Validates and runs one self-contained simulation.
+  ## Runs one simulation, reporting to stdout and an optional JSONL file.
   ##
   ## Each call owns a deck-specific JSONL writer and an independent event sink,
   ## allowing repeated calls to produce separate event files and sequences.
@@ -170,14 +171,12 @@ proc simulate*(
   var settings = settings.normalized()
   settings.trnexePath = validateTrnexe(settings.trnexePath)
 
+  # Opened before the run starts so the SETTING event stays honest about
+  # whether a file is actually being written.
   let jsonlOutput = openEventWriter(deckFile, settings.writeEvents)
   defer: jsonlOutput.close()
 
-  return simulateCore(
-    deckFile = deckFile,
-    eventSink = stdoutEventSink(jsonlOutput),
-    settings = settings,
-  )
+  return runSimulation(deckFile, stdoutEventSink(jsonlOutput), settings)
 
 # Direct-run example
 when isMainModule:
