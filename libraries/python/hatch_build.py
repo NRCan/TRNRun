@@ -8,7 +8,7 @@ class CustomBuildHook(BuildHookInterface):
         exe = Path(self.root) / "trnrun" / "bin" / "trnrun.exe"
         if not exe.exists():
             raise FileNotFoundError(
-                f"{exe} not found — run `nimble deploy` in trnrun/ before building",
+                f"{exe} not found — run `nimble deploy` in components/trnrun/ before building",
             )
         build_data["pure_python"] = False
         build_data["tag"] = "py3-none-win_amd64"

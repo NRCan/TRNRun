@@ -24,7 +24,7 @@ dist
 *.exe
 *.dll
 *.csv
-trnrun/tests/runs/
+components/trnrun/tests/runs/
 # Old stuff to sort
 
 # nimcache/

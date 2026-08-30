@@ -39,7 +39,7 @@ const
   packageBmpFile = "Type3830.bmp"
   packageTmfFile = "Type3830.tmf"
   packageReadmeFile = "README.md"
-  licenseSourceFile = "../LICENSE"
+  licenseSourceFile = "../../LICENSE"
   packageLicenseFile = "LICENSE"
   zigcc = "scripts/zigcc.bat"
 

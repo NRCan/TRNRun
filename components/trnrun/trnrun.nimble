@@ -16,7 +16,7 @@ const
   buildDir = "build"
   cacheDir = buildDir & "/nimcache"
   distDir = "dist"
-  managerBinDir = "../manager/trnrun/bin"
+  pythonBinDir = "../../libraries/python/trnrun/bin"
   target = "x86_64-windows-gnu"
   zigcc = "scripts/zigcc.bat"
 
@@ -64,7 +64,7 @@ proc assemblePackage() =
 
   cpFile(builtExe, packageDir & "/" & exeName & ".exe")
   cpFile("README.md", packageDir & "/README.md")
-  cpFile("../LICENSE", packageDir & "/LICENSE")
+  cpFile("../../LICENSE", packageDir & "/LICENSE")
 
 proc assembleDistribution() =
   if dirExists(distDir):
@@ -73,11 +73,11 @@ proc assembleDistribution() =
   assemblePackage()
 
 proc deployPackage() =
-  mkDir managerBinDir
+  mkDir pythonBinDir
 
   cpFile(
     distDir & "/" & exeName & "-v" & version & "-win_amd64/" & exeName & ".exe",
-    managerBinDir & "/" & exeName & ".exe",
+    pythonBinDir & "/" & exeName & ".exe",
   )
 
 # Tasks
