@@ -37,24 +37,32 @@ proc close*(writer: JsonlWriter) =
   writer.file = nil
   file.close()
 
-proc openEventWriter*(deckFile: string, writeEvents: var bool): JsonlWriter =
-  ## Opens deck-specific event output when requested, disabling it on failure.
+proc newJsonlWriter*(): JsonlWriter =
+  ## Returns a writer with no file attached.
+  ##
+  ## Writes are ignored until `attachEventFile` opens one, so the writer can be
+  ## wired into a sink before the output path is known.
+  new(result)
+
+proc attachEventFile*(
+    writer: JsonlWriter, deckFile: string, writeEvents: var bool
+) =
+  ## Opens deck-specific event output into `writer` when requested.
   ##
   ## Clears `writeEvents` when the file cannot be opened, keeping the SETTING
   ## event honest that nothing will be written to a file.
-  if not writeEvents:
-    return nil
+  if writer == nil or not writeEvents:
+    return
 
+  let path = deckFile.changeFileExt("jsonl")
+  if open(writer.file, path, fmWrite, bufSize = 0):
+    return
+
+  writeEvents = false
   try:
-    return openJsonlWriter(deckFile.changeFileExt("jsonl"))
+    stderr.writeLine("[JsonlWriter] Could not open event file (logging disabled): ", path)
   except IOError:
-    writeEvents = false
-    let message = getCurrentExceptionMsg()
-    try:
-      stderr.writeLine("[JsonlWriter] Could not open event file (logging disabled): ", message)
-    except IOError:
-      discard
-    return nil
+    discard
 
 proc writeLine(writer: JsonlWriter, line: string) =
   ## Writes `line` followed by a newline.

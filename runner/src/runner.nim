@@ -10,11 +10,19 @@
 
 import std/parseopt
 import ./cli
+import ./eventsink
 import ./filedialog
 import ./simulate
 import ./status
 
 const NimblePkgVersion {.strdefine.} = "unknown"
+
+proc reportOutcome(outcome: SimResult, message: string): int =
+  ## Emits one structured terminal status for command paths that cannot enter
+  ## `simulate`, then returns the matching process exit code.
+  let eventSink = stdoutEventSink()
+  eventSink(statusEvent(outcome.status, message = message))
+  return outcome.exitCode()
 
 proc main(): int =
   ## Collects user input from the command line and runs one simulation.
@@ -23,8 +31,8 @@ proc main(): int =
   ## error, 124 timeout, 125 stalled, or 130 cancelled.
   ##
   ## This procedure does not call `quit`, ensuring its `defer` and `finally`
-  ## cleanup can run. Invalid values and validation failures propagate to the
-  ## top-level error boundary, which emits one diagnostic and returns code 2.
+  ## cleanup can run. Command failures that occur before `simulate` emit a
+  ## structured terminal status through `reportOutcome`.
   var input = DefaultCliInput
 
   var parser = initOptParser()
@@ -43,19 +51,22 @@ proc main(): int =
         return 0
       else:
         if not input.applyOption(parser.key, parser.val):
-          stderr.writeLine("[Runner] Unknown option: ", parser.key)
-          return 2
+          return reportOutcome(
+            simInvalid,
+            "Unknown option: " & parser.key,
+          )
     of cmdArgument:
       if input.deckFile != "":
-        stderr.writeLine("[Runner] Unexpected argument: ", parser.key)
-        return 2
+        return reportOutcome(
+          simInvalid,
+          "Unexpected argument: " & parser.key,
+        )
       input.deckFile = parser.key
 
   if input.deckFile == "":
     input.deckFile = openDeckFileDialog()
     if input.deckFile == "":
-      stderr.writeLine("[Runner] No file selected.")
-      return exitCode(simCancelled)
+      return reportOutcome(simCancelled, "No file selected")
 
   return exitCode(simulate(input.deckFile, input.settings))
 
@@ -64,8 +75,7 @@ when isMainModule:
     try:
       main()
     except CatchableError:
-      # CLI trust boundary: a bad flag value or a missing deck/exe should print
-      # one clean line and exit 2, not dump a stack trace.
-      stderr.writeLine("[Runner] Error: ", getCurrentExceptionMsg())
-      2
+      # CLI trust boundary: parse failures become one structured event rather
+      # than an stderr-only diagnostic or an unhandled stack trace.
+      reportOutcome(simInvalid, getCurrentExceptionMsg())
   quit(code)
