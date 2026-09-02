@@ -99,6 +99,7 @@ proc runTests() =
 
         check command.exitCode == 0
         check command.output.contains("Usage:")
+        check command.output.contains("--runId:ID")
         check command.output.contains("--guiVisibility:MODE")
         check command.output.contains("Exit codes: 0 done")
 
@@ -117,7 +118,7 @@ proc runTests() =
     test "rejects unknown options":
       let command = runCommand(
         runnerExecutable,
-        ["--doesNotExist:true"],
+        ["--runId:rejected-run", "--doesNotExist:true"],
         testDirectory,
       )
 
@@ -126,6 +127,7 @@ proc runTests() =
       let status = command.output.findEvent("STATUS")
       check status != nil
       check status["status"].getStr() == "ERROR"
+      check status["runId"].getStr() == "rejected-run"
 
     test "rejects a second positional deck argument":
       let command = runCommand(
@@ -194,6 +196,7 @@ proc runTests() =
         runnerExecutable,
         [
           "--deckFile:" & missingDeck,
+          "--runId:all-options-run",
           "--trnexePath:C:\\TRNSYS18\\Exe\\TrnEXE64.exe",
           "--guiVisibility:minimizedauto",
           "--waitForGui:false",
@@ -218,6 +221,33 @@ proc runTests() =
       check command.exitCode == 2
       check command.output.contains("Deck file not found:")
       check not command.output.contains("Unknown option:")
+      check command.output.findEvent("STATUS")["runId"].getStr() ==
+        "all-options-run"
+
+    test "attaches the run identifier to every emitted event":
+      let deckFile = testDirectory / "run-id.dck"
+      writeFile(deckFile, "test")
+
+      let command = runCommand(
+        runnerExecutable,
+        [
+          deckFile,
+          "--runId:successful-run",
+          "--trnexePath:" & getAppFilename(),
+          "--waitForGui:false",
+          "--waitForLst:false",
+          "--watchLog:false",
+        ],
+        testDirectory,
+      )
+
+      check command.exitCode == 0
+      var eventCount = 0
+      for line in command.output.splitLines():
+        if line.startsWith("{"):
+          inc eventCount
+          check line.parseJson()["runId"].getStr() == "successful-run"
+      check eventCount > 0
 
     test "maps every CLI setting to the emitted SETTING event":
       let deckFile = testDirectory / "semantic-settings.dck"

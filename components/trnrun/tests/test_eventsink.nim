@@ -38,6 +38,7 @@ proc captureStdout(
     path: string,
     events: openArray[SimulationEvent],
     writer: JsonlWriter = nil,
+    runId: string = "",
 ): string =
   var captureFile: File = nil
   if not open(captureFile, path, fmWrite, bufSize = 0):
@@ -59,7 +60,7 @@ proc captureStdout(
     raise newException(IOError, "Could not redirect stdout")
 
   try:
-    let sink = stdoutEventSink(writer)
+    let sink = stdoutEventSink(writer, runId)
     for event in events:
       sink(event)
   finally:
@@ -144,6 +145,22 @@ suite "JSONL event sinks":
             "seq": 2,
           },
         ]
+
+  test "attaches a run identifier to stdout and the mirror file":
+    let
+      stdoutPath = getTempDir() / "trnrun_eventsink_run_id_stdout.jsonl"
+      mirrorPath = getTempDir() / "trnrun_eventsink_run_id_mirror.jsonl"
+      events = [statusEvent(statusPending), statusEvent(statusDone)]
+
+    withTemporaryFile(stdoutPath):
+      withTemporaryFile(mirrorPath):
+        let writer = openJsonlWriter(mirrorPath)
+        let stdoutContent = captureStdout(stdoutPath, events, writer, "run-42")
+        writer.close()
+
+        check readFile(mirrorPath) == stdoutContent
+        for line in stdoutContent.parseJsonLines():
+          check line["runId"].getStr() == "run-42"
 
   test "gives each event sink an independent sequence":
     let

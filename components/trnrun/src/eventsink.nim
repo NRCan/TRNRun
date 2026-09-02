@@ -76,16 +76,20 @@ proc writeLine(writer: JsonlWriter, line: string) =
     writer.file.writeLine(line)
   except IOError:
     let message = getCurrentExceptionMsg()
-    writer.close()
+    try:
+      writer.close()
+    except IOError:
+      discard
     try:
       stderr.writeLine("[JsonlWriter] Could not write event (writer disabled): ", message)
     except IOError:
       discard
 
-proc stdoutEventSink*(writer: JsonlWriter = nil): EventSink =
-  ## Returns a sink that numbers events from 1, writes and immediately flushes
-  ## each JSON line to stdout, and optionally mirrors the same line to `writer`.
-  ## Each returned sink owns an independent sequence starting at 1.
+proc stdoutEventSink*(writer: JsonlWriter = nil, runId: string = ""): EventSink =
+  ## Returns a sink that numbers events from 1, optionally attaches `runId`,
+  ## writes and immediately flushes each JSON line to stdout, and optionally
+  ## mirrors the same line to `writer`. Each returned sink owns an independent
+  ## sequence starting at 1.
   var
     sequence = 0
     stdoutUsable = true
@@ -95,6 +99,8 @@ proc stdoutEventSink*(writer: JsonlWriter = nil): EventSink =
 
     let node = event.toJson()
     node["seq"] = %sequence
+    if runId.len > 0:
+      node["runId"] = %runId
     let line = $node
 
     if stdoutUsable:

@@ -17,12 +17,13 @@ import ./status
 
 const NimblePkgVersion {.strdefine.} = "unknown"
 
-proc reportOutcome(outcome: SimResult, message: string): int =
+proc reportOutcome(outcome: SimResult, message: string, runId: string = ""): int =
   ## Emits one structured terminal status for command paths that cannot enter
   ## `simulate`, then returns the matching process exit code.
-  let eventSink = stdoutEventSink()
+  let eventSink = stdoutEventSink(runId = runId)
   eventSink(statusEvent(outcome.status, message = message))
   return outcome.exitCode()
+
 
 proc main(): int =
   ## Collects user input from the command line and runs one simulation.
@@ -50,32 +51,41 @@ proc main(): int =
         echo NimblePkgVersion
         return 0
       else:
-        if not input.applyOption(parser.key, parser.val):
-          return reportOutcome(
-            simInvalid,
-            "Unknown option: " & parser.key,
-          )
+        try:
+          if not input.applyOption(parser.key, parser.val):
+            return reportOutcome(
+              simInvalid,
+              "Unknown option: " & parser.key,
+              input.runId,
+            )
+        except CatchableError:
+          return reportOutcome(simInvalid, getCurrentExceptionMsg(), input.runId)
     of cmdArgument:
       if input.deckFile != "":
         return reportOutcome(
           simInvalid,
           "Unexpected argument: " & parser.key,
+          input.runId,
         )
       input.deckFile = parser.key
 
   if input.deckFile == "":
     input.deckFile = openDeckFileDialog()
     if input.deckFile == "":
-      return reportOutcome(simCancelled, "No file selected")
+      return reportOutcome(simCancelled, "No file selected", input.runId)
 
-  return exitCode(simulate(input.deckFile, input.settings))
+  return exitCode(simulate(
+    deckFile = input.deckFile,
+    settings = input.settings,
+    runId = input.runId,
+  ))
 
 when isMainModule:
   let code =
     try:
       main()
     except CatchableError:
-      # CLI trust boundary: parse failures become one structured event rather
-      # than an stderr-only diagnostic or an unhandled stack trace.
+      # CLI trust boundary: unexpected failures become one structured event
+      # rather than an stderr-only diagnostic or an unhandled stack trace.
       reportOutcome(simInvalid, getCurrentExceptionMsg())
   quit(code)

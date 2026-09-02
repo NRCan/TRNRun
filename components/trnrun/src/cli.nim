@@ -12,9 +12,14 @@ type
   CliInput* = object
     ## User input gathered from the command line.
     deckFile*: string
+    runId*: string
     settings*: RunnerSettings
 
-const DefaultCliInput* = CliInput(deckFile: "", settings: DefaultRunnerSettings)
+const DefaultCliInput* = CliInput(
+    deckFile: "",
+    runId: "",
+    settings: DefaultRunnerSettings,
+  )
   ## Starting point for parsing: no deck selected, stock settings.
 
 const HelpText* = """trnrun - launch and monitor TRNSYS simulations
@@ -25,6 +30,7 @@ Usage:
   -h, --help              Show this help and exit
   -v, --version           Show version and exit
   --deckFile:PATH         Deck path; same as the positional argument
+  --runId:ID              Attach an opaque run identifier to every event
   --trnexePath:PATH       Path to TrnEXE64.exe
   --guiVisibility:MODE    keep | auto | min | minauto | hidden   (default: hidden)
   --waitForGui:BOOL       (default: true)
@@ -71,6 +77,8 @@ proc applyOption*(input: var CliInput, key, value: string): bool =
   case key
   of "deckFile":
     input.deckFile = value
+  of "runId":
+    input.runId = value
   of "trnexePath":
     input.settings.trnexePath = value
   of "guiVisibility":
