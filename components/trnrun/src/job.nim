@@ -5,13 +5,6 @@
 ## inherited. TrnEXE descendants are terminated when the parent process exits
 ## and closes the job handle, whether normally, through an unhandled exception,
 ## or by crashing.
-##
-## Typical usage:
-##
-## ```nim
-## initJobGuard()                          # once, at startup, before workers
-## let p = startProcess("trnrun.exe", …)   # captured automatically
-## ```
 
 when not defined(windows):
   {.error: "job.nim is Windows-only. Guard the import with `when defined(windows)`.".}

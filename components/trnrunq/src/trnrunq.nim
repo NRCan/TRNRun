@@ -4,14 +4,15 @@
 ## bounded worker pool. It acts as a thin wrapper around `supervisor`, exposing
 ## the pool size as a CLI flag and mapping failures onto process exit codes.
 ##
-## The queue protocol itself lives in `request` and `outputsink`; this module
-## only drives the parser and reports the outcome.
+## Option parsing itself lives in `cli`; this module owns executable metadata,
+## drives the parser, and reports the outcome.
 
-import std/[cpuinfo, parseopt, strutils]
+import std/parseopt
+import ./cli
 import ./supervisor
 
-const NimblePkgVersion {.strdefine.} = "unknown"
 
+const NimblePkgVersion {.strdefine.} = "unknown"
 const HelpText = """trnrunq - run concurrent TRNRun simulations
 
 Usage:
@@ -20,7 +21,7 @@ Usage:
 Options:
   -h, --help              Show this help and exit
   -v, --version           Show version and exit
-  --maxConcurrent:N       Maximum simultaneous runners (default: CPUs - 1)
+  --maxConcurrent:N       Maximum simultaneous runners (default: max(CPUs - 1, 1))
 
 Read one JSON request per stdin line:
   {"runId":"1","deckFile":"model.dck","runnerPath":"trnrun.exe","runnerArgs":[]}
@@ -30,30 +31,15 @@ unchanged to stdout. Diagnostics are written to stderr as plain text; they are
 not a protocol and must not be read as run results.
 
 Exit codes: 0 ok  1 fatal  2 usage error"""
-  ## Usage text; must stay in step with the option cases in `main`.
-
-
-proc requireInt(key, value: string): int =
-  ## Parses an option value that must be a whole integer.
-  ##
-  ## Raises `ValueError` naming the option, which reads better at the error
-  ## boundary than the stock `parseInt` message.
-  result = 0
-  if value.len == 0:
-    raise newException(ValueError, "--" & key & " requires a value")
-  try:
-    result = parseInt(value)
-  except ValueError:
-    raise newException(ValueError, "--" & key & " must be an integer")
 
 proc main(): int =
   ## Collects user input from the command line and serves the queue.
   ##
   ## Returns the process exit code: 0 ok, 1 fatal, 2 usage error.
   ##
-  ## This procedure does not call `quit`, ensuring the `defer` and `finally`
-  ## cleanup in `serve` can run and every worker is joined.
-  var maxConcurrent = max(countProcessors() - 1, 1)
+  ## This procedure does not call `quit`, ensuring cleanup in `serve` can run
+  ## and every worker is joined.
+  var input = defaultCliInput()
 
   var parser = initOptParser()
   while true:
@@ -69,16 +55,13 @@ proc main(): int =
       of "version", "v":
         echo NimblePkgVersion
         return 0
-      of "maxConcurrent":
-        maxConcurrent = requireInt(parser.key, parser.val)
-        if maxConcurrent < 1:
-          raise newException(ValueError, "--maxConcurrent must be at least 1")
       else:
-        raise newException(ValueError, "Unknown queue option: --" & parser.key)
+        if not input.applyOption(parser.key, parser.val):
+          raise newException(ValueError, "Unknown queue option: --" & parser.key)
     of cmdArgument:
       raise newException(ValueError, "Unexpected positional argument: " & parser.key)
 
-  serve(maxConcurrent)
+  serve(input.maxConcurrent)
   0
 
 proc writeError(message: string) =

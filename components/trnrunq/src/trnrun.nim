@@ -52,45 +52,24 @@ proc runTrnrun*(
   var process: Process = nil
   try:
     let
-      deckFile = validateDeck(deckFile)
+      deck = validateDeck(deckFile)
       executable = validateTrnrun(runnerPath)
     process = startProcess(
       executable,
-      args = @[deckFile] & @runnerArgs & @["--runId:" & runId],
+      args = @[deck] & @runnerArgs & @["--runId:" & runId],
       options = {poStdErrToStdOut, poDaemon},
     )
   except CatchableError:
     output.emit(errorLine(runId, getCurrentExceptionMsg()))
     return
 
-  defer:
+  try:
+    var line = ""
+    while process.outputStream.readLine(line):
+      output.emit(line)
+
+    discard process.waitForExit()
+  finally:
     if process.running:
       process.kill()
     process.close()
-
-  var line = ""
-  while process.outputStream.readLine(line):
-    output.emit(line)
-
-  discard process.waitForExit()
-
-
-when isMainModule:
-  const
-    componentDirectory = currentSourcePath().parentDir().parentDir()
-    exampleDeck = componentDirectory /
-      "examples" / "dck" / "example_w_plot_w_tracking.dck"
-    runnerPath = componentDirectory.parentDir() / "trnrun" / "build" / "trnrun.exe"
-
-  var output = default(OutputSink)
-  output.initOutputSink()
-  defer:
-    output.deinitOutputSink()
-
-  runTrnrun(
-    exampleDeck,
-    runnerPath,
-    "smoke",
-    ["--watchTmp:true"],
-    output,
-  )

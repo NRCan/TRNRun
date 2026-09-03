@@ -108,6 +108,22 @@ reclaims this process-lifetime channel.
 
 ## Validation
 
+Run the automated tests:
+
 ```powershell
 nimble test
 ```
+
+For a manual integration run against installed TRNSYS, build both executables
+and run 50 staged copies of the slow deck with a concurrency limit of 5:
+
+```powershell
+cd ..\trnrun
+nimble bin
+cd ..\trnrunq
+nimble bin
+nim r tests/manual_queue.nim
+```
+
+Edit the constants at the top of `tests/manual_queue.nim` to change the TRNSYS
+executable, source deck, copy count, concurrency, or runner settings.

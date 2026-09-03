@@ -16,6 +16,7 @@ const
   buildDir = "build"
   cacheDir = buildDir & "/nimcache"
   distDir = "dist"
+  pythonBinDir = "../../libraries/python/trnrun/bin"
   target = "x86_64-windows-gnu"
   zigcc = "scripts/zigcc.bat"
 
@@ -71,6 +72,14 @@ proc assembleDistribution() =
 
   assemblePackage()
 
+proc deployPackage() =
+  mkDir pythonBinDir
+
+  cpFile(
+    distDir & "/" & exeName & "-v" & version & "-win_amd64/" & exeName & ".exe",
+    pythonBinDir & "/" & exeName & ".exe",
+  )
+
 # Tasks
 task bin, "Build the release executable":
   compileExe()
@@ -78,3 +87,8 @@ task bin, "Build the release executable":
 task dist, "Build and assemble the distribution":
   compileExe()
   assembleDistribution()
+
+task deploy, "Build, assemble, and deploy to the manager":
+  compileExe()
+  assembleDistribution()
+  deployPackage()

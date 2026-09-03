@@ -59,17 +59,16 @@ proc runWorker(pool: ptr WorkerPool) {.thread.} =
 proc start*(pool: var WorkerPool, maxConcurrent: int) =
   ## Initializes queue output and starts `maxConcurrent` workers.
   ##
-  ## Thread storage is reserved before any thread is created, and each slot is
-  ## added before creation so a partly started pool still shuts down cleanly.
+  ## Thread storage is allocated before any thread is created so a partly
+  ## started pool still shuts down cleanly.
   pool.output.initOutputSink()
   pool.outputInitialized = true
   pool.work.open()
-  pool.threads = newSeqOfCap[Thread[ptr WorkerPool]](maxConcurrent)
+  pool.threads = newSeq[Thread[ptr WorkerPool]](maxConcurrent)
 
   {.push warning[ProveInit]: off, warning[Uninit]: off.}
-  for _ in 0 ..< maxConcurrent:
-    pool.threads.add(default(Thread[ptr WorkerPool]))
-    createThread(pool.threads[^1], runWorker, addr pool)
+  for thread in pool.threads.mitems:
+    createThread(thread, runWorker, addr pool)
   {.pop.}
 
 proc submit*(pool: var WorkerPool, request: RunRequest) =
@@ -86,12 +85,12 @@ proc shutdown*(pool: var WorkerPool) =
   if not pool.outputInitialized:
     return
 
-  defer:
+  try:
+    for _ in 0 ..< pool.threads.len:
+      pool.work.send(Work(kind: wkStop))
+
+    for thread in pool.threads.mitems:
+      joinThread(thread)
+  finally:
     pool.output.deinitOutputSink()
     pool.outputInitialized = false
-
-  for _ in 0 ..< pool.threads.len:
-    pool.work.send(Work(kind: wkStop))
-
-  for index in 0 ..< pool.threads.len:
-    joinThread(pool.threads[index])
