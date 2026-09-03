@@ -1,8 +1,26 @@
-# TRNRun Queue 3
+# TRNRun Queue
 
-`trnrunq` is a standalone, bounded-concurrency launcher for `trnrun`. It reads
-requests incrementally from stdin, so a wrapper can generate any number of
+`trnrunq.exe` is a standalone, bounded-concurrency launcher for `trnrun.exe`. It
+reads requests incrementally from stdin, so a wrapper can generate any number of
 simulations without building the complete workload in memory.
+
+## Requirements
+
+- Windows.
+- A compatible `trnrun.exe` executable.
+
+## Installation
+
+The queue is written in [Nim](https://nim-lang.org/) and built as a standalone
+executable. To build it from source, install Nim 2.2.10 or newer and
+[Zig](https://ziglang.org/download/), then run from the `trnrunq` directory:
+
+```powershell
+nimble bin
+```
+
+Use `nimble dist` to also assemble the executable, README, and license under
+`dist/`.
 
 ## Usage
 
@@ -43,19 +61,19 @@ Every merged child stdout/stderr line is forwarded unchanged to queue stdout.
 For example:
 
 ```json
-{"kind":"STATUS","status":"RUNNING","runId":"building-a"}
+{"kind":"STATUS","timestamp":"2026-06-19T19:37:15","status":"RUNNING","message":"","seq":4,"runId":"building-a"}
 ```
 
 Output from different runs may be interleaved, but complete lines are never
 mixed together and lines from one run retain their order. The queue does not
 parse child output, add completion events, reject duplicate submissions, require
-output, or interpret child exit codes.
+output, or interpret child exit codes. If a request cannot launch its runner,
+the queue emits a terminal `STATUS/ERROR` event for that `runId`.
 
 There is no queue stderr protocol. Command-line and fatal process diagnostics may
 still be written to stderr for humans, but wrappers must not use them as run
-results. Infrastructure failures will later be represented as `STATUS/ERROR`
-events on stdout; until then, the wrapper must reconcile missing terminal
-statuses when queue stdout reaches EOF.
+results. A wrapper must reconcile any run without a terminal status when queue
+stdout reaches EOF.
 
 ## Wrapper responsibilities
 

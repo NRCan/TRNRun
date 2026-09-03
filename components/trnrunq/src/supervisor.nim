@@ -8,7 +8,6 @@ when not defined(windows):
   {.error: "supervisor.nim is Windows-only.".}
 
 import ./job
-import ./outputsink
 import ./request
 import ./workerpool
 
@@ -20,17 +19,9 @@ proc serve*(maxConcurrent: int) =
 
   initJobGuard()
 
-  var output = default(OutputSink)
-  output.initOutputSink()
-  defer:
-    output.deinitOutputSink()
-
-  # Workers hold pointers into this frame, so the pool must be shut down before
-  # `serve` returns. Starting inside the try keeps a partly started pool on the
-  # shutdown path.
   var pool = default(WorkerPool)
   try:
-    pool.start(addr output, maxConcurrent)
+    pool.start(maxConcurrent)
 
     var line = ""
     while stdin.readLine(line):

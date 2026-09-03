@@ -1,7 +1,7 @@
 import std/[json, os, osproc, streams, strutils, unittest]
 
-import supervisor
-import trnrun
+import ../src/supervisor
+import ../src/trnrun
 
 
 const Timestamp = "2026-08-30T12:00:00"
@@ -46,6 +46,9 @@ proc runFakeRunner(deckFile: string) =
       "seq": 1,
       "runId": runId,
     }))
+    stdout.flushFile()
+    if mode == "slow":
+      sleep(500)
     stderr.writeLine("fake runner diagnostic")
     stdout.writeLine($(%*{
       "kind": "STATUS",
@@ -93,6 +96,8 @@ proc runCommand(
   input.flush()
   input.close()
 
+  # ponytail: Fake runners emit bounded output; add concurrent pipe readers
+  # before introducing high-volume cases.
   result.exitCode = process.waitForExit()
   result.stdout = process.outputStream.readAll()
   result.stderr = process.errorStream.readAll()
@@ -106,6 +111,17 @@ proc parseJsonMessages(content: string): seq[JsonNode] =
       except JsonParsingError:
         discard
 
+proc readEvent(stream: Stream, runId: string): JsonNode =
+  var line = ""
+  while stream.readLine(line):
+    try:
+      let event = parseJson(line)
+      if event.kind == JObject and event.hasKey("runId") and
+          event["runId"].kind == JString and event["runId"].getStr() == runId:
+        return event
+    except JsonParsingError:
+      discard
+  raise newException(IOError, "Queue stdout closed before run '" & runId & "' emitted an event")
 
 proc nonEmptyLines(content: string): seq[string] =
   result = @[]
@@ -136,7 +152,7 @@ proc createDeck(directory, name: string): string =
 
 proc runTests() =
   let
-    testDirectory = getTempDir() / "trnrunq3_tests"
+    testDirectory = getTempDir() / "trnrunq_supervisor_tests"
     executable = getAppFilename()
 
   if dirExists(testDirectory):
@@ -146,7 +162,7 @@ proc runTests() =
     if dirExists(testDirectory):
       removeDir(testDirectory)
 
-  suite "trnrunq3 supervision":
+  suite "queue supervision":
     test "validates deck and runner paths":
       let
         deckFile = createDeck(testDirectory, "validated.TRD")
@@ -212,6 +228,84 @@ proc runTests() =
       check command.stdout.len == 0
       check command.stderr.len == 0
 
+    test "accepts requests until stdin closes":
+      let
+        firstDeck = createDeck(testDirectory, "incremental-first.dck")
+        missingDeck = testDirectory / "missing.dck"
+        secondDeck = createDeck(testDirectory, "incremental-second.dck")
+        process = startProcess(
+          executable,
+          workingDir = testDirectory,
+          args = ["--serve"],
+          options = {},
+        )
+      defer:
+        if process.running:
+          process.kill()
+        process.close()
+
+      let input = process.inputStream
+      input.writeLine(requestLine("incremental-first", firstDeck, executable))
+      input.flush()
+      check process.outputStream.readEvent("incremental-first")["kind"].getStr() == "STATUS"
+      check process.running
+
+      input.writeLine(requestLine("missing", missingDeck, executable))
+      input.flush()
+      let errorEvent = process.outputStream.readEvent("missing")
+      check errorEvent["kind"].getStr() == "STATUS"
+      check errorEvent["status"].getStr() == "ERROR"
+      check errorEvent["message"].getStr().contains("Deck file not found:")
+      check errorEvent["seq"].getInt() == 1
+      check errorEvent["timestamp"].getStr().len > 0
+      check process.running
+
+      input.writeLine(requestLine("incremental-second", secondDeck, executable))
+      input.flush()
+      check process.outputStream.readEvent("incremental-second")["kind"].getStr() == "STATUS"
+      check process.running
+
+      input.close()
+      discard process.outputStream.readAll()
+      check process.waitForExit() == 0
+      check process.errorStream.readAll().len == 0
+
+    test "limits concurrent runners":
+      let
+        deckFile = createDeck(testDirectory, "slow.dck")
+        command = runCommand(
+          executable,
+          ["--serve"],
+          testDirectory,
+          [
+            requestLine("slow-1", deckFile, executable),
+            requestLine("slow-2", deckFile, executable),
+            requestLine("slow-3", deckFile, executable),
+            requestLine("slow-4", deckFile, executable),
+          ],
+        )
+        events = command.stdout.parseJsonMessages()
+
+      checkpoint("stdout:\n" & command.stdout & "\nstderr:\n" & command.stderr)
+      check command.exitCode == 0
+      check events.len == 8
+
+      var
+        active = 0
+        maxActive = 0
+      for event in events:
+        case event["status"].getStr()
+        of "RUNNING":
+          inc active
+          maxActive = max(maxActive, active)
+        of "DONE":
+          dec active
+        else:
+          discard
+
+      check active == 0
+      check maxActive == 2
+
     test "allows duplicate deck submissions":
       let
         deckFile = createDeck(testDirectory, "duplicate.dck")
@@ -241,7 +335,6 @@ proc runTests() =
           inc eventsByRun[1]
       check eventsByRun == [2, 2]
 
-
     test "forwards malformed child output unchanged":
       let
         deckFile = createDeck(testDirectory, "malformed.dck")
@@ -262,6 +355,5 @@ proc runTests() =
       check envelopes.len == 1
       check envelopes[0]["kind"].getStr() == "STATUS"
       check envelopes[0]["runId"].getStr() == "malformed-output"
-
 
 runTests()

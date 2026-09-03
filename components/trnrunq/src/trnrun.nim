@@ -6,10 +6,8 @@
 when not defined(windows):
   {.error: "trnrun.nim is Windows-only.".}
 
-import std/[os, osproc, streams, strformat, strutils]
-
-
-type OutputHandler* = proc(line: string) {.closure, gcsafe.}
+import std/[json, os, osproc, streams, strformat, strutils, times]
+import ./outputsink
 
 
 proc validateDeck*(deckFile: string): string =
@@ -32,22 +30,38 @@ proc validateTrnrun*(runnerPath: string): string =
     raise newException(IOError, fmt"TRNRun not found: '{result}'")
 
 
+proc errorLine(runId, message: string): string =
+  ## Returns a runner-compatible terminal event for a request that cannot start.
+  $(%*{
+    "kind": "STATUS",
+    "timestamp": now().format("yyyy-MM-dd'T'HH:mm:ss"),
+    "status": "ERROR",
+    "message": message,
+    "seq": 1,
+    "runId": runId,
+  })
+
 proc runTrnrun*(
     deckFile: string,
     runnerPath: string,
     runId: string,
     runnerArgs: openArray[string],
-    onOutput: OutputHandler,
+    output: var OutputSink,
 ) =
-  ## Runs one child synchronously and raises on infrastructure failure.
-  let
-    deckFile = validateDeck(deckFile)
-    executable = validateTrnrun(runnerPath)
+  ## Runs one child synchronously and reports launch failures through `output`.
+  var process: Process = nil
+  try:
+    let
+      deckFile = validateDeck(deckFile)
+      executable = validateTrnrun(runnerPath)
     process = startProcess(
       executable,
       args = @[deckFile] & @runnerArgs & @["--runId:" & runId],
       options = {poStdErrToStdOut, poDaemon},
     )
+  except CatchableError:
+    output.emit(errorLine(runId, getCurrentExceptionMsg()))
+    return
 
   defer:
     if process.running:
@@ -56,24 +70,27 @@ proc runTrnrun*(
 
   var line = ""
   while process.outputStream.readLine(line):
-    onOutput(line)
+    output.emit(line)
 
   discard process.waitForExit()
 
 
 when isMainModule:
-  proc printOutput(line: string) {.gcsafe.} =
-    echo line
-
   const
-    exampleDeck = currentSourcePath().parentDir().parentDir() /
+    componentDirectory = currentSourcePath().parentDir().parentDir()
+    exampleDeck = componentDirectory /
       "examples" / "dck" / "example_w_plot_w_tracking.dck"
-    runnerPath = r"C:\Users\alexl\Documents\Project\Coding\NRCan\TRNRun_V2\TRNRun\components\trnrun\dist\trnrun-v0.5.0-win_amd64\trnrun.exe"
+    runnerPath = componentDirectory.parentDir() / "trnrun" / "build" / "trnrun.exe"
+
+  var output = default(OutputSink)
+  output.initOutputSink()
+  defer:
+    output.deinitOutputSink()
 
   runTrnrun(
     exampleDeck,
     runnerPath,
     "smoke",
     ["--watchTmp:true"],
-    printOutput,
+    output,
   )

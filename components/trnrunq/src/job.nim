@@ -71,7 +71,7 @@ var jobHandle: Handle = 0
 proc initJobGuard*() =
   ## Creates the kill-on-close job object and places this process in it.
   ##
-  ## Call once before spawning TrnEXE. Repeated calls are a no-op.
+  ## Call once before spawning TRNRun children. Repeated calls are a no-op.
   if jobHandle != 0:
     return
 

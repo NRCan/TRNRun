@@ -22,7 +22,7 @@ proc deinitOutputSink*(sink: var OutputSink) =
   ## Releases `sink`. Call only after every worker has been joined.
   deinitLock(sink.lock)
 
-proc emit*(sink: ptr OutputSink, line: string) {.gcsafe.} =
+proc emit*(sink: var OutputSink, line: string) {.gcsafe.} =
   ## Writes one complete line to stdout and flushes it.
   ##
   ## A wrapper that dies closes queue stdin too, so stdin EOF is what ends this

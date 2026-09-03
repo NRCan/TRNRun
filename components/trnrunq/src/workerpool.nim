@@ -31,7 +31,8 @@ type
     ## Workers receive `addr` of this object, so it must outlive them: it may
     ## not be copied or moved, and `shutdown` must run before its frame ends.
     work: Channel[Work]
-    output: ptr OutputSink
+    output: OutputSink
+    outputInitialized: bool
     threads: seq[Thread[ptr WorkerPool]]
 
 
@@ -43,35 +44,32 @@ proc runWorker(pool: ptr WorkerPool) {.thread.} =
     of wkStop:
       break
     of wkRun:
-      let output = pool[].output
-      let onOutput = proc(line: string) {.gcsafe.} =
-        output.emit(line)
-
       try:
         runTrnrun(
           work.request.deckFile,
           work.request.runnerPath,
           work.request.runId,
           work.request.runnerArgs,
-          onOutput,
+          pool[].output,
         )
       except CatchableError:
-        # A stdout ERROR event will report this in the final protocol.
         discard
 
 
-proc start*(pool: var WorkerPool, output: ptr OutputSink, maxConcurrent: int) =
-  ## Opens the work channel and starts `maxConcurrent` workers.
+proc start*(pool: var WorkerPool, maxConcurrent: int) =
+  ## Initializes queue output and starts `maxConcurrent` workers.
   ##
-  ## The thread sequence is sized before any thread is created, so a pool that
-  ## fails partway through still shuts down cleanly through `shutdown`.
+  ## Thread storage is reserved before any thread is created, and each slot is
+  ## added before creation so a partly started pool still shuts down cleanly.
+  pool.output.initOutputSink()
+  pool.outputInitialized = true
   pool.work.open()
-  pool.output = output
-  pool.threads = newSeq[Thread[ptr WorkerPool]](maxConcurrent)
+  pool.threads = newSeqOfCap[Thread[ptr WorkerPool]](maxConcurrent)
 
   {.push warning[ProveInit]: off, warning[Uninit]: off.}
-  for index in 0 ..< pool.threads.len:
-    createThread(pool.threads[index], runWorker, addr pool)
+  for _ in 0 ..< maxConcurrent:
+    pool.threads.add(default(Thread[ptr WorkerPool]))
+    createThread(pool.threads[^1], runWorker, addr pool)
   {.pop.}
 
 proc submit*(pool: var WorkerPool, request: RunRequest) =
@@ -85,14 +83,15 @@ proc shutdown*(pool: var WorkerPool) =
   ## queue behind every pending request, so no worker stops while work remains.
   ## Joining a thread that was never created is a no-op, and a pool that never
   ## started is left alone.
-  if pool.threads.len == 0:
+  if not pool.outputInitialized:
     return
+
+  defer:
+    pool.output.deinitOutputSink()
+    pool.outputInitialized = false
 
   for _ in 0 ..< pool.threads.len:
     pool.work.send(Work(kind: wkStop))
 
   for index in 0 ..< pool.threads.len:
     joinThread(pool.threads[index])
-
-  # Explicit Channel.close crashes Nim 2.2 ORC after receiving moved strings.
-  # This pool owns one channel for the process lifetime, so it is left open.
