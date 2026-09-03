@@ -1,153 +1,103 @@
-## Command-line entry point for bounded TRNRun supervision.
+## Implements the trnrunq command-line interface.
 ##
-## The queue owns only its runner path and concurrency limit. Every other option
-## is forwarded unchanged to each trnrun invocation.
+## Command-line entry point for running concurrent TRNSYS simulations through a
+## bounded worker pool. It acts as a thin wrapper around `supervisor`, exposing
+## the pool size as a CLI flag and mapping failures onto process exit codes.
+##
+## The queue protocol itself lives in `request` and `outputsink`; this module
+## only drives the parser and reports the outcome.
 
-import std/[cpuinfo, os, parseutils, strutils]
+import std/[cpuinfo, parseopt, strutils]
 import ./supervisor
-
 
 const NimblePkgVersion {.strdefine.} = "unknown"
 
-
-type QueueOptions = object
-  runnerPath: string
-  maxConcurrent: int
-  runnerArgs: seq[string]
-  deckFiles: seq[string]
-
-
-proc optionParts(argument: string): tuple[key, value: string, hasValue: bool] =
-  let colon = argument.find(':', 2)
-  let equals = argument.find('=', 2)
-  var separator = -1
-
-  if colon >= 0 and equals >= 0:
-    separator = min(colon, equals)
-  elif colon >= 0:
-    separator = colon
-  else:
-    separator = equals
-
-  if separator < 0:
-    return (argument[2 .. ^1], "", false)
-
-  (
-    argument[2 ..< separator],
-    argument[separator + 1 .. ^1],
-    true,
-  )
-
-proc requireValue(key, value: string, hasValue: bool): string =
-  if not hasValue or value.len == 0:
-    raise newException(ValueError, "--" & key & " requires a value")
-  value
-
-proc parseInteger(key, value: string, hasValue: bool): int =
-  result = 0
-  let value = requireValue(key, value, hasValue)
-  if parseInt(value, result) != value.len:
-    raise newException(ValueError, "--" & key & " must be an integer")
-
-proc writeHelp() =
-  echo """trnrunq3 - supervise concurrent TRNRun simulations
+const HelpText = """trnrunq - run concurrent TRNRun simulations
 
 Usage:
-  trnrunq3 [queue options] deckFile [deckFile ...] [trnrun options]
+  trnrunq [--maxConcurrent:N]
 
-Queue options:
-  -h, --help                Show this help and exit
-  -v, --version             Show version and exit
-  --runnerPath:PATH         trnrun.exe path (default: beside trnrunq3)
-  --maxConcurrent:N         Maximum simultaneous runners
+Options:
+  -h, --help              Show this help and exit
+  -v, --version           Show version and exit
+  --maxConcurrent:N       Maximum simultaneous runners (default: CPUs - 1)
 
-All other options are forwarded unchanged to each trnrun process.
-Stdout is strict JSONL containing event, output, and exit envelopes."""
+Read one JSON request per stdin line:
+  {"runId":"1","deckFile":"model.dck","runnerPath":"trnrun.exe","runnerArgs":[]}
 
-proc defaultOptions(): QueueOptions =
-  QueueOptions(
-    runnerPath: "trnrun.exe",
-    maxConcurrent: max(countProcessors() - 1, 1),
-  )
+EOF ends submission and waits for every accepted run. Child output is forwarded
+unchanged to stdout. Diagnostics are written to stderr as plain text; they are
+not a protocol and must not be read as run results.
 
-proc parseCommandLine(): tuple[options: QueueOptions, shouldRun: bool] =
-  result = (options: defaultOptions(), shouldRun: true)
-  var forwardOnly = false
+Exit codes: 0 ok  1 fatal  2 usage error"""
+  ## Usage text; must stay in step with the option cases in `main`.
 
-  for argument in commandLineParams():
-    if not forwardOnly and argument == "--":
-      forwardOnly = true
-      continue
 
-    if not forwardOnly and argument in ["-h", "--help"]:
-      writeHelp()
-      result.shouldRun = false
-      return
-    if not forwardOnly and argument in ["-v", "--version"]:
-      echo NimblePkgVersion
-      result.shouldRun = false
-      return
-
-    if not forwardOnly and argument.startsWith("--"):
-      let (key, value, hasValue) = optionParts(argument)
-      case key
-      of "runnerPath":
-        result.options.runnerPath = requireValue(key, value, hasValue)
-      of "maxConcurrent":
-        result.options.maxConcurrent = parseInteger(key, value, hasValue)
-        if result.options.maxConcurrent < 1:
-          raise newException(ValueError, "--maxConcurrent must be at least 1")
-      of "deckFile":
-        raise newException(
-          ValueError,
-          "trnrunq3 accepts deck files as positional arguments",
-        )
-      else:
-        result.options.runnerArgs.add(argument)
-    elif forwardOnly or argument.startsWith("-"):
-      result.options.runnerArgs.add(argument)
-    else:
-      result.options.deckFiles.add(
-        argument.absolutePath().normalizedPath()
-      )
-
-  if result.options.deckFiles.len == 0:
-    raise newException(ValueError, "At least one deck file is required")
+proc requireInt(key, value: string): int =
+  ## Parses an option value that must be a whole integer.
+  ##
+  ## Raises `ValueError` naming the option, which reads better at the error
+  ## boundary than the stock `parseInt` message.
+  result = 0
+  if value.len == 0:
+    raise newException(ValueError, "--" & key & " requires a value")
+  try:
+    result = parseInt(value)
+  except ValueError:
+    raise newException(ValueError, "--" & key & " must be an integer")
 
 proc main(): int =
-  let parsed = parseCommandLine()
-  if not parsed.shouldRun:
-    return 0
+  ## Collects user input from the command line and serves the queue.
+  ##
+  ## Returns the process exit code: 0 ok, 1 fatal, 2 usage error.
+  ##
+  ## This procedure does not call `quit`, ensuring the `defer` and `finally`
+  ## cleanup in `serve` can run and every worker is joined.
+  var maxConcurrent = max(countProcessors() - 1, 1)
 
-  var requests = newSeq[RunRequest](parsed.options.deckFiles.len)
-  for index, deckFile in parsed.options.deckFiles:
-    requests[index] = RunRequest(
-      runId: index + 1,
-      deckFile: deckFile,
-      runnerPath: parsed.options.runnerPath,
-      runnerArgs: parsed.options.runnerArgs,
-    )
+  var parser = initOptParser()
+  while true:
+    parser.next()
+    case parser.kind
+    of cmdEnd:
+      break
+    of cmdShortOption, cmdLongOption:
+      case parser.key
+      of "help", "h":
+        echo HelpText
+        return 0
+      of "version", "v":
+        echo NimblePkgVersion
+        return 0
+      of "maxConcurrent":
+        maxConcurrent = requireInt(parser.key, parser.val)
+        if maxConcurrent < 1:
+          raise newException(ValueError, "--maxConcurrent must be at least 1")
+      else:
+        raise newException(ValueError, "Unknown queue option: --" & parser.key)
+    of cmdArgument:
+      raise newException(ValueError, "Unexpected positional argument: " & parser.key)
 
-  let summary = superviseRuns(
-    requests,
-    maxConcurrent = parsed.options.maxConcurrent,
-  )
-  if summary.failed == 0: 0 else: 1
+  serve(maxConcurrent)
+  0
+
+proc writeError(message: string) =
+  ## Reports a fatal diagnostic for humans. Wrappers must not parse stderr.
+  try:
+    stderr.writeLine(message)
+    stderr.flushFile()
+  except IOError:
+    discard
 
 when isMainModule:
   let exitCode =
     try:
       main()
     except ValueError:
-      try:
-        stderr.writeLine("Error: ", getCurrentExceptionMsg())
-      except IOError:
-        discard
+      # CLI trust boundary: usage errors stay distinct from runtime failures.
+      writeError(getCurrentExceptionMsg())
       2
     except CatchableError:
-      try:
-        stderr.writeLine("Fatal: ", getCurrentExceptionMsg())
-      except IOError:
-        discard
+      writeError(getCurrentExceptionMsg())
       1
   quit(exitCode)

@@ -35,6 +35,7 @@ proc validateTrnrun*(runnerPath: string): string =
 proc runTrnrun*(
     deckFile: string,
     runnerPath: string,
+    runId: string,
     runnerArgs: openArray[string],
     onOutput: OutputHandler,
 ) =
@@ -44,7 +45,7 @@ proc runTrnrun*(
     executable = validateTrnrun(runnerPath)
     process = startProcess(
       executable,
-      args = @[deckFile] & @runnerArgs,
+      args = @[deckFile] & @runnerArgs & @["--runId:" & runId],
       options = {poStdErrToStdOut, poDaemon},
     )
 
@@ -72,6 +73,7 @@ when isMainModule:
   runTrnrun(
     exampleDeck,
     runnerPath,
+    "smoke",
     ["--watchTmp:true"],
     printOutput,
   )

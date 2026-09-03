@@ -3,7 +3,7 @@ import std/strutils
 # Package
 version = "0.5.0"
 author = "Alex Lachance"
-description = "Protocol-oriented concurrent supervisor for TRNRun simulations"
+description = "Bounded concurrent launcher for TRNRun simulations"
 license = "MIT"
 srcDir = "src"
 

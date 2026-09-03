@@ -1,82 +1,92 @@
 # TRNRun Queue 3
 
-`trnrunq3` supervises multiple `trnrun.exe` processes with bounded concurrency
-and combines their JSON Lines output into one routed stream.
-
-Simulation semantics, options, and outcomes remain owned by `trnrun`. The queue
-adds `runId` to each runner event and emits a small `exit` message when that
-process ends. Non-JSON lines from the merged child stream are written to stderr.
+`trnrunq` is a standalone, bounded-concurrency launcher for `trnrun`. It reads
+requests incrementally from stdin, so a wrapper can generate any number of
+simulations without building the complete workload in memory.
 
 ## Usage
 
 ```powershell
-trnrunq3 model-a.dck model-b.dck --maxConcurrent:2 --watchTmp:true
+trnrunq --maxConcurrent:4
 ```
 
-`--runnerPath` and `--maxConcurrent` configure the queue. Every other option is
-forwarded unchanged to each `trnrun` process. Relative runner paths resolve
-beside `trnrunq3.exe`.
+When omitted, `--maxConcurrent` defaults to one fewer than the available logical
+processors, with a minimum of one.
 
-Use `--` before runner arguments when an argument would otherwise be interpreted
-as a queue option such as `--help`:
+## Request protocol
 
-```powershell
-trnrunq3 model.dck -- --help
-```
-
-Each active run owns one worker thread because Windows anonymous pipes require a
-blocking reader. `src/trnrun.nim` owns one child's process lifecycle and output
-stream, while `src/supervisor.nim` schedules runs through one bounded channel.
-The coordinator is the sole writer of queue stdout.
-
-## Protocol
-
-A runner event remains top-level and receives only queue routing metadata:
+Write one JSON object per line to queue stdin:
 
 ```json
-{"kind":"PROGRESS","percent":0.5,"seq":8,"runId":1}
+{"runId":"building-a","deckFile":"C:\\models\\building-a.dck","runnerPath":"C:\\bin\\trnrun.exe","runnerArgs":["--watchTmp:true"]}
 ```
 
-Runner `seq` values remain local to each run. The physical JSONL order is the
-combined queue order; the queue does not add another sequence number.
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `runId` | string | yes | Opaque identifier passed to `trnrun`. |
+| `deckFile` | string | yes | `.dck` or `.trd` file to run. |
+| `runnerPath` | string | yes | Runner executable for this request. |
+| `runnerArgs` | array of strings | no | Additional runner arguments. |
 
-Process completion after producing at least one event:
+Requests are accepted as fast as they are written and queued until a worker is
+free, so submission never waits on execution. A wrapper that needs to bound its
+own memory can submit one request and wait for its initial runner `STATUS`
+before generating the next, while still allowing up to `--maxConcurrent`
+simulations to run.
+
+EOF on stdin ends submission. Requests already accepted by the queue continue to
+completion, after which queue stdout closes.
+
+## Output protocol
+
+Every merged child stdout/stderr line is forwarded unchanged to queue stdout.
+For example:
 
 ```json
-{"type":"exit","runId":1}
+{"kind":"STATUS","status":"RUNNING","runId":"building-a"}
 ```
 
-Queue infrastructure failure or a process that produced no valid event:
+Output from different runs may be interleaved, but complete lines are never
+mixed together and lines from one run retain their order. The queue does not
+parse child output, add completion events, reject duplicate submissions, require
+output, or interpret child exit codes.
 
-```json
-{"type":"exit","runId":1,"message":"TRNRun not found: '...'"}
-```
+There is no queue stderr protocol. Command-line and fatal process diagnostics may
+still be written to stderr for humans, but wrappers must not use them as run
+results. Infrastructure failures will later be represented as `STATUS/ERROR`
+events on stdout; until then, the wrapper must reconcile missing terminal
+statuses when queue stdout reaches EOF.
 
-The queue intentionally ignores numeric child exit codes. Runner events are the
-source of truth for simulation outcomes. A non-JSON child line is treated as a
-merged stderr diagnostic and written as `[run N] ...` to queue stderr.
+## Wrapper responsibilities
 
-The same normalized, case-insensitive deck path cannot run twice in one queue,
-because concurrent runners would race on their shared sidecar files. A rejected
-duplicate receives its own failed `exit` message.
+A wrapper should:
 
-Clients should apply runner events to the corresponding `runId` and finalize
-process bookkeeping on `exit`. If an exit arrives without a terminal runner
-`STATUS`, the client should produce a local `ERROR` for that simulation. If the
-queue process itself exits unexpectedly, the client should fail every run that
-has not yet received an `exit` message.
+1. Start one dedicated queue-stdout reader before submitting work.
+2. Route valid runner events to simulations by `runId`.
+3. Generate and write requests incrementally rather than retaining the complete
+   workload.
+4. Wait for an initial `RUNNING` or `ERROR` status when submission backpressure
+   is required. Waiting for terminal `DONE` before submitting the next request
+   would make execution sequential.
+5. Close queue stdin after generating the final request.
+6. Continue reading stdout through EOF and mark runs without terminal statuses
+   according to wrapper policy.
 
-## Single-run smoke test
+## Concurrency model
 
-Compile `src/trnrun.nim` as the main module:
+`serve(maxConcurrent)` creates a fixed pool of worker threads. Requests cross an
+unbounded `Channel`, and workers write child lines under one output lock. At
+stdin EOF, one stop sentinel per worker is queued after all accepted requests;
+channel order guarantees every pending request runs before any worker stops.
 
-```powershell
-nim c -r -o:build/trnrun-smoke.exe src/trnrun.nim
-```
+One thread per concurrent run is required rather than chosen: `osproc` exposes
+child stdout as a blocking read on an anonymous pipe, which supports neither
+`select` nor Windows IOCP, so following N children concurrently needs N blocked
+readers.
 
-The local runner path is declared as a raw string in the smoke-test block. The
-test launches `examples/dck/example_w_plot_w_tracking.dck` with temporary-file
-watching enabled and prints runner output.
+The channel is deliberately not closed explicitly. Nim 2.2 with ORC can crash
+when closing a `Channel` that transported moved strings, so process teardown
+reclaims this process-lifetime channel.
 
 ## Validation
 
