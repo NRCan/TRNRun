@@ -9,11 +9,15 @@ import std/[cpuinfo, strutils]
 type CliInput* = object
   ## User input gathered from the command line.
   maxConcurrent*: int
+  maxPending*: int
 
 
 proc defaultCliInput*(): CliInput =
   ## Returns queue defaults derived from the current machine.
-  result = CliInput(maxConcurrent: max(countProcessors() - 1, 1))
+  result = CliInput(
+    maxConcurrent: max(countProcessors() - 1, 1),
+    maxPending: 0,
+  )
 
 
 proc applyOption*(input: var CliInput, key, value: string): bool =
@@ -21,6 +25,8 @@ proc applyOption*(input: var CliInput, key, value: string): bool =
   case key
   of "maxConcurrent":
     input.maxConcurrent = parseInt(value)
+  of "maxPending":
+    input.maxPending = parseInt(value)
   else:
     return false
 

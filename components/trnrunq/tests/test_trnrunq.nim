@@ -76,6 +76,7 @@ proc runTests() =
           check command.exitCode == 0
           check command.output.contains("Usage:")
           check command.output.contains("--maxConcurrent:N")
+          check command.output.contains("--maxPending:N")
           check command.output.contains("Exit codes: 0 ok")
 
       test "prints the configured package version":
@@ -92,6 +93,7 @@ proc runTests() =
           (arguments: @["--maxConcurrent"], expected: "invalid integer"),
           (arguments: @["--maxConcurrent:nope"], expected: "invalid integer"),
           (arguments: @["--maxConcurrent:0"], expected: "must be at least 1"),
+          (arguments: @["--maxPending:-1"], expected: "must be at least 0"),
           (arguments: @["unexpected"], expected: "Unexpected positional argument"),
         ]
 

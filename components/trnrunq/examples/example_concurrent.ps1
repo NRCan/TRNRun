@@ -33,7 +33,7 @@ try {
                 '--watchTmp=true'
             )
         } | ConvertTo-Json -Compress
-    } | & $QueuePath "--maxConcurrent=$ConcurrencyLimit"
+    } | & $QueuePath "--maxConcurrent=$ConcurrencyLimit" "--maxPending=$ConcurrencyLimit"
 
     if ($LASTEXITCODE) {
         throw "trnrunq failed with exit code $LASTEXITCODE"
