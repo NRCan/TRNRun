@@ -54,15 +54,6 @@ proc runSimulation*(
     process: Process = default(Process)
     startTime: MonoTime = default(MonoTime)
 
-  defer:
-    # Handle cleanup only: the outcome is already reported, so a failure here
-    # has nothing left to contradict it with.
-    try:
-      if process != nil:
-        process.close()
-    except CatchableError:
-      discard
-
   try:
     withLaunchLock:
       eventSink(statusEvent(statusLaunching))
@@ -158,6 +149,14 @@ proc runSimulation*(
       discard
     eventSink(statusEvent(simFatal.status, message = getCurrentExceptionMsg()))
     return simFatal
+  finally:
+    # Handle cleanup only: the outcome is already reported, so a failure here
+    # has nothing left to contradict it with.
+    try:
+      if process != nil:
+        process.close()
+    except CatchableError:
+      discard
 
 proc simulate*(
     deckFile: string,
@@ -179,15 +178,15 @@ proc simulate*(
   let
     jsonlOutput = newJsonlWriter()
     eventSink = stdoutEventSink(jsonlOutput, runId)
-  defer:
-    jsonlOutput.close()
-
   try:
-    jsonlOutput.attachEventFile(validateDeck(deckFile), settings.writeEvents)
-  except IOError, ValueError:
-    discard # runSimulation re-validates and reports this as a terminal event.
+    try:
+      jsonlOutput.attachEventFile(validateDeck(deckFile), settings.writeEvents)
+    except IOError, ValueError:
+      discard # runSimulation re-validates and reports this as a terminal event.
 
-  return runSimulation(deckFile, eventSink, settings)
+    return runSimulation(deckFile, eventSink, settings)
+  finally:
+    jsonlOutput.close()
 
 # Direct-run example
 when isMainModule:

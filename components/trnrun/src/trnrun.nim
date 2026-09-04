@@ -58,8 +58,8 @@ proc main(): int =
   ## Returns the process exit code: 0 done, 1 fatal, 2 usage or validation
   ## error, 124 timeout, 125 stalled, or 130 cancelled.
   ##
-  ## This procedure does not call `quit`, ensuring its `defer` and `finally`
-  ## cleanup can run. Command failures that occur before `simulate` emit a
+  ## This procedure does not call `quit`, ensuring its `finally` cleanup can
+  ## run. Command failures that occur before `simulate` emit a
   ## structured terminal status through `reportOutcome`.
   var input = DefaultCliInput
 

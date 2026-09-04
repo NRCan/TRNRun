@@ -34,21 +34,21 @@ proc waitForExitNonDestructive*(process: Process, timeoutMs: int): bool =
     if not process.running:
       return true
     raiseOSError(osLastError(), "Failed to open process synchronization handle.")
-  defer:
+  try:
+    let
+      boundedTimeoutMs = int32(min(timeoutMs, int(high(int32))))
+      waitResult = waitForSingleObject(syncHandle, boundedTimeoutMs)
+
+    case waitResult
+    of WAIT_OBJECT_0:
+      return true
+    of WAIT_TIMEOUT:
+      discard
+    of WAIT_FAILED:
+      raiseOSError(osLastError(), "Failed while waiting for process exit.")
+    else:
+      raise newException(OSError, "Unexpected process wait result: " & $waitResult)
+
+    return false
+  finally:
     discard closeHandle(syncHandle)
-
-  let
-    boundedTimeoutMs = int32(min(timeoutMs, int(high(int32))))
-    waitResult = waitForSingleObject(syncHandle, boundedTimeoutMs)
-
-  case waitResult
-  of WAIT_OBJECT_0:
-    return true
-  of WAIT_TIMEOUT:
-    discard
-  of WAIT_FAILED:
-    raiseOSError(osLastError(), "Failed while waiting for process exit.")
-  else:
-    raise newException(OSError, "Unexpected process wait result: " & $waitResult)
-
-  return false

@@ -252,26 +252,27 @@ proc readNewLines(offset: var int64, path: string): seq[string] =
   var file = default(File)
   if not open(file, path, fmRead):
     return
-  defer: file.close()
+  try:
+    let size = file.getFileSize()
+    if offset > size:
+      stderr.writeLine("[Monitor] Log file truncated (", path, "); re-reading from start.")
+      offset = 0
+    if offset >= size:
+      return
 
-  let size = file.getFileSize()
-  if offset > size:
-    stderr.writeLine("[Monitor] Log file truncated (", path, "); re-reading from start.")
-    offset = 0
-  if offset >= size:
-    return
+    file.setFilePos(offset)
+    var chunk = newString(int(size - offset))
+    chunk.setLen(file.readBuffer(addr chunk[0], chunk.len))
 
-  file.setFilePos(offset)
-  var chunk = newString(int(size - offset))
-  chunk.setLen(file.readBuffer(addr chunk[0], chunk.len))
+    let lastNewline = chunk.rfind('\n')
+    if lastNewline < 0:
+      return
 
-  let lastNewline = chunk.rfind('\n')
-  if lastNewline < 0:
-    return
-
-  offset += int64(lastNewline + 1)
-  result = chunk[0 .. lastNewline].splitLines()
-  result.setLen(result.len - 1)
+    offset += int64(lastNewline + 1)
+    result = chunk[0 .. lastNewline].splitLines()
+    result.setLen(result.len - 1)
+  finally:
+    file.close()
 
 
 # Iterator
