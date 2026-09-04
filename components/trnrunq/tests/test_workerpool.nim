@@ -1,4 +1,4 @@
-import std/[json, os, osproc, streams, strutils, unittest]
+import std/[json, monotimes, os, osproc, streams, strutils, times, unittest]
 
 import ../src/request
 import ../src/workerpool
@@ -79,13 +79,22 @@ proc runFakeRunner(deckFile: string) =
     quit(0)
 
 proc runPoolFromArguments() =
-  let maxConcurrent = parseInt(paramStr(2))
+  let
+    maxConcurrent = parseInt(paramStr(2))
+    maxPending = parseInt(paramStr(3))
   var pool = default(WorkerPool)
   try:
-    pool.start(maxConcurrent)
-    if paramCount() >= 3:
-      for index in 3 .. paramCount():
+    pool.start(maxConcurrent, maxPending)
+    let submissionStartedAt = getMonoTime()
+    if paramCount() >= 4:
+      for index in 4 .. paramCount():
         pool.submit(parseRequest(paramStr(index)))
+    if maxPending > 0:
+      stderr.writeLine(
+        "submitMilliseconds=" &
+        $((getMonoTime() - submissionStartedAt).inMilliseconds),
+      )
+      stderr.flushFile()
   finally:
     pool.shutdown()
 
@@ -138,8 +147,9 @@ proc runPoolCommand(
     workingDirectory: string,
     maxConcurrent: int,
     requests: openArray[string],
+    maxPending: int = 0,
 ): CommandResult =
-  var arguments = @["--run-pool", $maxConcurrent]
+  var arguments = @["--run-pool", $maxConcurrent, $maxPending]
   for request in requests:
     arguments.add(request)
   executable.runCommand(arguments, workingDirectory)
@@ -173,6 +183,16 @@ proc runTests() =
   createDir(testDirectory)
   try:
     suite "worker pool":
+      test "rejects invalid limits before starting":
+        var pool = default(WorkerPool)
+
+        expect ValueError:
+          pool.start(maxConcurrent = 0)
+        expect ValueError:
+          pool.start(maxConcurrent = 1, maxPending = -1)
+
+        pool.shutdown()
+
       test "shutdown drains queued work":
         let
           deckFile = createDeck(testDirectory, "slow.dck")
@@ -234,6 +254,31 @@ proc runTests() =
             discard
         check active == 0
         check maxActive == 2
+
+      test "blocks submission while the pending queue is full":
+        let
+          deckFile = createDeck(testDirectory, "slow.dck")
+          command = runPoolCommand(
+            executable,
+            testDirectory,
+            1,
+            [
+              requestLine("bounded-1", deckFile, executable),
+              requestLine("bounded-2", deckFile, executable),
+              requestLine("bounded-3", deckFile, executable),
+            ],
+            maxPending = 1,
+          )
+          events = command.stdout.parseJsonMessages()
+          timingParts = command.stderr.strip().split('=')
+
+        checkpoint("stdout:\n" & command.stdout & "\nstderr:\n" & command.stderr)
+        check command.exitCode == 0
+        check events.len == 6
+        check timingParts.len == 2
+        if timingParts.len == 2:
+          check timingParts[0] == "submitMilliseconds"
+          check parseInt(timingParts[1]) >= 250
 
       test "accepts duplicate submissions":
         let

@@ -16,6 +16,8 @@ const
   DeckFilename = "test_slow_wo_plot_w_tracking.dck"
   CopyCount = 50
   MaxConcurrent = 5
+  MaxPending = 5
+  BackpressureThresholdMs = 100'i64
   RemoveStagedCopies = true
   TrnexePath = r"C:\TRNSYS18\Exe\TrnEXE64.exe"
   RunnerArgs = [
@@ -37,6 +39,21 @@ const
     "--writeEvents=false",
   ]
   TerminalStatuses = ["DONE", "CANCELLED", "ERROR", "TIMEOUT", "STALLED"]
+
+
+type
+  SubmissionStats = object
+    totalMilliseconds: int64
+    longestWriteMilliseconds: int64
+    delayedWrites: int
+    firstDelayedRequest: int
+    errorMessage: string
+
+  SubmissionContext = object
+    input: Stream
+    requests: seq[string]
+    stats: SubmissionStats
+
 
 proc formatSeconds(milliseconds: int64): string =
   formatFloat(milliseconds.float / 1_000.0, ffDecimal, 1)
@@ -69,6 +86,60 @@ proc handleOutput(line: string, statuses: var Table[string, string]) =
   except JsonParsingError:
     discard
 
+proc submitRequests(context: ptr SubmissionContext) {.thread.} =
+  ## Writes on a separate thread so queue output is drained while stdin blocks.
+  let startedAt = getMonoTime()
+  try:
+    for index, request in context[].requests:
+      let writeStartedAt = getMonoTime()
+      context[].input.writeLine(request)
+      context[].input.flush()
+
+      let writeMilliseconds =
+        (getMonoTime() - writeStartedAt).inMilliseconds
+      context[].stats.longestWriteMilliseconds = max(
+        context[].stats.longestWriteMilliseconds,
+        writeMilliseconds,
+      )
+      if writeMilliseconds >= BackpressureThresholdMs:
+        if context[].stats.delayedWrites == 0:
+          context[].stats.firstDelayedRequest = index + 1
+        inc context[].stats.delayedWrites
+  except CatchableError:
+    context[].stats.errorMessage = getCurrentExceptionMsg()
+  finally:
+    context[].stats.totalMilliseconds =
+      (getMonoTime() - startedAt).inMilliseconds
+    try:
+      context[].input.close()
+    except CatchableError:
+      if context[].stats.errorMessage.len == 0:
+        context[].stats.errorMessage = getCurrentExceptionMsg()
+
+proc reportSubmission(stats: SubmissionStats, requestCount: int) =
+  styledWriteLine(
+    stdout,
+    fgWhite,
+    "Submitted " & $requestCount & " requests in " &
+      formatSeconds(stats.totalMilliseconds) & "s; longest write/flush " &
+      $stats.longestWriteMilliseconds & "ms",
+  )
+  if stats.delayedWrites > 0:
+    styledWriteLine(
+      stdout,
+      fgGreen,
+      "BACKPRESSURE OBSERVED - " & $stats.delayedWrites &
+        " writes took at least " & $BackpressureThresholdMs &
+        "ms; first delayed request: " & $stats.firstDelayedRequest,
+    )
+  else:
+    styledWriteLine(
+      stdout,
+      fgYellow,
+      "BACKPRESSURE NOT OBSERVED at the writer - stdin's OS pipe buffered all " &
+        "requests; increase CopyCount or request size to expose the block",
+    )
+
 proc runQueue(
     executable: string,
     runnerPath: string,
@@ -76,40 +147,57 @@ proc runQueue(
     deckFiles: openArray[string],
     statuses: var Table[string, string],
 ): int =
-  var process: Process = nil
+  var
+    process: Process = nil
+    submission = default(SubmissionContext)
+    submitter = default(Thread[ptr SubmissionContext])
+    submitterStarted = false
   try:
     process = startProcess(
       executable,
       workingDir = workingDirectory,
-      args = ["--maxConcurrent=" & $MaxConcurrent],
+      args = [
+        "--maxConcurrent=" & $MaxConcurrent,
+        "--maxPending=" & $MaxPending,
+      ],
       options = {poStdErrToStdOut},
     )
 
-    let input = process.inputStream
+    submission.input = process.inputStream
     for deckFile in deckFiles:
-      let request = %*{
-        "runId": deckFile.splitFile().name,
-        "deckFile": deckFile,
-        "runnerPath": runnerPath,
-        "runnerArgs": RunnerArgs,
-      }
-      input.writeLine($request)
-      input.flush()
-    input.close()
+      submission.requests.add(
+        $(%*{
+          "runId": deckFile.splitFile().name,
+          "deckFile": deckFile,
+          "runnerPath": runnerPath,
+          "runnerArgs": RunnerArgs,
+        }),
+      )
+
+    {.push warning[ProveInit]: off, warning[Uninit]: off.}
+    createThread(submitter, submitRequests, addr submission)
+    {.pop.}
+    submitterStarted = true
 
     var line = ""
-    while process.peekExitCode() == -1:
-      if process.hasData():
-        if process.outputStream.readLine(line):
-          line.handleOutput(statuses)
-      else:
-        sleep(10)
-
     while process.outputStream.readLine(line):
       line.handleOutput(statuses)
 
+    joinThread(submitter)
+    submitterStarted = false
+    submission.stats.reportSubmission(submission.requests.len)
+    if submission.stats.errorMessage.len > 0:
+      raise newException(
+        IOError,
+        "Could not submit queue requests: " & submission.stats.errorMessage,
+      )
+
     return process.waitForExit()
   except CatchableError as error:
+    if process != nil and process.running:
+      process.terminate()
+    if submitterStarted:
+      joinThread(submitter)
     styledWriteLine(stdout, fgRed, "FAIL - Could not run trnrunq: " & error.msg)
     return -1
   finally:
@@ -152,7 +240,7 @@ proc main(): int =
       stdout,
       fgCyan,
       "Running " & $deckFiles.len & " copies with max concurrency " &
-        $MaxConcurrent,
+        $MaxConcurrent & " and max pending " & $MaxPending,
     )
     styledWriteLine(stdout, fgWhite, "  Source:  " & sourceDeck)
     styledWriteLine(stdout, fgWhite, "  Staging: " & stagingDirectory)

@@ -12,16 +12,18 @@ import ./request
 import ./workerpool
 
 
-proc serve*(maxConcurrent: int) =
+proc serve*(maxConcurrent: int, maxPending: int = 0) =
   ## Accepts requests until stdin reaches EOF and waits for every accepted run.
   if maxConcurrent < 1:
     raise newException(ValueError, "maxConcurrent must be at least 1")
+  if maxPending < 0:
+    raise newException(ValueError, "maxPending must be at least 0")
 
   initJobGuard()
 
   var pool = default(WorkerPool)
   try:
-    pool.start(maxConcurrent)
+    pool.start(maxConcurrent, maxPending)
 
     var line = ""
     while stdin.readLine(line):

@@ -25,11 +25,13 @@ Use `nimble dist` to also assemble the executable, README, and license under
 ## Usage
 
 ```powershell
-trnrunq --maxConcurrent:4
+trnrunq --maxConcurrent:4 --maxPending:16
 ```
 
 When omitted, `--maxConcurrent` defaults to one fewer than the available logical
-processors, with a minimum of one.
+processors, with a minimum of one. `--maxPending` defaults to `0`, which allows
+unlimited waiting requests. A positive value bounds the number of requests
+waiting for a runner and blocks submission while that pending queue is full.
 
 ### PowerShell examples
 
@@ -69,11 +71,11 @@ Write one JSON object per line to queue stdin:
 | `runnerPath` | string | yes | Runner executable for this request. |
 | `runnerArgs` | array of strings | no | Additional runner arguments. |
 
-Requests are accepted as fast as they are written and queued until a worker is
-free, so submission never waits on execution. A wrapper that needs to bound its
-own memory can submit one request and wait for its initial runner `STATUS`
-before generating the next, while still allowing up to `--maxConcurrent`
-simulations to run.
+With `--maxPending:0`, requests are accepted as fast as they are written and
+queued until a worker is free. A positive `--maxPending` allows at most that many
+requests to wait for a runner; when the pending queue is full, submission blocks
+until a worker accepts another request. Running requests do not count toward the
+pending limit.
 
 EOF on stdin ends submission. Requests already accepted by the queue continue to
 completion, after which queue stdout closes.
@@ -106,19 +108,20 @@ A wrapper should:
 2. Route valid runner events to simulations by `runId`.
 3. Generate and write requests incrementally rather than retaining the complete
    workload.
-4. Wait for an initial `RUNNING` or `ERROR` status when submission backpressure
-   is required. Waiting for terminal `DONE` before submitting the next request
-   would make execution sequential.
+4. Set a positive `--maxPending` when submission backpressure is required, and
+   keep reading stdout while submission is blocked.
 5. Close queue stdin after generating the final request.
 6. Continue reading stdout through EOF and mark runs without terminal statuses
    according to wrapper policy.
 
 ## Concurrency model
 
-`serve(maxConcurrent)` creates a fixed pool of worker threads. Requests cross an
-unbounded `Channel`, and workers write child lines under one output lock. At
-stdin EOF, one stop sentinel per worker is queued after all accepted requests;
-channel order guarantees every pending request runs before any worker stops.
+`serve(maxConcurrent, maxPending)` creates a fixed pool of worker threads.
+Requests cross a `Channel` that is unbounded when `maxPending` is `0`; a positive
+value bounds waiting requests and blocks submission while the channel is full.
+Workers write child lines under one output lock. At stdin EOF, one stop sentinel
+per worker is queued after all accepted requests; channel order guarantees every
+pending request runs before any worker stops.
 
 One thread per concurrent run is required rather than chosen: `osproc` exposes
 child stdout as a blocking read on an anonymous pipe, which supports neither

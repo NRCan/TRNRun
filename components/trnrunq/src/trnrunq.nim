@@ -2,7 +2,8 @@
 ##
 ## Command-line entry point for running concurrent TRNSYS simulations through a
 ## bounded worker pool. It acts as a thin wrapper around `supervisor`, exposing
-## the pool size as a CLI flag and mapping failures onto process exit codes.
+## the pool and pending-queue sizes as CLI flags and mapping failures onto
+## process exit codes.
 ##
 ## Option parsing itself lives in `cli`; this module owns executable metadata,
 ## drives the parser, and reports the outcome.
@@ -16,12 +17,13 @@ const NimblePkgVersion {.strdefine.} = "unknown"
 const HelpText = """trnrunq - run concurrent TRNRun simulations
 
 Usage:
-  trnrunq [--maxConcurrent:N]
+  trnrunq [--maxConcurrent:N] [--maxPending:N]
 
 Options:
   -h, --help              Show this help and exit
   -v, --version           Show version and exit
   --maxConcurrent:N       Maximum simultaneous runners (default: max(CPUs - 1, 1))
+  --maxPending:N          Maximum requests waiting for a runner (default: 0, unlimited)
 
 Read one JSON request per stdin line:
   {"runId":"1","deckFile":"model.dck","runnerPath":"trnrun.exe","runnerArgs":[]}
@@ -61,7 +63,7 @@ proc main(): int =
     of cmdArgument:
       raise newException(ValueError, "Unexpected positional argument: " & parser.key)
 
-  serve(input.maxConcurrent)
+  serve(input.maxConcurrent, input.maxPending)
   return 0
 
 proc writeError(message: string) =
