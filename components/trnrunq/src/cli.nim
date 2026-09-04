@@ -13,7 +13,7 @@ type CliInput* = object
 
 proc defaultCliInput*(): CliInput =
   ## Returns queue defaults derived from the current machine.
-  CliInput(maxConcurrent: max(countProcessors() - 1, 1))
+  result = CliInput(maxConcurrent: max(countProcessors() - 1, 1))
 
 
 proc applyOption*(input: var CliInput, key, value: string): bool =

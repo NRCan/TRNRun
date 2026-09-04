@@ -32,7 +32,7 @@ proc validateTrnrun*(runnerPath: string): string =
 
 proc errorLine(runId, message: string): string =
   ## Returns a runner-compatible terminal event for a request that cannot start.
-  $(%*{
+  result = $(%*{
     "kind": "STATUS",
     "timestamp": now().format("yyyy-MM-dd'T'HH:mm:ss"),
     "status": "ERROR",
@@ -65,8 +65,16 @@ proc runTrnrun*(
 
   try:
     var line = ""
-    while process.outputStream.readLine(line):
-      output.emit(line)
+    while process.running:
+      if process.hasData():
+        if process.outputStream.readLine(line):
+          output.emit(line)
+      else:
+        sleep(10)
+
+    while process.hasData():
+      if process.outputStream.readLine(line):
+        output.emit(line)
 
     discard process.waitForExit()
   finally:

@@ -4,7 +4,9 @@ import ../src/supervisor
 import ../src/trnrun
 
 
-const Timestamp = "2026-08-30T12:00:00"
+const
+  Timestamp = "2026-08-30T12:00:00"
+  HeldPipeLine = "inherited stdout remained open"
 
 
 proc fakeRunId(): string =
@@ -20,6 +22,23 @@ proc runFakeRunner(deckFile: string) =
     mode = deckFile.splitFile().name.toLowerAscii()
     runId = fakeRunId()
   case mode
+  of "cancelled":
+    let holder = startProcess(
+      getAppFilename(),
+      args = ["--hold-stdout"],
+      options = {poParentStreams, poDaemon},
+    )
+    holder.close()
+    stdout.writeLine($(%*{
+      "kind": "STATUS",
+      "timestamp": Timestamp,
+      "status": "CANCELLED",
+      "message": "",
+      "seq": 1,
+      "runId": runId,
+    }))
+    stdout.flushFile()
+    quit(130)
   of "fail":
     stderr.writeLine("fake native crash diagnostic")
     quit(2)
@@ -62,10 +81,18 @@ proc runFakeRunner(deckFile: string) =
     quit(0)
 
 if paramCount() >= 1:
-  if paramStr(1).splitFile().ext.toLowerAscii() in [".dck", ".trd"]:
+  if paramStr(1) == "--hold-stdout":
+    sleep(500)
+    stdout.writeLine(HeldPipeLine)
+    stdout.flushFile()
+    quit(0)
+  elif paramStr(1).splitFile().ext.toLowerAscii() in [".dck", ".trd"]:
     runFakeRunner(paramStr(1))
   elif paramStr(1) == "--serve":
     serve(maxConcurrent = 2)
+    quit(0)
+  elif paramStr(1) == "--serve-one":
+    serve(maxConcurrent = 1)
     quit(0)
 
 
@@ -224,6 +251,32 @@ proc runTests() =
         check command.exitCode == 0
         check command.stdout.len == 0
         check command.stderr.len == 0
+
+      test "releases a worker when its runner exits before stdout closes":
+        let
+          cancelledDeck = createDeck(testDirectory, "cancelled.dck")
+          nextDeck = createDeck(testDirectory, "after-cancelled.dck")
+          command = runCommand(
+            executable,
+            ["--serve-one"],
+            testDirectory,
+            [
+              requestLine("cancelled", cancelledDeck, executable),
+              requestLine("next", nextDeck, executable),
+            ],
+          )
+          events = command.stdout.parseJsonMessages()
+
+        checkpoint("stdout:\n" & command.stdout & "\nstderr:\n" & command.stderr)
+        check command.exitCode == 0
+        check not command.stdout.contains(HeldPipeLine)
+        check events.len == 3
+        check events[0]["runId"].getStr() == "cancelled"
+        check events[0]["status"].getStr() == "CANCELLED"
+        check events[1]["runId"].getStr() == "next"
+        check events[1]["status"].getStr() == "RUNNING"
+        check events[2]["runId"].getStr() == "next"
+        check events[2]["status"].getStr() == "DONE"
 
       test "accepts requests until stdin closes":
         let

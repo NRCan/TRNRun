@@ -1,41 +1,46 @@
+$RunCount = 10
+$ConcurrencyLimit = 5
+$SubmissionIntervalSeconds = 2
+
 $QueueRoot = Split-Path -Path $PSScriptRoot -Parent
 $QueuePath = Join-Path $QueueRoot 'build\trnrunq.exe'
 $RunnerPath = Join-Path $QueueRoot '..\trnrun\build\trnrun.exe'
 $SourceDeck = Join-Path $PSScriptRoot 'dck\example_wo_plot_w_tracking.dck'
 $RunDirectory = Join-Path ([IO.Path]::GetTempPath()) "trnrunq-example-$PID"
 
-if (-not (Test-Path -LiteralPath $QueuePath)) {
-    throw "trnrunq.exe not found at $QueuePath"
-}
-if (-not (Test-Path -LiteralPath $RunnerPath)) {
-    throw "trnrun.exe not found at $RunnerPath"
-}
-if (-not (Test-Path -LiteralPath $SourceDeck)) {
-    throw "Deck file not found at $SourceDeck"
+$QueuePath, $RunnerPath, $SourceDeck | ForEach-Object {
+    if (-not (Test-Path -LiteralPath $_ -PathType Leaf)) {
+        throw "Required file not found: $_"
+    }
 }
 
 New-Item -ItemType Directory -Path $RunDirectory | Out-Null
 try {
-    Write-Host 'Submitting 10 copies every 5 seconds with max concurrency 5'
+    Write-Host (
+        "Submitting $RunCount copies every $SubmissionIntervalSeconds seconds " +
+        "with max concurrency $ConcurrencyLimit"
+    )
 
-    1..10 | ForEach-Object {
+    1..$RunCount | ForEach-Object {
         if ($_ -gt 1) {
-            Start-Sleep -Seconds 5
+            Start-Sleep -Seconds $SubmissionIntervalSeconds
         }
 
         $RunId = 'example-{0:D2}' -f $_
         $DeckFile = Join-Path $RunDirectory "$RunId.dck"
 
-        # Each run needs its own deck because TRNRun writes sidecars beside it.
         Copy-Item -LiteralPath $SourceDeck -Destination $DeckFile
 
         @{
             runId = $RunId
             deckFile = $DeckFile
             runnerPath = $RunnerPath
-            runnerArgs = @('--watchTmp=true')
+            runnerArgs = @(
+                '--guiVisibility=auto'
+                '--watchTmp=true'
+            )
         } | ConvertTo-Json -Compress
-    } | & $QueuePath '--maxConcurrent=5'
+    } | & $QueuePath "--maxConcurrent=$ConcurrencyLimit"
 
     if ($LASTEXITCODE) {
         throw "trnrunq failed with exit code $LASTEXITCODE"

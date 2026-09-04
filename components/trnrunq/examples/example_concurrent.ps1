@@ -1,24 +1,23 @@
+$RunCount = 10
+$ConcurrencyLimit = 5
+
 $QueueRoot = Split-Path -Path $PSScriptRoot -Parent
 $QueuePath = Join-Path $QueueRoot 'build\trnrunq.exe'
 $RunnerPath = Join-Path $QueueRoot '..\trnrun\build\trnrun.exe'
 $SourceDeck = Join-Path $PSScriptRoot 'dck\example_wo_plot_w_tracking.dck'
 $RunDirectory = Join-Path ([IO.Path]::GetTempPath()) "trnrunq-example-$PID"
 
-if (-not (Test-Path -LiteralPath $QueuePath)) {
-    throw "trnrunq.exe not found at $QueuePath"
-}
-if (-not (Test-Path -LiteralPath $RunnerPath)) {
-    throw "trnrun.exe not found at $RunnerPath"
-}
-if (-not (Test-Path -LiteralPath $SourceDeck)) {
-    throw "Deck file not found at $SourceDeck"
+$QueuePath, $RunnerPath, $SourceDeck | ForEach-Object {
+    if (-not (Test-Path -LiteralPath $_ -PathType Leaf)) {
+        throw "Required file not found: $_"
+    }
 }
 
 New-Item -ItemType Directory -Path $RunDirectory | Out-Null
 try {
-    Write-Host 'Running 10 copies with max concurrency 5'
+    Write-Host "Running $RunCount copies with max concurrency $ConcurrencyLimit"
 
-    1..10 | ForEach-Object {
+    1..$RunCount | ForEach-Object {
         $RunId = 'example-{0:D2}' -f $_
         $DeckFile = Join-Path $RunDirectory "$RunId.dck"
 
@@ -29,9 +28,12 @@ try {
             runId = $RunId
             deckFile = $DeckFile
             runnerPath = $RunnerPath
-            runnerArgs = @('--watchTmp=true')
+            runnerArgs = @(
+                '--guiVisibility=auto'
+                '--watchTmp=true'
+            )
         } | ConvertTo-Json -Compress
-    } | & $QueuePath '--maxConcurrent=5'
+    } | & $QueuePath "--maxConcurrent=$ConcurrencyLimit"
 
     if ($LASTEXITCODE) {
         throw "trnrunq failed with exit code $LASTEXITCODE"

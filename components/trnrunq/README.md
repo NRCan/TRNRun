@@ -31,12 +31,35 @@ trnrunq --maxConcurrent:4
 When omitted, `--maxConcurrent` defaults to one fewer than the available logical
 processors, with a minimum of one.
 
+### PowerShell examples
+
+The repository includes two examples that expect both `trnrun.exe` and
+`trnrunq.exe` to be built in their sibling `build` directories:
+
+```powershell
+cd ..\trnrun
+nimble bin
+cd ..\trnrunq
+nimble bin
+
+# Submit the complete workload immediately.
+.\examples\example_concurrent.ps1
+
+# Submit one request every two seconds.
+.\examples\example_delayed.ps1
+```
+
+Both scripts create ten temporary copies of the sample deck, allow up to five
+simultaneous runs, and pass `--guiVisibility=auto` and `--watchTmp=true` to
+`trnrun.exe`. Edit the constants at the top of each script to change the copy
+count, concurrency limit, or delayed submission interval.
+
 ## Request protocol
 
 Write one JSON object per line to queue stdin:
 
 ```json
-{"runId":"building-a","deckFile":"C:\\models\\building-a.dck","runnerPath":"C:\\bin\\trnrun.exe","runnerArgs":["--watchTmp:true"]}
+{"runId":"building-a","deckFile":"C:\\models\\building-a.dck","runnerPath":"C:\\bin\\trnrun.exe","runnerArgs":["--guiVisibility:auto","--watchTmp:true"]}
 ```
 
 | Field | Type | Required | Description |

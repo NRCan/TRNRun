@@ -62,7 +62,7 @@ proc main(): int =
       raise newException(ValueError, "Unexpected positional argument: " & parser.key)
 
   serve(input.maxConcurrent)
-  0
+  return 0
 
 proc writeError(message: string) =
   ## Reports a fatal diagnostic for humans. Wrappers must not parse stderr.
@@ -77,7 +77,6 @@ when isMainModule:
     try:
       main()
     except ValueError:
-      # CLI trust boundary: usage errors stay distinct from runtime failures.
       writeError(getCurrentExceptionMsg())
       2
     except CatchableError:
