@@ -1,8 +1,8 @@
 ## Defines the TRNRun command-line surface.
 ##
-## Owns the option vocabulary: the help text, the accepted GUI visibility
-## spellings, and the mapping from CLI keys onto `RunnerSettings`. Adding a
-## setting means touching this module and `settings`, and nothing else.
+## Owns the option vocabulary: the accepted GUI visibility spellings and the
+## mapping from CLI keys onto `RunnerSettings`. Adding a setting means touching
+## this module and `settings`, and nothing else.
 
 import std/strutils
 import ./events
@@ -22,35 +22,6 @@ const DefaultCliInput* = CliInput(
   )
   ## Starting point for parsing: no deck selected, stock settings.
 
-const HelpText* = """trnrun - launch and monitor TRNSYS simulations
-
-Usage:
-  trnrun [deckFile] [options]     # no deckFile -> opens a file picker
-
-  -h, --help              Show this help and exit
-  -v, --version           Show version and exit
-  --deckFile:PATH         Deck path; same as the positional argument
-  --runId:ID              Attach an opaque run identifier to every event
-  --trnexePath:PATH       Path to TrnEXE64.exe
-  --guiVisibility:MODE    keep | auto | min | minauto | hidden   (default: hidden)
-  --waitForGui:BOOL       (default: true)
-  --waitForLst:BOOL       (default: true)
-  --waitForTmp:BOOL       (default: false)
-  --detectTimeout:MS      Readiness timeout, 0 = unlimited (default: 300000)
-  --extraDelay:MS         (default: 0)
-  --watchLog:BOOL         (default: true)
-  --watchTmp:BOOL         Needed for stall detection (default: false)
-  --watchTimeout:MS       0 = unlimited (default: 0)
-  --stallTimeout:MS       0 = disabled (default: 0)
-  --pollMs:MS             (default: 100)
-  --clean:BOOL            (default: false)
-  --killOnTimeout:BOOL    (default: false)
-  --killOnStall:BOOL      (default: false)
-  --severity:LEVEL        Notice | Warning | Fatal (default: Notice)
-  --writeEvents:BOOL      (default: false)
-
-Exit codes: 0 done  1 fatal  2 usage error  124 timeout  125 stalled  130 cancelled"""
-  ## Usage text; must stay in step with `applyOption`.
 
 proc parseGuiVisibility(value: string): TrnexeGuiVisibility =
   ## Parses a CLI visibility string into a `TrnexeGuiVisibility`; raises

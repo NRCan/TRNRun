@@ -64,7 +64,7 @@ var jobHandle: Handle = 0
 proc initJobGuard*() =
   ## Creates the kill-on-close job object and places this process in it.
   ##
-  ## Call once before spawning TrnEXE. Repeated calls are a no-op.
+  ## Call once before spawning TRNRun children. Repeated calls are a no-op.
   if jobHandle != 0:
     return
 
@@ -72,22 +72,22 @@ proc initJobGuard*() =
   if handle == 0:
     raiseOSError(osLastError(), "Failed to create Win32 Job Object.")
 
-  defer:
+  try:
+    var limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+    limits.basicLimitInformation.limitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    if setInformationJobObject(
+      handle,
+      JOB_OBJECT_EXTENDED_LIMIT_INFO_CLASS,
+      addr limits,
+      uint32(sizeof(limits)),
+    ) == 0:
+      raiseOSError(osLastError(), "Failed to configure Job Object limits.")
+
+    if assignProcessToJobObject(handle, getCurrentProcess()) == 0:
+      raiseOSError(osLastError(), "Failed to place this process in the Job Object.")
+
+    jobHandle = handle
+    handle = 0 # Ownership remains with the module until process exit.
+  finally:
     if handle != 0:
       discard closeHandle(handle)
-
-  var limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
-  limits.basicLimitInformation.limitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-  if setInformationJobObject(
-    handle,
-    JOB_OBJECT_EXTENDED_LIMIT_INFO_CLASS,
-    addr limits,
-    uint32(sizeof(limits)),
-  ) == 0:
-    raiseOSError(osLastError(), "Failed to configure Job Object limits.")
-
-  if assignProcessToJobObject(handle, getCurrentProcess()) == 0:
-    raiseOSError(osLastError(), "Failed to place this process in the Job Object.")
-
-  jobHandle = handle
-  handle = 0 # Ownership remains with the module until process exit.

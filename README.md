@@ -8,6 +8,7 @@ TRNRun is a tool for running [TRNSYS](https://www.trnsys.com/) simulations, buil
 | --- | --- |
 | [Type3830](components/type3830/) | Custom TRNSYS component that periodically writes simulation `TIME`, `START`, `STOP`, and `STEP` to a `***.tmp` file. |
 | [TRNRun CLI](components/trnrun/) | `trnrun.exe` launches a single deck, serializes TRNSYS startup machine-wide, monitors the run, and emits `STATUS` / `CONFIG` / `PROGRESS` / `LOG` events as JSON Lines on stdout. |
+| [TRNRun Queue](components/trnrunq/) | `trnrunq.exe` accepts JSON Lines requests on stdin, runs `trnrun.exe` with bounded concurrency, and merges runner output onto stdout. |
 
 ## Libraries
 
