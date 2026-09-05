@@ -1,7 +1,7 @@
 import std/strutils
 
 # Package
-version = "0.6.2"
+version = "0.7.0"
 author = "Alex Lachance"
 description = "Daemon that runs and tracks TRNRun simulations for one client"
 license = "MIT"

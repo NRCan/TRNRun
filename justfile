@@ -105,7 +105,7 @@ trnrunq-bin:
 trnrunq-dist:
     Set-Location components/trnrunq -ErrorAction Stop; nimble dist
 
-# Build, assemble, and deploy TRNRunQ to the Python package
+# Build, assemble, and deploy TRNRunQ to the MATLAB toolbox
 trnrunq-deploy:
     Set-Location components/trnrunq -ErrorAction Stop; nimble deploy
 

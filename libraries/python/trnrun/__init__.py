@@ -1,8 +1,17 @@
 from trnrun.config import SimulationConfig
-from trnrun.events import SimulationStatus
+from trnrun.display import ProgressDisplay
+from trnrun.events import SimulationState, SimulationStatus
 from trnrun.manager import SimulationManager
 from trnrun.simulation import Simulation, SimulationSnapshot
 
-__version__ = "0.6.2"
+__version__ = "0.7.0"
 
-__all__ = ["Simulation", "SimulationConfig", "SimulationManager", "SimulationSnapshot", "SimulationStatus"]
+__all__ = [
+    "ProgressDisplay",
+    "Simulation",
+    "SimulationConfig",
+    "SimulationManager",
+    "SimulationSnapshot",
+    "SimulationState",
+    "SimulationStatus",
+]

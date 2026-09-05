@@ -5,109 +5,131 @@ from __future__ import annotations
 import io
 import subprocess
 import sys
-import threading
 from collections.abc import Callable, Iterator
-from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
-from threading import Event, Lock, Thread, current_thread
-from typing import IO, override
+from queue import Queue
+from threading import Event, Thread
+from time import monotonic, sleep
+from typing import IO
 from unittest.mock import MagicMock, Mock, call
 
 import pytest
 
 from trnrun import process
+from trnrun.config import BUNDLED_TRNRUND_PATH
 
 TEST_TIMEOUT = 10.0
+STARTED = '{"ok":true,"simulations":[]}\n'  # Reply to the constructor's startup request.
 
 
-class BlockingOutput(io.StringIO):
-    """Deliver buffered lines, then wait for an explicitly signalled EOF."""
+class ReplyPipe:
+    """Daemon stdout fed by the test; reads block until a reply or EOF arrives."""
 
-    def __init__(self, text: str = "") -> None:
-        """Create an output pipe controlled by Events rather than timing."""
-        super().__init__(text)
+    def __init__(self, *lines: str) -> None:
+        """Queue the startup reply, then the given reply lines."""
+        self.lines: Queue[str] = Queue()
         self.reading: Event = Event()
-        self.eof: Event = Event()
-        self.closed_by: Thread | None = None
+        self.closed: bool = False
+        for line in (STARTED, *lines):
+            self.lines.put(line)
 
-    @override
-    def readline(self, size: int = -1) -> str:
-        """Block at EOF until the test or fake child releases the reader."""
-        line = super().readline(size)
+    def reply(self, line: str) -> None:
+        """Deliver one reply line."""
+        self.lines.put(line)
+
+    def eof(self) -> None:
+        """Close the pipe from the daemon's side."""
+        self.lines.put("")
+
+    def readline(self) -> str:
+        """Block for the next line; EOF stays EOF."""
+        self.reading.set()
+        line = self.lines.get(timeout=TEST_TIMEOUT)
         if not line:
-            self.reading.set()
-            assert self.eof.wait(TEST_TIMEOUT), "test did not release stdout"
+            self.lines.put("")
         return line
 
-    @override
     def close(self) -> None:
-        """Record which thread actually closes the pipe."""
-        self.closed_by = current_thread()
-        super().close()
+        """Record closure."""
+        self.closed = True
 
 
 @dataclass
 class Harness:
-    """A real reader thread backed by controlled child-process boundaries."""
+    """A daemon process backed by controlled child-process boundaries."""
 
-    queue: process.QueueProcess
+    daemon: process.DaemonProcess
     child: Mock
     popen: Mock
-    output: Mock
 
 
 @pytest.fixture
-def make_queue(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[Callable[..., Harness]]:
-    """Build queues and ensure no reader is left behind by a test."""
-    queues: list[Harness] = []
-    executable = tmp_path / "trnrunq.exe"
-    executable.touch()
+def executables(tmp_path: Path) -> tuple[Path, Path]:
+    """Create placeholder daemon and runner executables."""
+    daemon, runner = tmp_path / "trnrund.exe", tmp_path / "trnrun.exe"
+    daemon.touch()
+    runner.touch()
+    return daemon, runner
+
+
+@pytest.fixture
+def make_daemon(
+    monkeypatch: pytest.MonkeyPatch,
+    executables: tuple[Path, Path],
+) -> Iterator[Callable[..., Harness]]:
+    """Build daemons and ensure each is shut down by the test."""
+    harnesses: list[Harness] = []
     monkeypatch.setattr(process, "assign_to_job", Mock(return_value=True))
 
     def create(
-        stdin: IO[str] | None = None,
-        stdout: IO[str] | None = None,
-        on_output: Callable[[str], None] | None = None,
-        on_exit: Callable[[], None] | None = None,
+        stdin: IO[str] | Mock | None = None,
+        stdout: ReplyPipe | Mock | None = None,
+        stderr: IO[str] | None = None,
     ) -> Harness:
-        output = Mock(side_effect=on_output)
         child = Mock(stdin=stdin if stdin is not None else io.StringIO())
-        child.stdout = stdout if stdout is not None else BlockingOutput()
-        if isinstance(child.stdout, BlockingOutput):
-            child.kill.side_effect = child.stdout.eof.set
+        child.stdout = stdout if stdout is not None else ReplyPipe()
+        child.stderr = stderr if stderr is not None else io.StringIO()
+        if isinstance(child.stdout, ReplyPipe):
+            child.kill.side_effect = child.stdout.eof
         child.poll.return_value = None
+        child.returncode = None
 
         def wait(*, timeout: float) -> int:
             assert timeout == process.SHUTDOWN_TIMEOUT
             child.poll.return_value = 0
+            child.returncode = 0
             return 0
 
         child.wait.side_effect = wait
         popen = Mock(return_value=child)
         monkeypatch.setattr(process.subprocess, "Popen", popen)
 
-        queue = process.QueueProcess(executable, 3, output, on_exit)
-        harness = Harness(queue, child, popen, output)
-        queues.append(harness)
+        daemon = process.DaemonProcess(*executables, 3)
+        # Leave tests only the traffic after the startup request.
+        if isinstance(child.stdout, ReplyPipe):
+            child.stdout.reading.clear()
+        if isinstance(child.stdin, Mock):
+            child.stdin.reset_mock()
+        harness = Harness(daemon, child, popen)
+        harnesses.append(harness)
         return harness
 
     yield create
 
-    for harness in queues:
-        if isinstance(harness.child.stdout, BlockingOutput):
-            harness.child.stdout.eof.set()
-        harness.queue.shutdown()
-        assert not harness.queue._reader.is_alive()
+    for harness in harnesses:
+        if isinstance(harness.child.stdout, ReplyPipe):
+            harness.child.stdout.eof()
+        harness.daemon.shutdown()
 
 
-def _start(action: Callable[[], None]) -> tuple[Thread, list[Exception]]:
+def _start(action: Callable[[], object]) -> tuple[Thread, list[Exception]]:
     """Run an operation in a worker while retaining its actual exception."""
     errors: list[Exception] = []
 
     def run() -> None:
         try:
-            action()
+            _ = action()
         except Exception as exc:  # noqa: BLE001 - inspect worker failures in the test thread
             errors.append(exc)
 
@@ -122,64 +144,108 @@ def _join(thread: Thread) -> None:
     assert not thread.is_alive(), "worker did not finish"
 
 
-@pytest.mark.parametrize("max_concurrent", [0, -1, True, False, 1.0, 1.5, float("nan"), float("inf"), "2", None])
-def test_init_rejects_invalid_concurrency(monkeypatch: pytest.MonkeyPatch, max_concurrent: int) -> None:
-    """Invalid concurrency should fail before checking paths or spawning."""
+@pytest.mark.parametrize(
+    ("missing", "message"),
+    [(0, r"TRNRun daemon executable not found: .*missing\.exe"), (1, r"TRNRun executable not found: .*missing\.exe")],
+)
+def test_init_rejects_missing_executables(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    executables: tuple[Path, Path],
+    missing: int,
+    message: str,
+) -> None:
+    """A missing daemon or runner fails early, without spawning."""
     popen = Mock()
     monkeypatch.setattr(process.subprocess, "Popen", popen)
+    daemon, runner = executables
+    if missing == 0:
+        daemon = tmp_path / "missing.exe"
+    else:
+        runner = tmp_path / "missing.exe"
 
-    with pytest.raises(ValueError, match="max_concurrent must be an integer of at least 1"):
-        process.QueueProcess("does-not-matter.exe", max_concurrent, Mock())
-
-    popen.assert_not_called()
-
-
-def test_init_rejects_missing_executable(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """A missing executable should fail without spawning."""
-    popen = Mock()
-    monkeypatch.setattr(process.subprocess, "Popen", popen)
-
-    with pytest.raises(FileNotFoundError, match=r"TRNRun queue executable not found: .*missing\.exe"):
-        process.QueueProcess(tmp_path / "missing.exe", 1, Mock())
+    with pytest.raises(FileNotFoundError, match=message):
+        process.DaemonProcess(daemon, runner, 1)
 
     popen.assert_not_called()
 
 
 def test_init_spawns_configured_process_and_assigns_job(
-    make_queue: Callable[..., Harness],
+    make_daemon: Callable[..., Harness],
     monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
+    executables: tuple[Path, Path],
 ) -> None:
-    """Construction configures text pipes and starts a background reader."""
+    """Construction passes the runner and concurrency, with three text pipes."""
     assign = Mock(return_value=True)
     monkeypatch.setattr(process, "assign_to_job", assign)
-    harness = make_queue()
+    harness = make_daemon()
+    daemon, runner = executables
 
     harness.popen.assert_called_once_with(
-        [str((tmp_path / "trnrunq.exe").absolute()), "--maxConcurrent:3"],
+        [str(daemon.absolute()), f"--trnrun:{runner.absolute()}", "--maxConcurrent:3"],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         encoding="utf-8",
         errors="replace",
         creationflags=process.CREATE_NO_WINDOW,
     )
     assign.assert_called_once_with(harness.child)
-    assert harness.child.stdout.reading.wait(TEST_TIMEOUT)
-    assert harness.queue._reader.is_alive()
-    assert harness.queue._reader.daemon
+    assert harness.child.stdin.getvalue() == '{"cmd":"snapshots"}\n'
 
 
-@pytest.mark.parametrize("failure", ["spawn", "job", "stdin", "stdout", "thread", "start"])
+@pytest.mark.parametrize("missing", ["stdin", "stdout", "stderr"])
+def test_init_missing_pipe_cleans_up_available_resources(
+    monkeypatch: pytest.MonkeyPatch,
+    executables: tuple[Path, Path],
+    missing: str,
+) -> None:
+    """Missing pipes fail construction and release the process and remaining pipes."""
+    streams = {name: io.StringIO() for name in ("stdin", "stdout", "stderr")}
+    child = Mock(**streams)
+    setattr(child, missing, None)
+    monkeypatch.setattr(process.subprocess, "Popen", Mock(return_value=child))
+    assign = Mock(return_value=True)
+    monkeypatch.setattr(process, "assign_to_job", assign)
+
+    with pytest.raises(RuntimeError, match=r"^TRNRun daemon pipes are unavailable$"):
+        process.DaemonProcess(*executables, 1)
+
+    assign.assert_not_called()
+    child.kill.assert_called_once_with()
+    child.wait.assert_called_once_with(timeout=process.SHUTDOWN_TIMEOUT)
+    for name, stream in streams.items():
+        if name != missing:
+            assert stream.closed
+
+
+def test_init_reports_daemon_startup_failure_and_cleans_up(
+    monkeypatch: pytest.MonkeyPatch,
+    executables: tuple[Path, Path],
+) -> None:
+    """A daemon that exits instead of answering fails construction with its diagnostics."""
+    child = Mock(stdin=io.StringIO(), stdout=io.StringIO(), stderr=io.StringIO("'maxConcurrent' must be at least 1\n"))
+    child.returncode = 2
+    monkeypatch.setattr(process.subprocess, "Popen", Mock(return_value=child))
+    monkeypatch.setattr(process, "assign_to_job", Mock(return_value=True))
+
+    with pytest.raises(RuntimeError, match=r"^TRNRun daemon exited with code 2: 'maxConcurrent' must be at least 1$"):
+        process.DaemonProcess(*executables, 0)
+
+    child.kill.assert_called_once_with()
+    assert child.stdin.closed
+    assert child.stdout.closed
+    assert child.stderr.closed
+
+
+@pytest.mark.parametrize("failure", ["spawn", "job"])
 def test_init_failure_releases_acquired_resources(
     monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
+    executables: tuple[Path, Path],
     failure: str,
 ) -> None:
     """Startup failures preserve their cause and release every acquired resource."""
-    executable = tmp_path / "trnrunq.exe"
-    executable.touch()
-    child = Mock(stdin=io.StringIO(), stdout=io.StringIO())
-    output = Mock()
+    child = Mock(stdin=io.StringIO(), stdout=io.StringIO(), stderr=io.StringIO())
     error = RuntimeError("startup failed")
     popen = Mock(return_value=child)
     assign = Mock(return_value=True)
@@ -187,535 +253,324 @@ def test_init_failure_releases_acquired_resources(
     monkeypatch.setattr(process, "assign_to_job", assign)
     if failure == "spawn":
         popen.side_effect = error
-    elif failure == "job":
-        assign.side_effect = error
-    elif failure in {"stdin", "stdout"}:
-        getattr(child, failure).close()
-        setattr(child, failure, None)
-    elif failure == "thread":
-        monkeypatch.setattr(process, "Thread", Mock(side_effect=error))
     else:
-        monkeypatch.setattr(process.Thread, "start", Mock(side_effect=error))
+        assign.side_effect = error
 
     with pytest.raises(RuntimeError) as caught:
-        process.QueueProcess(executable, 1, output)
+        process.DaemonProcess(*executables, 1)
 
-    if failure in {"stdin", "stdout"}:
-        assert str(caught.value) == "TRNRun queue pipes are unavailable"
-    else:
-        assert caught.value is error
+    assert caught.value is error
     if failure == "spawn":
         child.kill.assert_not_called()
         child.wait.assert_not_called()
-        child.stdin.close()
-        child.stdout.close()
     else:
         child.kill.assert_called_once_with()
         child.wait.assert_called_once_with(timeout=process.SHUTDOWN_TIMEOUT)
-        assert child.stdin is None or child.stdin.closed
-        assert child.stdout is None or child.stdout.closed
-    output.assert_not_called()
+        for stream in (child.stdin, child.stdout, child.stderr):
+            assert stream.closed
 
 
-def test_startup_cleanup_preserves_original_exception(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_startup_cleanup_preserves_original_exception(
+    monkeypatch: pytest.MonkeyPatch,
+    executables: tuple[Path, Path],
+) -> None:
     """A cleanup failure must not hide the constructor's actual failure."""
-    executable = tmp_path / "trnrunq.exe"
-    executable.touch()
-    child = Mock(stdin=io.StringIO(), stdout=io.StringIO())
+    child = Mock(stdin=io.StringIO(), stdout=io.StringIO(), stderr=io.StringIO())
     child.kill.side_effect = OSError("kill failed")
-    child.wait.side_effect = subprocess.TimeoutExpired("queue", 5)
     original = RuntimeError("job failed")
     monkeypatch.setattr(process.subprocess, "Popen", Mock(return_value=child))
     monkeypatch.setattr(process, "assign_to_job", Mock(side_effect=original))
 
     with pytest.raises(RuntimeError) as caught:
-        process.QueueProcess(executable, 1, Mock())
+        process.DaemonProcess(*executables, 1)
 
     assert caught.value is original
-    child.wait.assert_called_once()
-    assert child.stdin.closed
-    assert child.stdout.closed
+    child.kill.assert_called_once_with()
 
 
-def test_reader_delivers_lines_in_order_and_closes_at_eof(make_queue: Callable[..., Harness]) -> None:
-    """Output is delivered continuously, unchanged, on one background thread."""
-    threads: list[Thread] = []
-    exited = Mock()
-    harness = make_queue(
-        stdout=io.StringIO('first\n\n{"event":"started"}\nlast'),
-        on_output=lambda _line: threads.append(current_thread()),
-        on_exit=exited,
-    )
-    _join(harness.queue._reader)
-
-    assert harness.output.call_args_list == [call("first\n"), call("\n"), call('{"event":"started"}\n'), call("last")]
-    assert threads == [harness.queue._reader] * 4
-    assert harness.child.stdout.closed
-    exited.assert_called_once_with()
-    assert harness.queue._closing.is_set()
-    assert harness.queue.is_alive
-    with pytest.raises(RuntimeError, match="Cannot send after queue closure"):
-        harness.queue.send({})
-
-
-@pytest.mark.parametrize("failure", ["read", "output", "close"])
-def test_reader_failure_closes_queue_and_reaches_thread_excepthook(
-    make_queue: Callable[..., Harness],
-    monkeypatch: pytest.MonkeyPatch,
-    failure: str,
-) -> None:
-    """Reader failures escape the thread after cleanup, not through shutdown."""
-    errors: list[threading.ExceptHookArgs] = []
-    monkeypatch.setattr(threading, "excepthook", errors.append)
-    error = ValueError("reader failed")
-    stdout = Mock()
-    stdout.readline.side_effect = ["one\n", "two\n", ""]
-    if failure == "read":
-        stdout.readline.side_effect = error
-    elif failure == "close":
-        stdout.close.side_effect = error
-    output = Mock(side_effect=error if failure == "output" else None)
-    exited = Mock()
-    harness = make_queue(stdout=stdout, on_output=output, on_exit=exited)
-    _join(harness.queue._reader)
-
-    exited.assert_called_once_with()
-    assert len(errors) == 1
-    assert errors[0].exc_value is error
-    assert errors[0].thread is harness.queue._reader
-    assert harness.queue._closing.is_set()
-    stdout.close.assert_called_once_with()
-    harness.queue.shutdown()
-    assert harness.child.stdin.closed
-    if failure == "output":
-        output.assert_called_once_with("one\n")
-
-
-def test_send_writes_compact_json_line_and_flushes(make_queue: Callable[..., Harness]) -> None:
-    """Requests use compact, strict, one-line JSON framing."""
+def test_request_writes_compact_json_line_and_returns_reply(make_daemon: Callable[..., Harness]) -> None:
+    """Requests use compact, strict, one-line JSON framing; the reply is decoded."""
     stream = MagicMock()
-    harness = make_queue(stdin=stream)
+    harness = make_daemon(stdin=stream, stdout=ReplyPipe('{"ok":true,"logs":[]}\n'))
 
-    harness.queue.send({"name": "a b", "values": [True, None, 2]})
+    reply = harness.daemon.request({"cmd": "logs", "values": [True, None, 2]})
 
-    assert stream.mock_calls == [call.write('{"name":"a b","values":[true,null,2]}\n'), call.flush()]
+    assert reply == {"ok": True, "logs": []}
+    assert stream.mock_calls == [call.write('{"cmd":"logs","values":[true,null,2]}\n'), call.flush()]
 
 
-def test_send_rejects_nonstandard_nan_without_writing(make_queue: Callable[..., Harness]) -> None:
+def test_request_rejects_nonstandard_nan_without_writing(make_daemon: Callable[..., Harness]) -> None:
     """Invalid JSON numbers fail before any pipe access."""
     stream = MagicMock()
-    harness = make_queue(stdin=stream)
+    harness = make_daemon(stdin=stream)
 
     with pytest.raises(ValueError, match="Out of range float values are not JSON compliant"):
-        harness.queue.send({"value": float("nan")})
+        harness.daemon.request({"value": float("nan")})
 
     stream.write.assert_not_called()
-    stream.flush.assert_not_called()
 
 
-def test_concurrent_sends_serialize_write_and_flush(make_queue: Callable[..., Harness]) -> None:
-    """A second sender cannot write until the first sender's flush completes."""
-    flushing, release, attempting = Event(), Event(), Event()
-    stream = Mock()
-    harness = make_queue(stdin=stream)
-    lock = Lock()
-    observed = MagicMock()
+def test_rejected_request_raises_daemon_message(make_daemon: Callable[..., Harness]) -> None:
+    """An ``ok: false`` reply becomes a ValueError carrying the daemon's error."""
+    harness = make_daemon(stdout=ReplyPipe('{"ok":false,"error":"Deck file not found: x.dck"}\n'))
 
-    def enter() -> None:
-        attempting.set()
-        lock.acquire()
+    with pytest.raises(ValueError, match=r"^Deck file not found: x\.dck$"):
+        harness.daemon.request({"cmd": "add"})
 
-    observed.__enter__.side_effect = enter
-    observed.__exit__.side_effect = lambda *_args: lock.release()
-    harness.queue._write_lock = observed
 
-    def flush() -> None:
-        flushing.set()
-        assert release.wait(TEST_TIMEOUT)
+def test_malformed_reply_raises_value_error(make_daemon: Callable[..., Harness]) -> None:
+    """A reply without ``ok: true`` or an error message still raises a ValueError."""
+    harness = make_daemon(stdout=ReplyPipe('{"simulations":[]}\n'))
 
-    stream.flush.side_effect = flush
-    first, first_errors = _start(lambda: harness.queue.send({"id": 1}))
-    second: Thread | None = None
+    with pytest.raises(ValueError, match=r"^TRNRun daemon sent an invalid reply: \{\"simulations\":\[\]\}$"):
+        harness.daemon.request({"cmd": "snapshots"})
+
+
+@pytest.mark.parametrize("operation", ["write", "flush"])
+def test_broken_pipe_reports_exit_code_and_diagnostics(make_daemon: Callable[..., Harness], operation: str) -> None:
+    """A daemon that closes stdin surfaces its diagnostics, not a raw pipe error."""
+    stdin = Mock()
+    harness = make_daemon(stdin=stdin, stderr=io.StringIO("Fatal daemon error\n"))
+    error = BrokenPipeError("daemon closed stdin")
+    getattr(stdin, operation).side_effect = error
+
+    def wait(*, timeout: float) -> int:
+        del timeout
+        harness.child.returncode = 2
+        return 2
+
+    harness.child.wait.side_effect = wait
+    with pytest.raises(RuntimeError, match=r"^TRNRun daemon exited with code 2: Fatal daemon error$") as caught:
+        harness.daemon.request({"cmd": "snapshots"})
+
+    assert caught.value.__cause__ is error
+
+
+def test_exit_diagnostics_are_read_under_request_lock(make_daemon: Callable[..., Harness]) -> None:
+    """Exit diagnostics cannot race with another request or pipe closure."""
+    stdout = ReplyPipe()
+    stdout.eof()
+    stderr = Mock()
+    harness = make_daemon(stdout=stdout, stderr=stderr)
+
+    def read() -> str:
+        acquired = harness.daemon._lock.acquire(blocking=False)
+        if acquired:
+            harness.daemon._lock.release()
+        assert not acquired, "stderr must be read while holding the request lock"
+        return "Fatal daemon error\n"
+
+    stderr.read.side_effect = read
+    with pytest.raises(RuntimeError, match="Fatal daemon error"):
+        harness.daemon.request({"cmd": "snapshots"})
+
+    stderr.read.assert_called_once_with()
+
+
+def test_eof_reports_exit_code_and_diagnostics(make_daemon: Callable[..., Harness]) -> None:
+    """A daemon that exits mid-request surfaces its stderr diagnostics."""
+    stdout = ReplyPipe()
+    stdout.eof()
+    harness = make_daemon(stdout=stdout, stderr=io.StringIO("Unknown option: --x\n"))
+
+    def wait(*, timeout: float) -> int:
+        del timeout
+        harness.child.returncode = 2
+        return 2
+
+    harness.child.wait.side_effect = wait
+    with pytest.raises(RuntimeError, match=r"^TRNRun daemon exited with code 2: Unknown option: --x$"):
+        harness.daemon.request({"cmd": "snapshots"})
+
+
+def test_concurrent_requests_never_interleave_replies(make_daemon: Callable[..., Harness]) -> None:
+    """A second caller cannot write until the first caller has read its reply."""
+    stdin = Mock()
+    stdout = ReplyPipe()
+    harness = make_daemon(stdin=stdin, stdout=stdout)
+    results: list[object] = []
+    first, first_errors = _start(lambda: results.append(harness.daemon.request({"id": 1})))
+    assert stdout.reading.wait(TEST_TIMEOUT)
+    stdout.reading.clear()
+    second, second_errors = _start(lambda: results.append(harness.daemon.request({"id": 2})))
     try:
-        assert flushing.wait(TEST_TIMEOUT)
-        attempting.clear()
-        second, second_errors = _start(lambda: harness.queue.send({"id": 2}))
-        assert attempting.wait(TEST_TIMEOUT)
-        stream.write.assert_called_once_with('{"id":1}\n')
+        stdin.write.assert_called_once_with('{"id":1}\n')
+        stdout.reply('{"ok":true,"id":1}\n')
+        assert stdout.reading.wait(TEST_TIMEOUT)
+        stdout.reply('{"ok":true,"id":2}\n')
     finally:
-        release.set()
         _join(first)
-        if second is not None:
-            _join(second)
-        harness.queue._write_lock = lock
+        _join(second)
 
     assert not first_errors
     assert not second_errors
-    assert stream.mock_calls == [call.write('{"id":1}\n'), call.flush(), call.write('{"id":2}\n'), call.flush()]
+    assert results == [{"ok": True, "id": 1}, {"ok": True, "id": 2}]
+    assert stdin.write.call_args_list == [call('{"id":1}\n'), call('{"id":2}\n')]
 
 
-@pytest.mark.parametrize("failure", ["write", "flush"])
-def test_send_failure_releases_write_lock(make_queue: Callable[..., Harness], failure: str) -> None:
-    """Pipe failures propagate unchanged without stranding the write lock."""
-    stream = Mock()
-    error = BrokenPipeError("queue exited")
-    getattr(stream, failure).side_effect = error
-    harness = make_queue(stdin=stream)
-
-    with pytest.raises(BrokenPipeError) as caught:
-        harness.queue.send({})
-
-    assert caught.value is error
-    harness.queue.shutdown()
-    stream.close.assert_called_once_with()
-
-
-def test_shutdown_repeats_wait_and_close_with_stdout_owned_by_reader(make_queue: Callable[..., Harness]) -> None:
-    """Sequential shutdowns reap every time, killing only a running child."""
-    stdout = BlockingOutput()
-    stdin = Mock()
-    harness = make_queue(stdin=stdin, stdout=stdout)
+def test_shutdown_kills_before_waiting_for_blocked_request(make_daemon: Callable[..., Harness]) -> None:
+    """Killing the daemon delivers EOF to an in-flight request before pipes close."""
+    stdout = ReplyPipe()
+    harness = make_daemon(stdout=stdout)
+    requester, errors = _start(lambda: harness.daemon.request({"cmd": "snapshots"}))
     assert stdout.reading.wait(TEST_TIMEOUT)
+
+    harness.daemon.shutdown()
+    _join(requester)
+
+    assert len(errors) == 1
+    assert type(errors[0]) is RuntimeError
+    assert str(errors[0]) == "TRNRun daemon was shut down"
+    assert stdout.closed
+    assert harness.child.stdin.closed
+
+
+def test_shutdown_repeats_kill_wait_and_close(make_daemon: Callable[..., Harness]) -> None:
+    """Sequential shutdowns repeat every step, then reject further requests."""
+    stdin = Mock()
+    harness = make_daemon(stdin=stdin)
     operations = Mock()
-    operations.attach_mock(harness.child.poll, "poll")
     operations.attach_mock(harness.child.kill, "kill")
     operations.attach_mock(harness.child.wait, "wait")
     operations.attach_mock(stdin.close, "close")
 
-    harness.queue.shutdown()
-    harness.queue.shutdown()
+    harness.daemon.shutdown()
+    harness.daemon.shutdown()
 
     assert operations.mock_calls == [
-        call.poll(),
         call.kill(),
         call.wait(timeout=process.SHUTDOWN_TIMEOUT),
         call.close(),
-        call.poll(),
-        call.wait(timeout=process.SHUTDOWN_TIMEOUT),
-        call.close(),
-    ]
-    assert stdout.closed_by is harness.queue._reader
-    with pytest.raises(RuntimeError, match="Cannot send after queue closure"):
-        harness.queue.send({})
+    ] * 2
+    with pytest.raises(RuntimeError, match="Cannot send after daemon closure"):
+        harness.daemon.request({})
     stdin.write.assert_not_called()
 
 
-def test_shutdown_kills_before_waiting_for_blocked_sender(make_queue: Callable[..., Harness]) -> None:
-    """Killing the child releases an in-flight write before stdin is closed."""
-    writing, killed = Event(), Event()
-    stream = Mock()
-    harness = make_queue(stdin=stream)
-    error = BrokenPipeError("child killed")
-
-    def write(_line: str) -> None:
-        writing.set()
-        assert killed.wait(TEST_TIMEOUT)
-        raise error
-
-    def kill() -> None:
-        assert harness.queue._closing.is_set()
-        assert writing.is_set()
-        stream.close.assert_not_called()
-        killed.set()
-        harness.child.stdout.eof.set()
-
-    stream.write.side_effect = write
-    harness.child.kill.side_effect = kill
-    sender, errors = _start(lambda: harness.queue.send({"id": 1}))
-    try:
-        assert writing.wait(TEST_TIMEOUT)
-        harness.queue.shutdown()
-    finally:
-        killed.set()
-        _join(sender)
-
-    assert errors == [error]
-    stream.close.assert_called_once_with()
-
-
-def test_waiting_sender_rechecks_closure(make_queue: Callable[..., Harness]) -> None:
-    """A sender already waiting for the write lock cannot write after shutdown starts."""
-    harness = make_queue(stdin=Mock())
-    attempting = Event()
-    lock = Lock()
-    observed = MagicMock()
-
-    def enter() -> None:
-        attempting.set()
-        lock.acquire()
-
-    observed.__enter__.side_effect = enter
-    observed.__exit__.side_effect = lambda *_args: lock.release()
-    harness.queue._write_lock = observed
-    lock.acquire()
-    sender, errors = _start(lambda: harness.queue.send({}))
-    try:
-        assert attempting.wait(TEST_TIMEOUT)
-        harness.queue._closing.set()
-    finally:
-        lock.release()
-        _join(sender)
-        harness.queue._write_lock = lock
-
-    assert len(errors) == 1
-    assert isinstance(errors[0], RuntimeError)
-    harness.child.stdin.write.assert_not_called()
-
-
-def test_shutdown_from_reader_does_not_join_itself(make_queue: Callable[..., Harness]) -> None:
-    """An output callback can initiate shutdown without a self-join failure."""
-    ready = Event()
-    completed = Event()
-
-    def shutdown(_line: str) -> None:
-        assert ready.wait(TEST_TIMEOUT)
-        harness.queue.shutdown()
-        completed.set()
-
-    harness = make_queue(stdout=BlockingOutput("line\n"), on_output=shutdown)
-    ready.set()
-    _join(harness.queue._reader)
-
-    assert completed.is_set()
-    harness.child.kill.assert_called_once_with()
-    harness.child.wait.assert_called_once_with(timeout=process.SHUTDOWN_TIMEOUT)
-    assert harness.child.stdout.closed_by is harness.queue._reader
-
-
-@pytest.mark.parametrize("blocked", ["read", "callback"])
-def test_shutdown_reports_reader_timeout_without_cross_thread_close(
-    make_queue: Callable[..., Harness],
-    monkeypatch: pytest.MonkeyPatch,
-    blocked: str,
-) -> None:
-    """Stalled reads or callbacks produce a timeout; stdout remains reader-owned."""
-    entered, release = Event(), Event()
-
-    def output(_line: str) -> None:
-        entered.set()
-        assert release.wait(TEST_TIMEOUT)
-
-    stdout = BlockingOutput("line\n" if blocked == "callback" else "")
-    harness = make_queue(stdout=stdout, on_output=output)
-    harness.child.kill.side_effect = None
-    assert (entered if blocked == "callback" else stdout.reading).wait(TEST_TIMEOUT)
-    monkeypatch.setattr(process, "SHUTDOWN_TIMEOUT", 0.0)
-    try:
-        with pytest.raises(TimeoutError, match="queue stdout reader"):
-            harness.queue.shutdown()
-        assert not stdout.closed
-        assert harness.child.stdin.closed
-    finally:
-        release.set()
-        stdout.eof.set()
-        _join(harness.queue._reader)
-
-    harness.queue.shutdown()
-    harness.child.kill.assert_called_once_with()
-    assert harness.child.wait.call_args_list == [call(timeout=0.0), call(timeout=0.0)]
-    assert stdout.closed_by is harness.queue._reader
-
-
-def test_shutdown_writer_timeout_can_be_retried(
-    make_queue: Callable[..., Harness],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A stuck writer cannot hang shutdown, and later cleanup can finish."""
-    harness = make_queue()
-    monkeypatch.setattr(process, "SHUTDOWN_TIMEOUT", 0.0)
-    harness.queue._write_lock.acquire()
-    try:
-        with pytest.raises(TimeoutError, match="queue stdin writer"):
-            harness.queue.shutdown()
-        harness.child.kill.assert_called_once_with()
-        harness.child.wait.assert_called_once()
-        assert not harness.child.stdin.closed
-    finally:
-        harness.queue._write_lock.release()
-        _join(harness.queue._reader)
-
-    harness.queue.shutdown()
-    assert harness.child.stdin.closed
-    harness.child.kill.assert_called_once_with()
-    assert harness.child.wait.call_args_list == [call(timeout=0.0), call(timeout=0.0)]
-
-
-def test_shutdown_gives_each_wait_the_full_timeout(
-    make_queue: Callable[..., Harness],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Reaping, taking the write lock, and joining each get five seconds."""
-    harness = make_queue()
-    lock = Mock(wraps=harness.queue._write_lock)
-    join = Mock(wraps=harness.queue._reader.join)
-    monkeypatch.setattr(harness.queue, "_write_lock", lock)
-    monkeypatch.setattr(harness.queue._reader, "join", join)
-
-    harness.queue.shutdown()
-
-    harness.child.wait.assert_called_once_with(timeout=5.0)
-    lock.acquire.assert_called_once_with(timeout=5.0)
-    lock.release.assert_called_once_with()
-    join.assert_called_once_with(timeout=5.0)
-
-
-@pytest.mark.parametrize("returncode_after_timeout", [None, 0])
-def test_shutdown_reap_timeout_can_be_retried(
-    make_queue: Callable[..., Harness],
-    returncode_after_timeout: int | None,
-) -> None:
-    """A failed reap leaves stdin open; a retry polls again and waits again."""
-    harness = make_queue()
-    error = subprocess.TimeoutExpired("queue", 5)
+def test_shutdown_reap_timeout_can_be_retried(make_daemon: Callable[..., Harness]) -> None:
+    """A failed reap leaves stdin open; a retry kills and waits again."""
+    harness = make_daemon()
+    error = subprocess.TimeoutExpired("daemon", 5)
     successful_wait = harness.child.wait.side_effect
 
     def wait(*, timeout: float) -> int:
         if harness.child.wait.call_count == 1:
-            harness.child.poll.return_value = returncode_after_timeout
             raise error
         return successful_wait(timeout=timeout)
 
     harness.child.wait.side_effect = wait
 
     with pytest.raises(subprocess.TimeoutExpired) as caught:
-        harness.queue.shutdown()
+        harness.daemon.shutdown()
 
     assert caught.value is error
-    assert harness.queue._closing.is_set()
+    assert harness.daemon._closing
     assert not harness.child.stdin.closed
-    harness.queue.shutdown()
+    harness.daemon.shutdown()
     assert harness.child.stdin.closed
-    assert harness.child.wait.call_args_list == [
-        call(timeout=process.SHUTDOWN_TIMEOUT),
-        call(timeout=process.SHUTDOWN_TIMEOUT),
-    ]
-    assert harness.child.kill.call_count == (2 if returncode_after_timeout is None else 1)
+    assert harness.child.kill.call_count == 2
 
 
-def test_shutdown_kill_failure_can_be_retried(make_queue: Callable[..., Harness]) -> None:
+def test_shutdown_kill_failure_can_be_retried(make_daemon: Callable[..., Harness]) -> None:
     """Kill errors propagate before reaping, but a later shutdown can finish."""
-    harness = make_queue()
+    harness = make_daemon()
     error = OSError("kill failed")
     kill = harness.child.kill.side_effect
     harness.child.kill.side_effect = error
 
     with pytest.raises(OSError, match="kill failed") as caught:
-        harness.queue.shutdown()
+        harness.daemon.shutdown()
 
     assert caught.value is error
-    assert harness.queue._closing.is_set()
     harness.child.wait.assert_not_called()
     assert not harness.child.stdin.closed
     harness.child.kill.side_effect = kill
-    harness.queue.shutdown()
+    harness.daemon.shutdown()
     harness.child.wait.assert_called_once_with(timeout=process.SHUTDOWN_TIMEOUT)
     assert harness.child.stdin.closed
 
 
 @pytest.mark.parametrize("error_type", [BrokenPipeError, OSError])
-def test_shutdown_suppresses_stdin_close_oserror(
-    make_queue: Callable[..., Harness],
-    error_type: type[OSError],
-) -> None:
-    """An OS error closing stdin does not prevent joining or release of the lock."""
+def test_shutdown_suppresses_close_oserror(make_daemon: Callable[..., Harness], error_type: type[OSError]) -> None:
+    """An OS error closing one pipe does not prevent closing the others or releasing the lock."""
     stream = Mock()
     stream.close.side_effect = error_type("broken input")
-    harness = make_queue(stdin=stream)
+    harness = make_daemon(stdin=stream)
 
-    harness.queue.shutdown()
-    harness.queue.shutdown()
+    harness.daemon.shutdown()
+    harness.daemon.shutdown()
 
     assert stream.close.call_args_list == [call(), call()]
-    assert not harness.queue._reader.is_alive()
+    assert harness.child.stdout.closed
+    assert harness.child.stderr.closed
+    assert harness.daemon._lock.acquire(blocking=False)
+    harness.daemon._lock.release()
 
 
-@pytest.mark.parametrize("returncode", [None, 0, 1, -9])
-def test_is_alive_reflects_process_poll(make_queue: Callable[..., Harness], returncode: int | None) -> None:
-    """Liveness comes from the child, independently of the closing flag."""
-    harness = make_queue()
-    harness.child.poll.return_value = returncode
-
-    assert harness.queue.is_alive is (returncode is None)
-    harness.queue._closing.set()
-    assert harness.queue.is_alive is (returncode is None)
-    assert harness.child.poll.call_args_list == [call(), call()]
-
-
-@pytest.mark.parametrize("returncode", [0, 1])
-def test_shutdown_reaps_already_exited_child_without_killing(
-    make_queue: Callable[..., Harness],
-    returncode: int,
-) -> None:
-    """An exited child is still waited on and its pipes are cleaned up."""
-    harness = make_queue()
-    harness.child.poll.return_value = returncode
-    harness.child.stdout.eof.set()
-
-    harness.queue.shutdown()
-
-    harness.child.kill.assert_not_called()
-    harness.child.wait.assert_called_once_with(timeout=process.SHUTDOWN_TIMEOUT)
-    assert harness.child.stdin.closed
-    assert harness.child.stdout.closed_by is harness.queue._reader
-    assert not harness.queue._reader.is_alive()
-
-
-@pytest.mark.parametrize("raise_in_body", [False, True])
-def test_context_manager_shuts_down_without_suppressing_body_errors(
-    make_queue: Callable[..., Harness],
-    *,
-    raise_in_body: bool,
-) -> None:
-    """Context entry returns the queue; either exit path cleans it up."""
-    harness = make_queue()
-    expectation = pytest.raises(ValueError, match="context body failed") if raise_in_body else nullcontext()
-
-    with expectation, harness.queue as queue:
-        assert queue is harness.queue
-        assert queue.is_alive
-        queue.send({})
-        if raise_in_body:
-            raise ValueError("context body failed")
-
-    harness.child.kill.assert_called_once_with()
-    harness.child.wait.assert_called_once_with(timeout=process.SHUTDOWN_TIMEOUT)
-    assert not harness.queue.is_alive
-    assert harness.child.stdin.closed
-    assert harness.child.stdout.closed_by is harness.queue._reader
-    assert not harness.queue._reader.is_alive()
-
-
-def test_real_subprocess_round_trip_and_cleanup(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Real pipes deliver lines while the child stays alive until owner shutdown."""
+def test_real_subprocess_round_trip_and_cleanup(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Real pipes carry UTF-8 requests and replies until owner shutdown."""
     popen = subprocess.Popen
-    script = 'import sys; print("ready", flush=True); print(sys.stdin.readline(), end="", flush=True); sys.stdin.read()'
+    script = (
+        "import json, sys\n"
+        "for line in sys.stdin:\n"
+        "    print(json.dumps({'ok': True, 'echo': json.loads(line)}), flush=True)\n"
+    )
     monkeypatch.setattr(
         process.subprocess,
         "Popen",
         lambda _args, **kwargs: popen([sys.executable, "-u", "-c", script], **kwargs),
     )
     monkeypatch.setattr(process, "assign_to_job", Mock(return_value=True))
-    ready, echoed = Event(), Event()
-    lines: list[str] = []
+    runner = tmp_path / "trnrun.exe"
+    runner.touch()
 
-    def output(line: str) -> None:
-        lines.append(line)
-        (ready if line == "ready\n" else echoed).set()
-
-    queue = process.QueueProcess(sys.executable, 1, output)
+    daemon = process.DaemonProcess(sys.executable, runner, 1)
     try:
-        assert ready.wait(TEST_TIMEOUT)
-        queue.send({"text": "caf\u00e9"})
-        assert echoed.wait(TEST_TIMEOUT)
-        assert queue.is_alive
-        assert not queue._closing.is_set()
+        assert daemon.request({"text": "café"}) == {"ok": True, "echo": {"text": "café"}}
+        assert daemon._process.poll() is None
     finally:
-        queue.shutdown()
+        daemon.shutdown()
 
-    assert lines == ["ready\n", '{"text":"caf\\u00e9"}\n']
-    assert not queue.is_alive
-    assert queue._process.returncode is not None
-    assert queue._stdin.closed
-    assert queue._process.stdout is not None
-    assert queue._process.stdout.closed
-    assert not queue._reader.is_alive()
+    assert daemon._process.returncode is not None
+    assert daemon._stdin.closed
+    assert daemon._stdout.closed
+
+
+def test_real_daemon_round_trip(tmp_path: Path, fake_trnrun: Path) -> None:
+    """The bundled daemon accepts a run and reports it through snapshot and collect."""
+    deck = tmp_path / "done-a.dck"
+    deck.touch()
+    daemon = process.DaemonProcess(BUNDLED_TRNRUND_PATH, fake_trnrun, 1)
+    try:
+        assert daemon.request({"cmd": "add", "runId": "1", "deckFile": str(deck)}) == {"ok": True}
+        with pytest.raises(ValueError, match="Invalid or duplicate runId: 1"):
+            daemon.request({"cmd": "add", "runId": "1", "deckFile": str(deck)})
+        deadline = monotonic() + TEST_TIMEOUT
+        simulation = daemon.request({"cmd": "snapshot", "runId": "1"})["simulation"]
+        while isinstance(simulation, dict) and simulation["state"] != "FINISHED" and monotonic() < deadline:
+            sleep(0.01)
+            simulation = daemon.request({"cmd": "snapshot", "runId": "1"})["simulation"]
+        assert isinstance(simulation, dict)
+        assert simulation["state"] == "FINISHED"
+        collected = daemon.request({"cmd": "collect", "runId": "1"})
+    finally:
+        daemon.shutdown()
+
+    assert collected["simulation"] == simulation
+    assert simulation["succeeded"] is True
+    assert isinstance(collected["logs"], list)
+    assert len(collected["logs"]) == sum(simulation[name] for name in ("notices", "warnings", "fatals"))
+
+
+@pytest.mark.parametrize(
+    ("max_concurrent", "message"),
+    [
+        (0, "'maxConcurrent' must be at least 1"),
+        (2.5, "invalid integer: 2.5"),
+        (True, "invalid integer: True"),
+    ],
+)
+def test_real_daemon_validates_concurrency(fake_trnrun: Path, max_concurrent: object, message: str) -> None:
+    """The daemon's own validation reaches the constructor."""
+    with pytest.raises(RuntimeError, match=f"^TRNRun daemon exited with code 2: {message}$"):
+        process.DaemonProcess(BUNDLED_TRNRUND_PATH, fake_trnrun, max_concurrent)  # pyright: ignore[reportArgumentType]

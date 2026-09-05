@@ -4,7 +4,7 @@ Run from ``libraries/python`` with::
 
     uv run python -m tests.manual_stress_manager
 
-Requires TRNSYS, Type3830, and the bundled TRNRun/queue executables. The slow
+Requires TRNSYS, Type3830, and the bundled TRNRun/daemon executables. The slow
 fixture also requires its referenced TRNSYS weather file. Edit the configuration
 below for your installation. Deck copies and outputs are retained directly in
 ``tests/runs`` for inspection. This module is deliberately not named ``test_*``
@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 from time import perf_counter
 
-from trnrun import SimulationConfig, SimulationManager
+from trnrun import ProgressDisplay, Simulation, SimulationConfig, SimulationManager
 
 # -----------------------------------------------------------------------------
 # Configuration
@@ -56,18 +56,14 @@ def copy_dck(src: Path, dst_dir: Path, n: int) -> list[Path]:
     return dst_files
 
 
-def run_simulations(dck_files: list[Path]) -> SimulationManager:
+def run_simulations(dck_files: list[Path]) -> list[Simulation]:
     """Submit both workloads to one manager and wait for all runs to finish."""
-    with SimulationManager(
-        max_concurrent=MAX_CONCURRENT,
-        refresh_interval=REFRESH_INTERVAL,
-    ) as manager:
-        for dck in dck_files:
-            _ = manager.add(dck, CONFIG)
-
+    with SimulationManager(max_concurrent=MAX_CONCURRENT) as manager:
+        _ = ProgressDisplay(manager, refresh_interval=REFRESH_INTERVAL)
+        simulations = [manager.add(dck, CONFIG) for dck in dck_files]
         manager.wait()
 
-    return manager
+    return simulations
 
 
 # -----------------------------------------------------------------------------
@@ -75,7 +71,7 @@ def run_simulations(dck_files: list[Path]) -> SimulationManager:
 # -----------------------------------------------------------------------------
 def main() -> int:
     """Prepare the stress workload and return a failing exit code unless all succeed."""
-    CONFIG.validate()
+    _ = CONFIG.to_cli_args()  # Fail on a missing TRNSYS before copying decks.
 
     for source in (FAST_DCK, SLOW_DCK):
         if not source.is_file():
@@ -91,21 +87,23 @@ def main() -> int:
     print(f"Running {FAST_SIM_COUNT:,} fast + {SLOW_SIM_COUNT:,} slow simulations (concurrency: {MAX_CONCURRENT}).")
 
     started = perf_counter()
-    manager = run_simulations(dck_files)
+    simulations = run_simulations(dck_files)
     elapsed = perf_counter() - started
+    failed = [simulation for simulation in simulations if not simulation.succeeded]
 
     print(
         f"Finished in {elapsed:.1f}s: ",
-        f"{len(manager.succeeded):,}/{len(dck_files):,} succeeded, ",
-        f"{len(manager.failed):,} failed.",
+        f"{len(simulations) - len(failed):,}/{len(dck_files):,} succeeded, ",
+        f"{len(failed):,} failed.",
     )
 
-    for simulation in manager.failed:
+    for simulation in failed:
         print(
-            f"FAILED {simulation.deck_path.name}: status={simulation.status}, completion={simulation.completion_event}",
+            f"FAILED {simulation.deck_path.name}: status={simulation.status}, "
+            f"exit_code={simulation.exit_code}, error={simulation.error!r}",
         )
 
-    return 0 if len(manager.succeeded) == len(dck_files) else 1
+    return 0 if not failed else 1
 
 
 if __name__ == "__main__":

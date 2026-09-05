@@ -46,7 +46,7 @@ path = "hatch_build.py"
 packages = ["trnrun"]
 artifacts = [
     "trnrun/bin/trnrun.exe",
-    "trnrun/bin/trnrunq.exe",
+    "trnrun/bin/trnrund.exe",
 ]
 
 [tool.basedpyright]

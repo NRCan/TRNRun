@@ -8,7 +8,7 @@
 
 Thin Python wrapper for running and monitoring
 [TRNSYS](https://www.trnsys.com/) batch simulations. The
-package includes the `trnrun.exe` runner and `trnrunq.exe` queue.
+package includes the `trnrun.exe` runner and `trnrund.exe` daemon.
 
 ## Contents
 
@@ -19,6 +19,9 @@ package includes the `trnrun.exe` runner and `trnrunq.exe` queue.
 - [`SimulationConfig`](#simulationconfig)
 - [`SimulationManager`](#simulationmanager)
 - [`Simulation`](#simulation)
+- [`ProgressDisplay`](#progressdisplay)
+- [Building your own display](#building-your-own-display)
+- [Migrating from 0.6](#migrating-from-06)
 - [Examples](#examples)
 
 ## Requirements
@@ -46,11 +49,12 @@ uv add trnrun
 ## Quick start
 
 ```python
-from trnrun import SimulationConfig, SimulationManager
+from trnrun import ProgressDisplay, SimulationConfig, SimulationManager
 
 config = SimulationConfig()
 
 with SimulationManager(max_concurrent=1) as manager:
+    ProgressDisplay(manager)
     simulation = manager.add(r"C:\path\to\deck.dck", config)
     manager.wait(simulation)
 
@@ -65,27 +69,26 @@ else:
 ```python
 from pathlib import Path
 
-from trnrun import SimulationConfig, SimulationManager
+from trnrun import ProgressDisplay, SimulationConfig, SimulationManager
 
 config = SimulationConfig(watch_tmp=True)
 decks = sorted(Path(r"C:\path\to\decks").glob("*.dck"))
 
 with SimulationManager(max_concurrent=4) as manager:
+    ProgressDisplay(manager)
     simulations = [manager.add(deck, config) for deck in decks]
     manager.wait()
 
-print(f"{len(manager.succeeded)} succeeded, {len(manager.failed)} failed")
+succeeded = [simulation for simulation in simulations if simulation.succeeded]
+print(f"{len(succeeded)} succeeded, {len(simulations) - len(succeeded)} failed")
 ```
 
 ## `SimulationConfig`
 
-`SimulationConfig` defines how one deck is launched and monitored.
+`SimulationConfig` defines how one deck is launched and monitored. The
+`trnrun.exe` runner itself is chosen per [`SimulationManager`](#simulationmanager).
 
-### Executables and window
-
-- _`trnrun_path`_ (`str | Path`, default: bundled `trnrun.exe`)
-
-  Path to the `trnrun.exe` executable.
+### TRNSYS executable and window
 
 - _`trnexe_path`_ (`str | Path`, default:
   `C:\TRNSYS18\Exe\TrnEXE64.exe`)
@@ -190,7 +193,6 @@ from pathlib import Path
 from trnrun import SimulationConfig
 
 config = SimulationConfig(
-    trnrun_path=Path(r"C:\path\to\trnrun.exe"),
     trnexe_path=Path(r"C:\TRNSYS18\Exe\TrnEXE64.exe"),
     gui_visibility="hidden",
     wait_for_gui=True,
@@ -213,7 +215,22 @@ config = SimulationConfig(
 
 ## `SimulationManager`
 
-`SimulationManager` owns one queue process and a background stdout reader.
+`SimulationManager` owns one `trnrund.exe` daemon process and a background
+poller. Its only job is to submit runs and keep their `Simulation` handles
+current; it never prints anything. The daemon runs the simulations and keeps
+their state. The poller asks it about unfinished runs every `poll_interval`
+seconds and right after each submission, fetches only new log entries, and
+collects finished runs so the daemon can release them.
+
+Every `Simulation` returned by `add()` reaches `FINISHED` exactly once, and
+never changes afterwards:
+
+- normally, with the daemon's verdict;
+- with status `ERROR` if the daemon fails, the failure in `manager.error`;
+- with status `CANCELLED` if the manager shuts down first.
+
+Once a run has finished, the manager forgets it: the handle you got from
+`add()` is the only reference left, so keep the handles you need.
 
 ### Parameters
 
@@ -221,20 +238,19 @@ config = SimulationConfig(
   least `1`)
 
   Maximum number of runners that may execute concurrently. Additional
-  submissions wait for a worker.
+  submissions wait in the daemon's queue for a worker.
 
-- _`refresh_interval`_ (`float`, default: `1.0`)
+- _`poll_interval`_ (`float`, default: `0.25`)
 
-  Minimum seconds between display redraws as background events arrive.
-  Set to `0` or a negative value to disable the built-in display.
+  Seconds between daemon polls. Must be positive.
 
-- _`trnrunq_path`_ (`str | Path`, default: bundled `trnrunq.exe`)
+- _`trnrun_path`_ (`str | Path`, default: bundled `trnrun.exe`)
 
-  Path to the `trnrunq.exe` executable.
+  Path to the `trnrun.exe` runner used for every simulation of this manager.
 
-- _`display`_ (`DisplayCallback | None`, default: `None`)
+- _`trnrund_path`_ (`str | Path`, default: bundled `trnrund.exe`)
 
-  Optional custom display, overriding automatic selection.
+  Path to the `trnrund.exe` daemon.
 
 An explicitly configured manager:
 
@@ -245,52 +261,46 @@ from trnrun import SimulationManager
 
 with SimulationManager(
     max_concurrent=4,
-    refresh_interval=1.0,
-    trnrunq_path=Path(r"C:\path\to\trnrunq.exe"),
-    display = None
+    poll_interval=0.25,
+    trnrun_path=Path(r"C:\path\to\trnrun.exe"),
+    trnrund_path=Path(r"C:\path\to\trnrund.exe"),
 ) as manager:
     ...
 ```
 
 ### Methods and properties
 
-- _`submitted`_ (`list[Simulation]`)
-
-  Copy of all tracked live handles in submission order, including pending,
-  running, and completed simulations.
-
-- _`simulations`_ (`list[Simulation]`)
-
-  Copy of the list of queue-accepted live handles, in submission order.
-
 - _`active`_ (`list[Simulation]`)
 
-  Copy of the list of unfinished handles in submission order, including
-  submissions waiting for worker acceptance.
+  Copy of the list of unfinished handles in submission order, including runs
+  still queued for a worker.
 
-- _`succeeded`_ (`list[Simulation]`)
+- _`error`_ (`BaseException | None`)
 
-  List of accepted live handles that completed successfully.
-
-- _`failed`_ (`list[Simulation]`)
-
-  List of live handles that completed without succeeding. Pending and
-  running simulations are not included.
+  The failure that stopped daemon polling, or `None` while polling works.
 
 - _`add(deck_file: str | Path, config: SimulationConfig, *, blocking: bool = True) -> Simulation`_
 
-  Validate and submit `deck_file` using `config`. By default, blocks
-  until a queue worker accepts the request. Pass `blocking=False` to return a
-  live, initially pending `Simulation` immediately after the request is sent.
+  Validate and submit `deck_file` using `config`, and return its live handle.
+  By default, blocks until a daemon worker accepts the run, so a submission
+  loop never queues more runs than the daemon can start. Pass `blocking=False`
+  to return a live, initially queued handle as soon as the daemon has it; do
+  this from a UI thread. Raises `FileNotFoundError` for a missing deck or
+  TRNSYS executable, `ValueError` with the daemon's message if the daemon
+  rejects the run, for example a deck that is not a `.dck` or `.trd` file, and
+  `RuntimeError` once the manager is closed or polling stopped, including
+  while waiting for a worker.
 
-- _`wait(simulation: Simulation | None = None) -> None`_
+- _`wait(*simulations: Simulation) -> None`_
 
-  With no argument, wait until no submissions remain outstanding, including
-  submissions waiting for acceptance. Pass a `Simulation` to return when that run completes.
+  Block until the given simulations have finished, or with no argument,
+  until no run is unfinished. Raises `RuntimeError` if the manager is closed or
+  polling stopped; its cause is `error`.
 
 - _`shutdown() -> None`_
 
-  Shutdown the manager.
+  Stop the daemon. Unfinished simulations finish as `CANCELLED`, then attached
+  progress displays print them and close.
 
 Example manager workflow with every method and property:
 
@@ -303,17 +313,15 @@ manager = SimulationManager(max_concurrent=2)
 try:
     first = manager.add(r"C:\path\to\first.dck", config)
     second = manager.add(r"C:\path\to\second.dck", config)
+    print(f"Unfinished: {len(manager.active)}")
 
     manager.wait(first)
     print(f"First status: {first.snapshot().status}")
 
     manager.wait()
-    print(f"Submitted: {len(manager.submitted)}")
-    print(f"Simulations: {len(manager.simulations)}")
-    print(f"Succeeded: {len(manager.succeeded)}")
-    print(f"Failed: {len(manager.failed)}")
     print(f"First succeeded: {first.succeeded}")
     print(f"Second succeeded: {second.succeeded}")
+    print(f"Polling error: {manager.error}")
 
 finally:
     manager.shutdown()
@@ -322,7 +330,7 @@ finally:
 ## `Simulation`
 
 `SimulationManager.add()` returns a live `Simulation` for one run. The manager
-updates it as queue events arrive; inspect it rather than updating it yourself.
+updates it from each daemon poll; inspect it rather than updating it yourself.
 Individual properties are synchronized, but separate reads may reflect different
 moments. Use `snapshot()` when you need a consistent set of fields.
 
@@ -330,7 +338,7 @@ moments. Use `snapshot()` when you need a consistent set of fields.
 
 - _`id`_ (`int`)
 
-  Manager-assigned simulation identifier. The queue uses its string form as the
+  Manager-assigned simulation identifier. The daemon uses its string form as the
   run ID.
 
 - _`deck_path`_ (`Path`)
@@ -341,15 +349,21 @@ moments. Use `snapshot()` when you need a consistent set of fields.
 
   Independent copy of the configuration used for this run.
 
+- _`state`_ (`SimulationState`)
+
+  Daemon lifecycle: `QUEUED`, `ACCEPTED`, `RUNNING`, then `FINISHED` once the
+  runner has exited or failed to launch, or the manager gave up on the run.
 
 - _`status`_ (`SimulationStatus | None`)
 
-  Latest runner status, or `None` before the first status event.
+  Latest runner status, or `None` before the first status event. A finished run
+  always has one, because the daemon reports `ERROR` if the runner exited
+  without a terminal status.
 
 - _`status_event`_ (`StatusEvent | None`)
 
-  Latest status event, including its `timestamp` and optional `message`, or
-  `None` before the first status event.
+  Latest status event, including its optional `message`, or `None` before the
+  first status event.
 
 - _`progress`_ (`ProgressEvent | None`)
 
@@ -366,35 +380,37 @@ moments. Use `snapshot()` when you need a consistent set of fields.
   `trnrun.exe` settings reported when the simulation starts, or `None` before they
   are received.
 
-- _`completion_event`_ (`QueueEvent | None`)
+- _`exit_code`_ (`int | None`)
 
-  Queue completion metadata, including `exit_code`, or `None` until the queue
-  finishes the request. `exit_code` is `None` if the runner could not be launched.
+  Runner exit code, or `None` until it exits or if it could not be launched.
+
+- _`error`_ (`str`)
+
+  Execution error reported by the daemon, such as a launch failure, or the
+  reason the manager finished the run itself; otherwise `""`.
 
 - _`logs`_ (`list[LogEvent]`)
 
   Copy of all log events in arrival order. The complete history stays in memory
-  for the lifetime of the simulation object; no events are evicted.
-
+  for the lifetime of the simulation object; no events are evicted. New logs are
+  fetched with each poll, and a finished run has all of them.
 
 - _`is_running`_ (`bool`)
 
-  Whether the simulation is pending or running and has not received queue
-  completion.
+  Whether the simulation is queued or running.
 
 - _`is_accepted`_ (`bool`)
 
-  Whether a queue worker has accepted the request.
+  Whether a daemon worker has accepted the run, meaning `state` is past `QUEUED`.
 
 - _`is_finished`_ (`bool`)
 
-  Whether the queue has reported completion for the request.
+  Whether `state` is `FINISHED`.
 
 - _`succeeded`_ (`bool`)
 
-  Whether the queue completed the request and the latest runner status is
-  `SimulationStatus.DONE`.
-
+  Whether the run finished with status `SimulationStatus.DONE`, exit code `0`,
+  and no daemon error.
 
 - _`log_count`_ (`int`)
 
@@ -414,9 +430,12 @@ moments. Use `snapshot()` when you need a consistent set of fields.
 
 - _`snapshot() -> SimulationSnapshot`_
 
-  Immutable, per-simulation view of `id`, `deck_path`, `status`, `progress`,
-  `config_event`, `is_accepted`, `is_finished`, and the log counters. It also
-  provides `is_running` and `succeeded`.
+  Immutable, coherent view of `id`, `deck_path`, `state`, `succeeded`,
+  `status`, `message` (the status message), `exit_code`, `error`, `progress`,
+  `config_event`, and the log counters, without copying the logs. It also
+  provides `is_accepted`, `is_finished`, and `is_running`. `revision` increases
+  with every change, so an unchanged revision means nothing needs redrawing.
+  The first finished snapshot is the final one.
 
 An example inspecting every property:
 
@@ -430,6 +449,7 @@ with SimulationManager(max_concurrent=1) as manager:
 print(f"ID: {simulation.id}")
 print(f"Deck: {simulation.deck_path}")
 print(f"Config: {simulation.config}")
+print(f"State: {simulation.state}")
 print(f"Running: {simulation.is_running}")
 print(f"Accepted: {simulation.is_accepted}")
 print(f"Finished: {simulation.is_finished}")
@@ -439,7 +459,8 @@ print(f"Status event: {simulation.status_event}")
 print(f"Progress: {simulation.progress}")
 print(f"Simulation config event: {simulation.config_event}")
 print(f"Runner settings: {simulation.setting_event}")
-print(f"Queue completion: {simulation.completion_event}")
+print(f"Exit code: {simulation.exit_code}")
+print(f"Daemon error: {simulation.error}")
 print(f"Logs: {simulation.logs}")
 print(f"Log count: {simulation.log_count}")
 print(f"Notices: {simulation.notices}")
@@ -448,78 +469,140 @@ print(f"Fatals: {simulation.fatals}")
 print(f"Snapshot: {simulation.snapshot()}")
 ```
 
-## Custom display
+## `ProgressDisplay`
 
-### Using Callback
-Pass an object with `simulation_started`, `simulation_finished`, `refresh`, and
-`close` methods as `display`.
+`ProgressDisplay(manager)` shows live progress of a manager's runs in a
+terminal, or in a Jupyter notebook when running inside a kernel. It redraws
+from its own background thread, so it never blocks: submit runs, do other
+work, and call `manager.wait()` only if you want to block.
+
+It follows only runs a daemon worker has accepted: those already running when
+it is created, and every other run once a worker accepts it. Queued runs are
+never followed, so its cost depends on `max_concurrent`, not on how many runs
+you submit: with 10,000 submissions and four workers, it draws four lines.
+Each redraw prints every newly finished run once, as a final line, and
+redraws the running ones below. Rendering failures are logged to the
+`trnrun.display` logger and never affect the runs.
+
+The manager closes the display when it shuts down, after cancelling unfinished
+runs, so final lines are printed for the runs that had started; runs still
+queued are not printed. Call `close()`, or use it as a context manager, to
+stop it earlier; runs still unfinished at that point are no longer shown.
+
+### Parameters
+
+- _`manager`_ (`SimulationManager`)
+
+  Open manager whose runs to show.
+
+- _`refresh_interval`_ (`float`, default: `1.0`)
+
+  Seconds between redraws. Must be positive.
+
+- _`renderer`_ (`Renderer | None`, default: `None`)
+
+  Output surface. By default a `NotebookRenderer` inside a Jupyter kernel,
+  otherwise a `TerminalRenderer`, both from `trnrun.display`.
 
 ```python
-from time import monotonic
-
-from trnrun import SimulationConfig, SimulationManager
-
-
-class ProgressDisplay:
-    def __init__(self):
-        self.active = {}
-        self.last_print = 0.0
-
-    def simulation_started(self, simulation):
-        self.active[simulation.id] = simulation
-        self.refresh()
-
-    def simulation_finished(self, simulation):
-        self.active.pop(simulation.id, None)
-        state = simulation.snapshot()
-        print(f"[{state.id}] {state.deck_path.name}: {state.status or 'unknown'}")
-
-    def refresh(self):
-        now = monotonic()
-        if now - self.last_print < 1.0:
-            return
-        self.last_print = now
-        for simulation in self.active.values():
-            state = simulation.snapshot()
-            progress = f"{state.progress.percent:.0%}" if state.progress else "no progress yet"
-            print(f"[{state.id}] {state.deck_path.name}: {progress}")
-
-    def close(self):
-        self.active.clear()
-
+from trnrun import ProgressDisplay, SimulationConfig, SimulationManager
 
 config = SimulationConfig(watch_tmp=True)
-with SimulationManager(max_concurrent=2, display=ProgressDisplay()) as manager:
+with SimulationManager(max_concurrent=2) as manager:
+    ProgressDisplay(manager, refresh_interval=0.5)
     for deck in (r"C:\path\to\first.dck", r"C:\path\to\second.dck"):
-        manager.add(deck, config, blocking=False)
+        manager.add(deck, config)
     manager.wait()
 ```
 
-### Using Snapshot
+## Building your own display
 
-To print every second even without new events, poll the live `Simulation`
-handles yourself. Disable the built-in display with `refresh_interval=0`.
+`SimulationManager` prints nothing on its own, so a GUI or any other display
+just reads the handles. Keep the handles from `add()`, and read each one with
+`snapshot()` from a timer on your UI thread. A snapshot never waits on the
+daemon. Once a snapshot is finished, it is final: show the outcome, then drop
+the handle.
 
 ```python
-from time import sleep
+import tkinter as tk
+from tkinter import ttk
 
-from trnrun import SimulationConfig, SimulationManager
+from trnrun import Simulation, SimulationConfig, SimulationManager
 
 config = SimulationConfig(watch_tmp=True)
-with SimulationManager(max_concurrent=2, refresh_interval=0) as manager:
-    simulations = [
-        manager.add(deck, config, blocking=False)
-        for deck in (r"C:\path\to\first.dck", r"C:\path\to\second.dck")
-    ]
-    while True:
-        snapshots = [simulation.snapshot() for simulation in simulations]
-        for state in snapshots:
-            progress = f"{state.progress.percent:.0%}" if state.progress else "no progress yet"
-            print(f"[{state.id}] {state.deck_path.name}: {progress} ({state.status})")
-        if all(state.is_finished for state in snapshots):
-            break
-        sleep(1)
+manager = SimulationManager(max_concurrent=2)
+root = tk.Tk()
+rows: dict[int, tuple[Simulation, ttk.Label, ttk.Progressbar]] = {}
+
+
+def submit(deck: str) -> None:
+    simulation = manager.add(deck, config, blocking=False)  # Returns at once, even while queued.
+    label = ttk.Label(root, text=simulation.deck_path.name)
+    bar = ttk.Progressbar(root, maximum=1.0, length=300)
+    label.pack()
+    bar.pack()
+    rows[simulation.id] = (simulation, label, bar)
+
+
+def tick() -> None:
+    for sim_id, (simulation, label, bar) in list(rows.items()):
+        state = simulation.snapshot()
+        if state.progress is not None:
+            bar["value"] = state.progress.percent
+        label["text"] = f"{state.deck_path.name}: {state.status or 'queued'}"
+        if state.is_finished:  # Final, and seen exactly once.
+            outcome = "done" if state.succeeded else state.error or state.message or state.status
+            label["text"] = f"{state.deck_path.name}: {outcome}"
+            del rows[sim_id]
+    root.after(500, tick)
+
+
+def close() -> None:
+    manager.shutdown()  # Unfinished runs finish as CANCELLED.
+    root.destroy()
+
+
+for deck in (r"C:\path\to\first.dck", r"C:\path\to\second.dck"):
+    submit(deck)
+tick()
+root.protocol("WM_DELETE_WINDOW", close)
+root.mainloop()
 ```
+
+Guidelines:
+
+- Never call `wait()` from a UI thread; poll snapshots instead.
+- Call `add(..., blocking=False)`: it makes one quick request to the daemon,
+  and raises at once for a missing or rejected deck. The default blocks until
+  a worker is free.
+- Skip redrawing a row when its snapshot's `revision` has not changed.
+- If the daemon fails, every unfinished run finishes as `ERROR`, so rows
+  complete on their own; show `manager.error` once, for example as a banner.
+- Call `shutdown()` when the window closes.
+
+## Migrating from 0.6
+
+Version 0.7 replaces the `trnrunq.exe` queue with the `trnrund.exe` daemon,
+and separates the progress display from the manager.
+
+- `SimulationConfig.trnrun_path` moved to `SimulationManager(trnrun_path=...)`,
+  because one daemon runs every simulation with the same runner.
+- `SimulationManager(trnrunq_path=...)` is now `trnrund_path=...`.
+- `SimulationManager(refresh_interval=..., display=...)` were removed. Create
+  a `ProgressDisplay(manager)` for the built-in display, or read handles with
+  `snapshot()` for your own; display callbacks no longer exist.
+- `submitted`, `simulations`, `succeeded`, and `failed` were removed, because
+  the manager forgets finished runs. Keep the handles returned by `add()`.
+- `wait()` accepts several simulations.
+- On shutdown, unfinished runs finish as `CANCELLED` instead of keeping their
+  last polled state. If the daemon fails, they finish as `ERROR`, and the
+  failure is available as `manager.error`.
+- `Simulation.completion_event` and `QueueEvent` were removed. Use
+  `Simulation.state`, `exit_code`, and `error` instead.
+- Events no longer have a `timestamp`.
+- `succeeded` now also requires exit code `0` and no daemon error.
+- If the daemon rejects a deck, `add()` raises `ValueError` instead of
+  the run finishing as a failure.
 
 ## Examples
 

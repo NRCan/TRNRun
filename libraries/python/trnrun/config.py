@@ -9,10 +9,10 @@ from pathlib import Path
 # -----------------------------------------------------------------
 # Constants
 # -----------------------------------------------------------------
-# Queue and runner executables are bundled inside this package under `bin/`.
+# Daemon and runner executables are bundled inside this package under `bin/`.
 _PACKAGE_DIR = Path(__file__).resolve().parent
 BUNDLED_TRNRUN_PATH = _PACKAGE_DIR / "bin" / "trnrun.exe"
-BUNDLED_TRNRUNQ_PATH = _PACKAGE_DIR / "bin" / "trnrunq.exe"
+BUNDLED_TRNRUND_PATH = _PACKAGE_DIR / "bin" / "trnrund.exe"
 
 DEFAULT_TRNEXE_PATH = Path(r"C:\TRNSYS18\Exe\TrnEXE64.exe")
 
@@ -24,9 +24,11 @@ DEFAULT_TRNEXE_PATH = Path(r"C:\TRNSYS18\Exe\TrnEXE64.exe")
 class SimulationConfig:
     r"""Configuration used to launch TRNRun.
 
-    Except for `trnrun_path`, each field maps to a `trnrun.exe` command-line
-    flag (noted below as `--flag`). Flags are passed as `--name:value`.
-    Relative executable paths are interpreted from Python's working directory.
+    Each field maps to a `trnrun.exe` command-line flag (noted below as
+    `--flag`). Flags are passed as `--name:value`. The `trnrun.exe` executable
+    itself is chosen per `SimulationManager`, since one daemon runs every
+    simulation with the same runner. Relative executable paths are
+    interpreted from Python's working directory.
     These defaults mirror trnrun's own CLI defaults: the detection timeout is
     300 seconds, the
     watch/stall timeouts are `0` (unlimited/disabled), progress tracking
@@ -35,9 +37,6 @@ class SimulationConfig:
 
     Attributes
     ----------
-    trnrun_path : str or Path, default `BUNDLED_TRNRUN_PATH`
-        Path to the `trnrun.exe` executable to invoke. Defaults to the copy
-        bundled with this package.
     trnexe_path : str or Path, default `DEFAULT_TRNEXE_PATH`
         Path to the TRNSYS executable (`TrnEXE64.exe` or `TrnEXE.exe`),
         passed as `--trnexePath`. trnrun's own fallback is
@@ -114,11 +113,11 @@ class SimulationConfig:
     -----
     Boolean fields require actual booleans, not strings or integers. The native
     runner parses other options and clamps negative timeouts and delays to zero.
-    Stall detection is inactive unless `watch_tmp=True`. `validate()` checks
-    executable files; `SimulationManager` calls it before submission.
+    Stall detection is inactive unless `watch_tmp=True`. `to_cli_args()`
+    checks that the TRNSYS executable exists, so `SimulationManager.add()`
+    fails fast instead of every run failing.
     """
 
-    trnrun_path: str | Path = BUNDLED_TRNRUN_PATH
     trnexe_path: str | Path = DEFAULT_TRNEXE_PATH
     gui_visibility: str = "hidden"
     wait_for_gui: bool = True
@@ -137,37 +136,30 @@ class SimulationConfig:
     severity: str = "Notice"
     write_events: bool = False
 
-    def validate(self) -> None:
-        """Check both executable files, then store their absolute paths.
+    def to_cli_args(self) -> list[str]:
+        """Return unquoted argv entries, with `trnexe_path` made absolute.
+
+        Does not mutate the configuration. Boolean values are checked here to
+        avoid silently coercing strings.
 
         Raises
         ------
         FileNotFoundError
-            If `trnrun_path` or `trnexe_path` is not a file.
-        """
-        runner = Path(self.trnrun_path).absolute()
-        trnexe = Path(self.trnexe_path).absolute()
-        if not runner.is_file():
-            raise FileNotFoundError(f"TRNRun executable not found: {runner}")
-        if not trnexe.is_file():
-            raise FileNotFoundError(f"TrnEXE executable not found: {trnexe}")
-        # The queue resolves relative runner paths beside itself, not from our cwd.
-        self.trnrun_path = runner
-        self.trnexe_path = trnexe
-
-    def to_cli_args(self) -> list[str]:
-        """Return unquoted argv entries; call `validate()` before launching.
-
-        Does not mutate the configuration or require installed executables.
-        Boolean values are checked here to avoid silently coercing strings.
+            If `trnexe_path` is not a file.
+        TypeError
+            If a boolean field holds another type.
         """
         def boolean(value: object) -> str:
             if type(value) is not bool:
                 raise TypeError(f"Expected a boolean, got {value!r}")
             return "true" if value else "false"
 
+        trnexe = Path(self.trnexe_path).absolute()
+        if not trnexe.is_file():
+            raise FileNotFoundError(f"TrnEXE executable not found: {trnexe}")
+
         return [
-            f"--trnexePath:{Path(self.trnexe_path).absolute()}",
+            f"--trnexePath:{trnexe}",
             f"--guiVisibility:{self.gui_visibility}",
             f"--waitForGui:{boolean(self.wait_for_gui)}",
             f"--waitForLst:{boolean(self.wait_for_lst)}",

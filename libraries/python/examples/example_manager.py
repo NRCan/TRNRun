@@ -5,7 +5,7 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
-from trnrun import SimulationConfig, SimulationManager
+from trnrun import ProgressDisplay, Simulation, SimulationConfig, SimulationManager
 
 # -----------------------------------------------------------------------------
 # Configuration
@@ -42,16 +42,13 @@ def copy_dck(src: Path | str, dst_dir: Path | str, n: int) -> list[Path]:
 # -----------------------------------------------------------------------------
 # Run
 # -----------------------------------------------------------------------------
-def run_simulations(dck_files: list[Path]) -> SimulationManager:
-    """Launch one simulation per deck and block until all have finished."""
-    with SimulationManager(
-        max_concurrent=MAX_CONCURRENT,
-        refresh_interval=REFRESH_INTERVAL,
-    ) as manager:
-        for dck in dck_files:
-            _ = manager.add(dck, CONFIG)
+def run_simulations(dck_files: list[Path]) -> list[Simulation]:
+    """Launch one simulation per deck, showing progress, and block until all have finished."""
+    with SimulationManager(max_concurrent=MAX_CONCURRENT) as manager:
+        _ = ProgressDisplay(manager, refresh_interval=REFRESH_INTERVAL)
+        simulations = [manager.add(dck, CONFIG, blocking=False) for dck in dck_files]
         manager.wait()
-    return manager
+    return simulations
 
 
 # -----------------------------------------------------------------------------
@@ -60,7 +57,9 @@ def run_simulations(dck_files: list[Path]) -> SimulationManager:
 def main() -> None:
     """Create, submit, and optionally clean up example decks."""
     dck_files = copy_dck(MASTER_DCK, DCK_FOLDER, n=SIM_COUNT)
-    _ = run_simulations(dck_files)
+    simulations = run_simulations(dck_files)
+    succeeded = sum(simulation.succeeded for simulation in simulations)
+    print(f"{succeeded}/{len(simulations)} succeeded")
 
 if __name__ == "__main__":
     main()

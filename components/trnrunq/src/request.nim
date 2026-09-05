@@ -13,7 +13,6 @@ type RunRequest* = object
   runnerPath*: string ## Runner executable used for this request.
   runnerArgs*: seq[string] ## Extra arguments forwarded to the runner.
 
-
 proc requireString(node: JsonNode, key: string): string =
   ## Returns `key` from `node`.
   ##

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from trnrun.config import BUNDLED_TRNRUN_PATH, DEFAULT_TRNEXE_PATH, SimulationConfig
+from trnrun.config import DEFAULT_TRNEXE_PATH, SimulationConfig
 
 BOOLEAN_FIELDS = (
     "wait_for_gui",
@@ -23,7 +23,6 @@ def test_defaults_match_runner_defaults() -> None:
     config = SimulationConfig()
 
     assert vars(config) == {
-        "trnrun_path": BUNDLED_TRNRUN_PATH,
         "trnexe_path": DEFAULT_TRNEXE_PATH,
         "gui_visibility": "hidden",
         "wait_for_gui": True,
@@ -44,10 +43,16 @@ def test_defaults_match_runner_defaults() -> None:
     }
 
 
-def test_to_cli_args_serializes_every_option(tmp_path: Path) -> None:
-    trnexe_path = tmp_path / "TRNSYS executable.exe"
+@pytest.fixture
+def trnexe(tmp_path: Path) -> Path:
+    path = tmp_path / "TRNSYS executable.exe"
+    path.touch()
+    return path
+
+
+def test_to_cli_args_serializes_every_option(trnexe: Path) -> None:
+    trnexe_path = trnexe
     config = SimulationConfig(
-        trnrun_path="custom-runner.exe",
         trnexe_path=trnexe_path,
         gui_visibility="minAuto",
         wait_for_gui=False,
@@ -86,59 +91,39 @@ def test_to_cli_args_serializes_every_option(tmp_path: Path) -> None:
         "--severity:Fatal",
         "--writeEvents:true",
     ]
-    assert config.trnrun_path == "custom-runner.exe"
     assert config.trnexe_path == trnexe_path
 
 
 @pytest.mark.parametrize("field", BOOLEAN_FIELDS)
-def test_to_cli_args_rejects_non_boolean_values(field: str) -> None:
-    config = SimulationConfig()
+def test_to_cli_args_rejects_non_boolean_values(trnexe: Path, field: str) -> None:
+    config = SimulationConfig(trnexe_path=trnexe)
     setattr(config, field, 1)
 
     with pytest.raises(TypeError, match="Expected a boolean, got 1"):
         _ = config.to_cli_args()
 
 
-def test_validate_accepts_files_and_stores_absolute_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    runner = tmp_path / "runner.exe"
-    trnexe = tmp_path / "trnexe.exe"
-    runner.touch()
-    trnexe.touch()
-    monkeypatch.chdir(tmp_path)
-    config = SimulationConfig(trnrun_path=runner.name, trnexe_path=trnexe.name)
-
-    config.validate()
-
-    assert config.trnrun_path == runner.absolute()
-    assert config.trnexe_path == trnexe.absolute()
-    assert isinstance(config.trnrun_path, Path)
-    assert isinstance(config.trnexe_path, Path)
-
-
-def test_validate_reports_missing_runner_first(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.chdir(tmp_path)
-    config = SimulationConfig(trnrun_path="missing-runner.exe", trnexe_path="missing-trnexe.exe")
-
-    with pytest.raises(FileNotFoundError) as exc_info:
-        config.validate()
-
-    assert exc_info.value.args == (f"TRNRun executable not found: {tmp_path / 'missing-runner.exe'}",)
-    assert config.trnrun_path == "missing-runner.exe"
-    assert config.trnexe_path == "missing-trnexe.exe"
-
-
-def test_validate_reports_missing_trnexe_without_mutating_paths(
-    tmp_path: Path,
+def test_to_cli_args_resolves_relative_trnexe_without_mutating(
+    trnexe: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    runner = tmp_path / "runner.exe"
-    runner.touch()
+    monkeypatch.chdir(trnexe.parent)
+    config = SimulationConfig(trnexe_path=trnexe.name)
+
+    assert config.to_cli_args()[0] == f"--trnexePath:{trnexe.absolute()}"
+    assert config.trnexe_path == trnexe.name
+
+
+def test_to_cli_args_reports_missing_trnexe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
-    config = SimulationConfig(trnrun_path=runner.name, trnexe_path="missing-trnexe.exe")
+    config = SimulationConfig(trnexe_path="missing-trnexe.exe")
 
     with pytest.raises(FileNotFoundError) as exc_info:
-        config.validate()
+        _ = config.to_cli_args()
 
     assert exc_info.value.args == (f"TrnEXE executable not found: {tmp_path / 'missing-trnexe.exe'}",)
-    assert config.trnrun_path == runner.name
-    assert config.trnexe_path == "missing-trnexe.exe"
+
+
+def test_trnrun_path_is_chosen_per_manager() -> None:
+    with pytest.raises(TypeError, match="trnrun_path"):
+        _ = SimulationConfig(trnrun_path="trnrun.exe")  # pyright: ignore[reportCallIssue]

@@ -1,27 +1,18 @@
-"""Typed runner and queue events emitted on stdout, and their parsers.
+"""Typed runner events and daemon simulation state, and their parsers.
 
-TRNRun writes one JSON object per line. ``parse_event`` turns a single
-line into a typed event, which is also how a ``--writeEvents`` ``.jsonl``
-file is read back. Queue lifecycle objects are one more ``kind`` in
-``TrnRunEvent`` and go through the same parser. ``parse_stream_line``
-decodes the merged queue stdout stream, where runner and queue events
-arrive interleaved and tagged with a ``runId``.
+The daemon folds each simulation's TRNRun events into one state object, which
+nests the latest event of each kind without its ``kind`` tag or timestamp.
+``parse_simulation_update`` and ``parse_log`` decode its replies.
 """
+
+# pyright: reportAny=false
 
 from __future__ import annotations
 
-import json
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Final
-
-
-# -----------------------------------------------------------------
-# Exceptions
-# -----------------------------------------------------------------
-class EventParseError(ValueError):
-    """Raised when a runner or queue event cannot be parsed."""
+from typing import Any
 
 
 # -----------------------------------------------------------------
@@ -48,14 +39,11 @@ class StatusEvent:
     ----------
     status : SimulationStatus
         State reported by TRNRun.
-    timestamp : str
-        Timestamp attached to the event by TRNRun.
     message : str
         Optional outcome or failure detail reported by TRNRun.
     """
 
     status: SimulationStatus
-    timestamp: str
     message: str = ""
 
 
@@ -73,15 +61,12 @@ class ProgressEvent:
         Wall-clock milliseconds elapsed since the run started.
     eta_ms : float
         Estimated wall-clock milliseconds remaining.
-    timestamp : str
-        Timestamp attached to the event by TRNRun.
     """
 
     time: float
     percent: float
     elapsed_ms: float
     eta_ms: float
-    timestamp: str
 
 
 @dataclass(frozen=True)
@@ -96,14 +81,11 @@ class ConfigEvent:
         Simulation stop time.
     step : float
         Simulation time step.
-    timestamp : str
-        Timestamp attached to the event by TRNRun.
     """
 
     start: float
     stop: float
     step: float
-    timestamp: str
 
 
 @dataclass(frozen=True)
@@ -114,7 +96,6 @@ class SettingEvent:
     Protocol metadata such as ``kind`` and ``seq`` is not retained.
     """
 
-    timestamp: str
     trnexe_path: str
     gui_visibility: str
     wait_for_gui: bool
@@ -138,15 +119,13 @@ class SettingEvent:
 class LogEvent:
     """A LOG event carrying a severity-tagged message.
 
-    Only ``severity`` and ``timestamp`` are guaranteed; the remaining
+    Only ``severity`` is guaranteed; the remaining
     fields depend on what TRNRun attaches to the message.
 
     Attributes
     ----------
     severity : str
         Severity tag: ``"Notice"``, ``"Warning"`` or ``"Fatal"``.
-    timestamp : str
-        Timestamp attached to the event by TRNRun.
     time : float or None
         Simulation time at which the message was produced.
     unit_id : int or None
@@ -162,7 +141,6 @@ class LogEvent:
     """
 
     severity: str
-    timestamp: str
     time: float | None = None
     unit_id: int | None = None
     type_id: int | None = None
@@ -171,270 +149,145 @@ class LogEvent:
     information: str | None = None
 
 
+# -----------------------------------------------------------------
+# Daemon State
+# -----------------------------------------------------------------
+class SimulationState(StrEnum):
+    """Daemon-owned lifecycle, independent of the runner-reported status.
+
+    ``QUEUED → ACCEPTED → RUNNING → FINISHED``. A run whose runner fails to
+    launch goes from ``ACCEPTED`` to ``FINISHED``.
+    """
+
+    QUEUED = "QUEUED"
+    ACCEPTED = "ACCEPTED"
+    RUNNING = "RUNNING"
+    FINISHED = "FINISHED"
+
+
 @dataclass(frozen=True)
-class QueueEvent:
-    """Queue admission or completion after all child output.
+class SimulationUpdate:
+    """Daemon state for one simulation: its ``simulation`` reply object.
 
-    ``exit_code`` is None for acceptance, or when runner resolution or
-    launch failed before completion.
+    Logs are not part of it; the daemon sends them separately.
+
+    Attributes
+    ----------
+    state : SimulationState
+        Daemon lifecycle state.
+    exit_code : int or None
+        Runner exit code, or None until it exits or if it never launched.
+    error : str
+        Execution error reported by the daemon, independent of runner status.
+    succeeded : bool
+        Whether the run finished with ``DONE``, exit code 0, and no error.
+    setting, status, config, progress
+        Latest event of each kind, or None before the runner reports one.
+    notices, warnings, fatals
+        Number of log entries the daemon holds, by severity.
     """
 
-    event: str
-    run_id: str
-    timestamp: str
+    state: SimulationState
     exit_code: int | None = None
+    error: str = ""
+    succeeded: bool = False
+    setting: SettingEvent | None = None
+    status: StatusEvent | None = None
+    config: ConfigEvent | None = None
+    progress: ProgressEvent | None = None
+    notices: int = 0
+    warnings: int = 0
+    fatals: int = 0
 
-
-type TrnRunEvent = StatusEvent | ProgressEvent | ConfigEvent | SettingEvent | LogEvent | QueueEvent
-
-TERMINAL_STATUSES: Final[frozenset[SimulationStatus]] = frozenset(
-    {
-        SimulationStatus.DONE,
-        SimulationStatus.CANCELLED,
-        SimulationStatus.ERROR,
-        SimulationStatus.TIMEOUT,
-        SimulationStatus.STALLED,
-    },
-)
-
-
-def is_terminal_status(status: SimulationStatus) -> bool:
-    """Return whether a simulation status is terminal."""
-    return status in TERMINAL_STATUSES
+    @property
+    def log_count(self) -> int:
+        """Return how many log entries the daemon holds."""
+        return self.notices + self.warnings + self.fatals
 
 
 # -----------------------------------------------------------------
-# Validation Helpers
+# Daemon Replies
 # -----------------------------------------------------------------
-
-def _require_str(data: dict[str, object], key: str) -> str:
-    """Return a required string field."""
-    value = data.get(key)
-
-    if not isinstance(value, str):
-        raise EventParseError(f"field '{key}' must be a string")
-
-    return value
+def _optional[T](parse: Callable[[Any], T], data: Any) -> T | None:
+    """Parse a nullable nested object."""
+    return None if data is None else parse(data)
 
 
-def _require_status(data: dict[str, object], key: str) -> SimulationStatus:
-    """Return a required simulation status."""
-    value = _require_str(data, key)
-
-    try:
-        return SimulationStatus(value)
-    except ValueError as error:
-        raise EventParseError(f"unknown simulation status '{value}'") from error
-
-
-def _require_bool(data: dict[str, object], key: str) -> bool:
-    """Return a required boolean field."""
-    value = data.get(key)
-
-    if not isinstance(value, bool):
-        raise EventParseError(f"field '{key}' must be a boolean")
-
-    return value
-
-
-def _require_float(data: dict[str, object], key: str) -> float:
-    """Return a required finite number as a float, rejecting booleans."""
-    value = data.get(key)
-
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise EventParseError(f"field '{key}' must be a number")
-
-    return float(value)
-
-
-def _require_int(data: dict[str, object], key: str) -> int:
-    """Return a required integer field, rejecting booleans."""
-    value = data.get(key)
-
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise EventParseError(f"field '{key}' must be an integer")
-
-    return value
-
-
-def _optional_str(data: dict[str, object], key: str) -> str | None:
-    """Return an optional string field, treating JSON null as absent."""
-    return None if data.get(key) is None else _require_str(data, key)
-
-
-def _optional_float(data: dict[str, object], key: str) -> float | None:
-    """Return an optional numeric field, treating JSON null as absent."""
-    return None if data.get(key) is None else _require_float(data, key)
-
-
-def _optional_int(data: dict[str, object], key: str) -> int | None:
-    """Return an optional integer field, treating JSON null as absent."""
-    return None if data.get(key) is None else _require_int(data, key)
-
-
-# -----------------------------------------------------------------
-# Event Parsers
-# -----------------------------------------------------------------
-def _parse_status(data: dict[str, object]) -> StatusEvent:
-    """Parse a STATUS event."""
+def _parse_status(data: Any) -> StatusEvent:
+    """Parse a nested STATUS event."""
     return StatusEvent(
-        status=_require_status(data, "status"),
-        timestamp=_require_str(data, "timestamp"),
-        message=_optional_str(data, "message") or "",
+        SimulationStatus(data["status"]),
+        data["message"],
     )
 
 
-def _parse_progress(data: dict[str, object]) -> ProgressEvent:
-    """Parse a PROGRESS event."""
+def _parse_progress(data: Any) -> ProgressEvent:
+    """Parse a nested PROGRESS event."""
     return ProgressEvent(
-        time=_require_float(data, "time"),
-        percent=_require_float(data, "percent"),
-        elapsed_ms=_require_float(data, "elapsedMs"),
-        eta_ms=_require_float(data, "etaMs"),
-        timestamp=_require_str(data, "timestamp"),
+        data["time"],
+        data["percent"],
+        data["elapsedMs"],
+        data["etaMs"],
     )
 
 
-def _parse_config(data: dict[str, object]) -> ConfigEvent:
-    """Parse a CONFIG event."""
+def _parse_config(data: Any) -> ConfigEvent:
+    """Parse a nested CONFIG event."""
     return ConfigEvent(
-        start=_require_float(data, "start"),
-        stop=_require_float(data, "stop"),
-        step=_require_float(data, "step"),
-        timestamp=_require_str(data, "timestamp"),
+        data["start"],
+        data["stop"],
+        data["step"],
     )
 
 
-def _parse_setting(data: dict[str, object]) -> SettingEvent:
-    """Parse a SETTING event."""
+def _parse_setting(data: Any) -> SettingEvent:
+    """Parse a nested SETTING event."""
     return SettingEvent(
-        timestamp=_require_str(data, "timestamp"),
-        trnexe_path=_require_str(data, "trnexePath"),
-        gui_visibility=_require_str(data, "guiVisibility"),
-        wait_for_gui=_require_bool(data, "waitForGui"),
-        wait_for_lst=_require_bool(data, "waitForLst"),
-        wait_for_tmp=_require_bool(data, "waitForTmp"),
-        detect_timeout_ms=_require_int(data, "detectTimeoutMs"),
-        extra_delay_ms=_require_int(data, "extraDelayMs"),
-        watch_log=_require_bool(data, "watchLog"),
-        watch_tmp=_require_bool(data, "watchTmp"),
-        watch_timeout_ms=_require_int(data, "watchTimeoutMs"),
-        stall_timeout_ms=_require_int(data, "stallTimeoutMs"),
-        poll_ms=_require_int(data, "pollMs"),
-        clean_on_success=_require_bool(data, "cleanOnSuccess"),
-        kill_on_timeout=_require_bool(data, "killOnTimeout"),
-        kill_on_stall=_require_bool(data, "killOnStall"),
-        severity=_require_str(data, "severity"),
-        write_events=_require_bool(data, "writeEvents"),
+        trnexe_path=data["trnexePath"],
+        gui_visibility=data["guiVisibility"],
+        wait_for_gui=data["waitForGui"],
+        wait_for_lst=data["waitForLst"],
+        wait_for_tmp=data["waitForTmp"],
+        detect_timeout_ms=data["detectTimeoutMs"],
+        extra_delay_ms=data["extraDelayMs"],
+        watch_log=data["watchLog"],
+        watch_tmp=data["watchTmp"],
+        watch_timeout_ms=data["watchTimeoutMs"],
+        stall_timeout_ms=data["stallTimeoutMs"],
+        poll_ms=data["pollMs"],
+        clean_on_success=data["cleanOnSuccess"],
+        kill_on_timeout=data["killOnTimeout"],
+        kill_on_stall=data["killOnStall"],
+        severity=data["severity"],
+        write_events=data["writeEvents"],
     )
 
 
-def _parse_log(data: dict[str, object]) -> LogEvent:
-    """Parse a LOG event."""
+def parse_log(data: Any) -> LogEvent:
+    """Parse one log entry of a daemon reply."""
     return LogEvent(
-        severity=_require_str(data, "severity"),
-        timestamp=_require_str(data, "timestamp"),
-        time=_optional_float(data, "time"),
-        unit_id=_optional_int(data, "unitId"),
-        type_id=_optional_int(data, "typeId"),
-        message_code=_optional_int(data, "messageCode"),
-        message=_optional_str(data, "message"),
-        information=_optional_str(data, "information"),
+        severity=data["severity"],
+        time=data["time"],
+        unit_id=data["unitId"],
+        type_id=data["typeId"],
+        message_code=data["messageCode"],
+        message=data["message"],
+        information=data["information"],
     )
 
 
-def _parse_queue(data: dict[str, object]) -> QueueEvent:
-    """Parse a QUEUE event."""
-    return QueueEvent(
-        event=_require_str(data, "event"),
-        run_id=_require_str(data, "runId"),
-        timestamp=_require_str(data, "timestamp"),
-        exit_code=_optional_int(data, "exitCode"),
+def parse_simulation_update(data: Any) -> SimulationUpdate:
+    """Parse one simulation object from a daemon reply, ignoring its inputs."""
+    return SimulationUpdate(
+        state=SimulationState(data["state"]),
+        exit_code=data["exitCode"],
+        error=data["error"],
+        succeeded=data["succeeded"],
+        setting=_optional(_parse_setting, data["setting"]),
+        status=_optional(_parse_status, data["status"]),
+        config=_optional(_parse_config, data["config"]),
+        progress=_optional(_parse_progress, data["progress"]),
+        notices=data["notices"],
+        warnings=data["warnings"],
+        fatals=data["fatals"],
     )
-
-
-# Dispatch table mapping an event's "kind" to its parser.
-_PARSERS: Final[dict[str, Callable[[dict[str, object]], TrnRunEvent]]] = {
-    "STATUS": _parse_status,
-    "PROGRESS": _parse_progress,
-    "CONFIG": _parse_config,
-    "SETTING": _parse_setting,
-    "LOG": _parse_log,
-    "QUEUE": _parse_queue,
-}
-
-
-# -----------------------------------------------------------------
-# Parsing
-# -----------------------------------------------------------------
-def parse_event(line: str) -> TrnRunEvent:
-    """Parse one JSON-encoded TRNRun event.
-
-    Parameters
-    ----------
-    line : str
-        A single line of TRNRun stdout containing one JSON object.
-
-    Returns
-    -------
-    TrnRunEvent
-        The typed event corresponding to the object's ``kind``.
-
-    """
-    try:
-        data: dict[str, object] = json.loads(line)
-    except (ValueError, RecursionError) as e:
-        raise EventParseError(f"invalid JSON: {e}") from e
-
-    if type(data) is not dict:
-        raise EventParseError("event must be a JSON object")
-
-    return parse_event_data(data)
-
-
-def parse_stream_line(line: str) -> tuple[str, TrnRunEvent] | None:
-    """Decode one queue stdout line into its run id and typed event.
-
-    Parameters
-    ----------
-    line : str
-        A single line of queue stdout, carrying either a queue lifecycle
-        object or one runner event tagged with its ``runId``.
-
-    Returns
-    -------
-    tuple of (str, TrnRunEvent), or None
-        The run id and its typed event, or None for a line that carries no
-        routable event, including blank lines and non-JSON diagnostics from
-        the runner's merged stdout/stderr.
-
-    Raises
-    ------
-    EventParseError
-        If the line holds a routable event whose payload is malformed.
-    """
-    try:
-        data: dict[str, object] = json.loads(line)
-    except (ValueError, RecursionError):
-        return None
-
-    if type(data) is not dict:
-        return None
-    run_id = data.get("runId")
-    kind = data.get("kind")
-    if not isinstance(run_id, str) or not isinstance(kind, str):
-        return None
-
-    return run_id, parse_event_data(data)
-
-
-def parse_event_data(data: dict[str, object]) -> TrnRunEvent:
-    """Parse an already decoded event object."""
-    kind = _require_str(data, "kind").upper()
-
-    try:
-        parser = _PARSERS[kind]
-    except KeyError as e:
-        raise EventParseError(f"unknown event kind '{kind}'") from e
-
-    return parser(data)

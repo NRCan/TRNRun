@@ -1,30 +1,29 @@
 # Copyright (c) 2026 His Majesty the King in Right of Canada, as represented by the Minister of Natural Resources.
-# ruff: noqa: S101
+# ruff: noqa: S101, SLF001
 
 from __future__ import annotations
 
-import json
-from collections.abc import Callable, Iterator
+import threading
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
-from inspect import signature
 from pathlib import Path
 from queue import Queue
-from threading import Condition, Event, Thread, current_thread
+from threading import Condition, Event, Lock, Thread, current_thread
 from typing import override
-from unittest.mock import Mock, call
+from unittest.mock import Mock
 
 import pytest
 
 import trnrun.manager as manager_module
 from trnrun.config import SimulationConfig
-from trnrun.display import DisplayCallback
-from trnrun.events import SimulationStatus, StatusEvent
-from trnrun.manager import SimulationManager
-from trnrun.process import QueueProcess
-from trnrun.simulation import Simulation
+from trnrun.display import ProgressDisplay
+from trnrun.events import LogEvent, SimulationState, SimulationStatus, StatusEvent
+from trnrun.manager import SHUTDOWN_REASON, SimulationManager
+from trnrun.simulation import Simulation, SimulationSnapshot
 
-TIMESTAMP = "2026-01-02T03:04:05Z"
 TEST_TIMEOUT = 10.0
+# The poller only runs when woken by a submission or by `Harness.poll`.
+NEVER = 3600.0
 
 
 class Worker[T](Thread):
@@ -73,17 +72,148 @@ class Worker[T](Thread):
         return self.error
 
 
+class FakeDaemon:
+    """In-memory daemon following the trnrund request protocol.
+
+    Tests change daemon-side state directly, as TRNRun output and worker
+    exits would, then let the manager's poller observe it.
+    """
+
+    def __init__(self) -> None:
+        self.lock: Lock = Lock()
+        self.runs: dict[str, dict[str, object]] = {}
+        self.logs: dict[str, list[dict[str, object]]] = {}
+        self.requests: list[dict[str, object]] = []
+        self.accept_on_add: bool = True
+        self.add_error: Exception | None = None
+        self.failure: Exception | None = None
+        self.shutdown: Mock = Mock()
+
+    def request(self, request: dict[str, object]) -> dict[str, object]:
+        """Answer one request like trnrund, raising for ``ok: false``."""
+        with self.lock:
+            self.requests.append(request)
+            if self.failure is not None:
+                raise self.failure
+            command = request["cmd"]
+            run_id = str(request.get("runId"))
+            if command == "add":
+                if self.add_error is not None:
+                    raise self.add_error
+                if run_id in self.runs:
+                    raise ValueError(f"Invalid or duplicate runId: {run_id}")
+                self.runs[run_id] = self._initial(run_id, request)
+                self.logs[run_id] = []
+                return {"ok": True}
+            if command == "snapshots":
+                run_ids = request["runIds"]
+                assert isinstance(run_ids, list)
+                return {"ok": True, "simulations": [dict(self._known(str(item))) for item in run_ids]}
+            if command == "logs":
+                start, stop = request["start"], request["stop"]
+                assert isinstance(start, int)
+                assert isinstance(stop, int)
+                self._known(run_id)
+                return {"ok": True, "logs": list(self.logs[run_id][start:stop])}
+            if command == "collect":
+                simulation = self._known(run_id)
+                if simulation["state"] != "FINISHED":
+                    raise ValueError(f"Simulation has not finished: {run_id}")
+                del self.runs[run_id]
+                return {"ok": True, "simulation": dict(simulation), "logs": self.logs.pop(run_id)}
+            raise ValueError(f"Unknown cmd: {command}")
+
+    def set(self, run_id: str, **fields: object) -> None:
+        """Change daemon-side fields of a run."""
+        with self.lock:
+            self.runs[run_id].update(fields)
+
+    def log(self, run_id: str, severity: str = "Notice", message: str = "message") -> None:
+        """Append one TRNRun log entry, as the daemon counts it."""
+        with self.lock:
+            self.logs[run_id].append(
+                {
+                    "severity": severity,
+                    "time": 0.0,
+                    "unitId": None,
+                    "typeId": None,
+                    "messageCode": None,
+                    "message": message,
+                    "information": None,
+                },
+            )
+            counter = {"Notice": "notices", "Warning": "warnings", "Fatal": "fatals"}[severity]
+            simulation = self.runs[run_id]
+            simulation[counter] = int(str(simulation[counter])) + 1
+
+    def finish(self, run_id: str, status: str = "DONE", exit_code: int | None = 0, error: str = "") -> None:
+        """Finish a run with the daemon's success rule."""
+        self.set(
+            run_id,
+            state="FINISHED",
+            status={"status": status, "message": ""},
+            exitCode=exit_code,
+            error=error,
+            succeeded=status == "DONE" and exit_code == 0 and not error,
+        )
+
+    def commands(self) -> list[object]:
+        """Return the commands received so far."""
+        with self.lock:
+            return [request["cmd"] for request in self.requests]
+
+    def _initial(self, run_id: str, request: dict[str, object]) -> dict[str, object]:
+        return {
+            "runId": run_id,
+            "deckFile": request["deckFile"],
+            "trnrunArgs": request.get("trnrunArgs", []),
+            "state": "ACCEPTED" if self.accept_on_add else "QUEUED",
+            "exitCode": None,
+            "error": "",
+            "setting": None,
+            "status": None,
+            "config": None,
+            "progress": None,
+            "notices": 0,
+            "warnings": 0,
+            "fatals": 0,
+            "succeeded": False,
+        }
+
+    def _known(self, run_id: str) -> dict[str, object]:
+        if run_id not in self.runs:
+            raise ValueError(f"Unknown runId: {run_id}")
+        return self.runs[run_id]
+
+
+class FakeTracker:
+    """Record what the manager hands an attached tracker, and the run states at close."""
+
+    def __init__(self, close_error: Exception | None = None) -> None:
+        self.tracked: list[Simulation] = []
+        self.closed_with: list[list[SimulationSnapshot]] = []
+        self.close_error: Exception | None = close_error
+
+    def track(self, simulation: Simulation) -> None:
+        """Record a handed-over run."""
+        self.tracked.append(simulation)
+
+    def close(self) -> None:
+        """Record every tracked run's state when closed."""
+        self.closed_with.append([simulation.snapshot() for simulation in self.tracked])
+        if self.close_error is not None:
+            raise self.close_error
+
+
 @dataclass
 class Harness:
-    """A manager with captured process callbacks and controlled worker lifetimes."""
+    """A manager whose real poller is driven against a fake daemon."""
 
     manager: SimulationManager
-    process: Mock
-    display: Mock
-    queue_factory: Mock
-    display_factory: Mock
-    output: Callable[[str], None]
-    exit_reader: Callable[[], None]
+    daemon: FakeDaemon
+    daemon_factory: Mock
+    polls: Condition
+    poll_counts: list[int]
 
     workers: list[Thread] = field(default_factory=list)
     gates: list[Event] = field(default_factory=list)
@@ -101,80 +231,65 @@ class Harness:
         self.gates.append(gate)
         return gate
 
-    def add(self, inputs: tuple[Path, SimulationConfig]) -> Simulation:
-        """Bound even submissions expected to accept synchronously."""
-        return self.start(lambda: self.manager.add(*inputs)).result()
+    def add(self, inputs: tuple[Path, SimulationConfig], *, blocking: bool = True) -> Simulation:
+        """Bound even submissions expected to return promptly."""
+        return self.start(lambda: self.manager.add(*inputs, blocking=blocking)).result()
 
-    def emit(self, *lines: str) -> None:
-        """Deliver an ordered batch on a reader-like thread, without foreground pumping."""
-
-        def deliver() -> None:
-            for line in lines:
-                self.output(line)
-
-        self.start(deliver).result()
+    def poll(self) -> None:
+        """Wake the poller and wait for a full poll that started after this call."""
+        with self.polls:
+            target = self.poll_counts[0] + 1
+        self.manager._wake.set()
+        with self.polls:
+            assert self.polls.wait_for(lambda: self.poll_counts[1] >= target, TEST_TIMEOUT), "poller did not run"
 
 
 @pytest.fixture
 def make_harness(monkeypatch: pytest.MonkeyPatch) -> Iterator[Callable[..., Harness]]:
-    """Capture callbacks rather than providing a synchronous read_line fake."""
+    """Build managers backed by a fake daemon, with bounded teardown."""
     harnesses: list[Harness] = []
 
-    def create(*, injected: bool = True) -> Harness:
-        process = Mock(spec=QueueProcess)
-        shown = Mock(spec=DisplayCallback)
-        display_factory = Mock(return_value=shown)
-        callbacks: list[tuple[Callable[[str], None], Callable[[], None]]] = []
+    def create(*, poll_interval: float = NEVER) -> Harness:
+        daemon = FakeDaemon()
+        daemon_factory = Mock(return_value=daemon)
+        monkeypatch.setattr(manager_module, "DaemonProcess", daemon_factory)
 
-        def queue_factory(
-            executable: str | Path,
-            max_concurrent: int,
-            on_output: Callable[[str], None],
-            on_exit: Callable[[], None],
-        ) -> Mock:
-            del executable, max_concurrent
-            callbacks.append((on_output, on_exit))
-            return process
+        # Count poll cycles: [started, finished]. Patched before the poller starts.
+        polls = Condition()
+        counts = [0, 0]
+        original_poll = SimulationManager._poll
 
-        factory = Mock(side_effect=queue_factory)
-        monkeypatch.setattr(manager_module, "QueueProcess", factory)
-        monkeypatch.setattr(manager_module, "create_display", display_factory)
-        options = {"display": shown if injected else None}
+        def tracked(self: SimulationManager, simulations: list[Simulation]) -> None:
+            with polls:
+                counts[0] += 1
+                cycle = counts[0]
+            try:
+                original_poll(self, simulations)
+            finally:
+                with polls:
+                    counts[1] = cycle
+                    polls.notify_all()
+
+        monkeypatch.setattr(SimulationManager, "_poll", tracked)
         manager = SimulationManager(
             max_concurrent=3,
-            refresh_interval=0.25,
-            trnrunq_path="mock-queue.exe",
-            **options,
+            poll_interval=poll_interval,
+            trnrun_path="mock-trnrun.exe",
+            trnrund_path="mock-daemon.exe",
         )
-        ((output, exit_reader),) = callbacks
-        harness = Harness(manager, process, shown, factory, display_factory, output, exit_reader)
+        harness = Harness(manager, daemon, daemon_factory, polls, counts)
         harnesses.append(harness)
 
-        def accept_immediately(request: dict[str, object]) -> None:
-            run_id = request["runId"]
-            assert isinstance(run_id, str)
-            output(accepted(run_id))
-
-        process.send.side_effect = accept_immediately
-
         # Observe real wait boundaries while the manager still owns its lock.
-        # Do not depend on its private condition's name, or instrument Event gates.
-        conditions = [value for value in vars(manager).values() if isinstance(value, Condition)]
-        assert conditions, "the background manager must use a condition to coordinate waiters"
-        for condition in conditions:
-            original_wait = condition.wait
+        original_wait = manager._condition.wait
 
-            def observe_wait(
-                timeout: float | None = None,
-                *,
-                wait: Callable[[float | None], bool] = original_wait,
-            ) -> bool:
-                worker = current_thread()
-                if isinstance(worker, Worker):
-                    worker.waits.put(None)
-                return wait(timeout)
+        def observe_wait(timeout: float | None = None) -> bool:
+            worker = current_thread()
+            if isinstance(worker, Worker):
+                worker.waits.put(None)
+            return original_wait(timeout)
 
-            monkeypatch.setattr(condition, "wait", observe_wait)
+        monkeypatch.setattr(manager._condition, "wait", observe_wait)
         return harness
 
     yield create
@@ -182,10 +297,9 @@ def make_harness(monkeypatch: pytest.MonkeyPatch) -> Iterator[Callable[..., Harn
     for harness in reversed(harnesses):
         for gate in harness.gates:
             gate.set()
-        # Cleanup must also be bounded if the implementation regresses.
-        harness.process.shutdown.side_effect = None
-        cleanup = harness.start(harness.manager.shutdown)
-        cleanup.result()
+        harness.daemon.shutdown.side_effect = None
+        harness.start(harness.manager.shutdown).result()
+        assert not harness.manager._poller.is_alive()
         for worker in harness.workers:
             worker.join(TEST_TIMEOUT)
             assert not worker.is_alive(), "test left a manager worker running"
@@ -193,7 +307,7 @@ def make_harness(monkeypatch: pytest.MonkeyPatch) -> Iterator[Callable[..., Harn
 
 @pytest.fixture
 def harness(make_harness: Callable[..., Harness]) -> Harness:
-    """Build a manager using an injected mock display."""
+    """Build a manager driven against a fake daemon."""
     return make_harness()
 
 
@@ -201,338 +315,87 @@ def harness(make_harness: Callable[..., Harness]) -> Harness:
 def valid_inputs(tmp_path: Path) -> tuple[Path, SimulationConfig]:
     """Create harmless files satisfying submission validation."""
     deck = tmp_path / "model.dck"
-    runner = tmp_path / "trnrun.exe"
     trnexe = tmp_path / "TrnEXE64.exe"
-    for path in (deck, runner, trnexe):
+    for path in (deck, trnexe):
         path.write_text("fixture", encoding="utf-8")
-    return deck, SimulationConfig(trnrun_path=runner, trnexe_path=trnexe, watch_tmp=True)
+    return deck, SimulationConfig(trnexe_path=trnexe, watch_tmp=True)
 
 
-def stream(run_id: str, kind: str, **payload: object) -> str:
-    """Encode one tagged queue stream line."""
-    return json.dumps({"runId": run_id, "kind": kind, "timestamp": TIMESTAMP, **payload})
-
-
-def accepted(run_id: str) -> str:
-    """Encode queue acceptance for a submitted run."""
-    return stream(run_id, "QUEUE", event="ACCEPTED")
-
-
-def completed(run_id: str, exit_code: int | None = 0) -> str:
-    """Encode queue completion without synthesizing a runner status."""
-    return stream(run_id, "QUEUE", event="COMPLETED", exitCode=exit_code)
-
-
-def progress(run_id: str, percent: float) -> str:
-    """Encode a valid runner progress update."""
-    return stream(run_id, "PROGRESS", time=percent * 10, percent=percent, elapsedMs=1000, etaMs=1000)
-
-
-def test_constructor_captures_output_callback_and_injects_display(harness: Harness) -> None:
-    """Construction connects only the output callback and honors display injection."""
-    harness.queue_factory.assert_called_once()
-    args, kwargs = harness.queue_factory.call_args
-    assert signature(QueueProcess).bind(*args, **kwargs).arguments == {
-        "executable": "mock-queue.exe",
-        "max_concurrent": 3,
-        "on_output": harness.output,
-        "on_exit": harness.exit_reader,
-    }
-    assert callable(harness.output)
-
-    harness.display_factory.assert_not_called()
-    assert harness.manager.submitted == []
-    assert harness.manager.simulations == []
+def test_constructor_starts_daemon_and_poller(harness: Harness) -> None:
+    """Construction passes the daemon, runner, and concurrency, and starts polling."""
+    harness.daemon_factory.assert_called_once_with("mock-daemon.exe", "mock-trnrun.exe", 3)
+    assert harness.manager._poller.is_alive()
+    assert harness.manager._poller.daemon
     assert harness.manager.active == []
-    assert harness.manager.succeeded == []
-    assert harness.manager.failed == []
-
-
-def test_display_none_selects_automatic_display(make_harness: Callable[..., Harness]) -> None:
-    """A missing display delegates selection and refresh timing to the factory."""
-    harness = make_harness(injected=False)
-    harness.display_factory.assert_called_once_with(0.25)
-    harness.start(harness.manager.shutdown).result()
-    harness.display.close.assert_called_once_with()
+    assert harness.manager.error is None
 
 
 def test_startup_failure_propagates(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A queue startup error propagates to the caller."""
-    startup_error = OSError("queue startup failed")
-    display = Mock(spec=DisplayCallback)
+    """A daemon startup error propagates to the caller."""
+    startup_error = OSError("daemon startup failed")
     factory = Mock(side_effect=startup_error)
-    monkeypatch.setattr(manager_module, "QueueProcess", factory)
+    monkeypatch.setattr(manager_module, "DaemonProcess", factory)
 
-    with pytest.raises(OSError, match="queue startup failed") as raised:
-        SimulationManager(max_concurrent=3, trnrunq_path="mock-queue.exe", display=display)
+    with pytest.raises(OSError, match="daemon startup failed") as raised:
+        SimulationManager(max_concurrent=3)
 
     assert raised.value is startup_error
     factory.assert_called_once()
 
 
-def test_add_registers_before_immediate_acceptance_and_copies_config(
+@pytest.mark.parametrize("poll_interval", [0.0, -1.0, float("nan")])
+def test_invalid_poll_interval_fails_before_starting_daemon(
+    monkeypatch: pytest.MonkeyPatch,
+    poll_interval: float,
+) -> None:
+    """A poll interval must be positive."""
+    factory = Mock()
+    monkeypatch.setattr(manager_module, "DaemonProcess", factory)
+
+    with pytest.raises(ValueError, match="poll_interval must be positive"):
+        SimulationManager(poll_interval=poll_interval)
+
+    factory.assert_not_called()
+
+
+def test_add_sends_request_and_returns_accepted_copy(
     harness: Harness,
     valid_inputs: tuple[Path, SimulationConfig],
 ) -> None:
-    """Immediate acceptance finds an active handle before it appears in simulations."""
+    """A blocking add returns once a worker accepts the run, with an independent config."""
     deck, config = valid_inputs
-    registered: list[Simulation] = []
-
-    def send(request: dict[str, object]) -> None:
-        run_id = request["runId"]
-        assert isinstance(run_id, str)
-        assert harness.manager.simulations == []
-        (simulation,) = harness.manager.active
-        assert simulation.id == int(run_id)
-        assert not simulation.is_accepted
-        registered.append(simulation)
-        harness.output(accepted(str(simulation.id)))
-
-    harness.process.send.side_effect = send
     simulation = harness.add(valid_inputs)
 
-    assert registered == [simulation]
     assert simulation.id == 1
     assert simulation.deck_path == deck.absolute()
     assert simulation.config == config
     assert simulation.config is not config
-    assert simulation.snapshot().is_accepted
-    assert harness.manager.simulations == [simulation]
+    assert simulation.state is SimulationState.ACCEPTED
+    assert harness.daemon.requests[0] == {
+        "cmd": "add",
+        "runId": "1",
+        "deckFile": str(deck.absolute()),
+        "trnrunArgs": simulation.config.to_cli_args(),
+    }
     assert harness.manager.active == [simulation]
     active = harness.manager.active
     active.clear()
     assert harness.manager.active == [simulation]
-    harness.process.send.assert_called_once_with(
-        {
-            "runId": "1",
-            "deckFile": str(deck.absolute()),
-            "runnerPath": str(simulation.config.trnrun_path),
-            "runnerArgs": simulation.config.to_cli_args(),
-        },
-    )
-    harness.display.simulation_started.assert_called_once_with(simulation)
 
 
-def test_completion_before_add_resumes_returns_the_finished_handle(
+def test_daemon_rejection_propagates_without_registering(
     harness: Harness,
     valid_inputs: tuple[Path, SimulationConfig],
 ) -> None:
-    """Acceptance and completion can both arrive while the submission is still sending."""
-    sending = Event()
-    release = harness.gate()
+    """A rejected add raises the daemon's error and tracks nothing."""
+    harness.daemon.add_error = ValueError("Deck file not found: model.dck")
 
-    def send(request: dict[str, object]) -> None:
-        assert request["runId"] == "1"
-        sending.set()
-        assert release.wait(TEST_TIMEOUT)
+    error = harness.start(lambda: harness.manager.add(*valid_inputs)).raises(ValueError)
 
-    harness.process.send.side_effect = send
-    submission = harness.start(lambda: harness.manager.add(*valid_inputs))
-    assert sending.wait(TEST_TIMEOUT)
-    assert harness.manager.simulations == []
-    (simulation,) = harness.manager.active
-    harness.emit(accepted("1"), stream("1", "STATUS", status="DONE"), completed("1"))
-
-    assert not submission.done.is_set()
-    assert simulation.succeeded
-    assert harness.manager.simulations == [simulation]
+    assert str(error) == "Deck file not found: model.dck"
     assert harness.manager.active == []
-    assert harness.manager.succeeded == [simulation]
-    before = simulation.snapshot()
-    release.set()
-    assert submission.result() is simulation
-    assert simulation.snapshot() == before
-    assert harness.start(lambda: harness.manager.wait(simulation)).result() is None
-
-    harness.display.simulation_started.assert_called_once_with(simulation)
-    harness.display.simulation_finished.assert_called_once_with(simulation)
-
-
-def test_concurrent_submissions_keep_submission_order_and_distinct_ids(
-    harness: Harness,
-    valid_inputs: tuple[Path, SimulationConfig],
-) -> None:
-    """Submission registration must not serialize all callers behind acceptance."""
-    harness.process.send.side_effect = None
-    first_add = harness.start(lambda: harness.manager.add(*valid_inputs))
-    first_add.blocked()
-    second_add = harness.start(lambda: harness.manager.add(*valid_inputs))
-    second_add.blocked()
-    assert harness.manager.simulations == []
-    first, second = harness.manager.active
-    assert (first.id, second.id) == (1, 2)
-    assert first is not second
-    harness.emit(accepted("2"))
-    assert second_add.result() is second
-    assert harness.manager.simulations == [second]
-    first_add.blocked()
-    harness.emit(accepted("1"))
-    assert first_add.result() is first
-    assert harness.manager.simulations == [first, second]
-    harness.emit(stream("1", "STATUS", status="DONE"), completed("1"))
-    harness.emit(stream("2", "STATUS", status="DONE"), completed("2"))
-    assert harness.manager.succeeded == [first, second]
-
-
-def test_add_blocks_for_acceptance_but_callbacks_route_without_foreground_pumping(
-    harness: Harness,
-    valid_inputs: tuple[Path, SimulationConfig],
-) -> None:
-    """Callbacks update pending and accepted runs without a foreground consumer."""
-    harness.process.send.side_effect = None
-    submission = harness.start(lambda: harness.manager.add(*valid_inputs))
-    submission.blocked()
-    assert harness.manager.simulations == []
-    (simulation,) = harness.manager.active
-    assert simulation.id == 1
-    assert not simulation.is_accepted
-
-    harness.emit(stream("1", "STATUS", status="RUNNING", message="launched"))
-    submission.blocked()
-    assert not submission.done.is_set()
-    assert simulation.status_event == StatusEvent(SimulationStatus.RUNNING, TIMESTAMP, "launched")
-
-    harness.emit(accepted("1"))
-    assert submission.result() is simulation
-    harness.emit(progress("1", 0.5), stream("1", "STATUS", status="DONE"), completed("1", 9))
-    snapshot = simulation.snapshot()
-    assert snapshot.progress is not None
-    assert snapshot.progress.percent == 0.5
-    assert snapshot.succeeded
-    assert simulation.completion_event is not None
-    assert simulation.completion_event.exit_code == 9
-    assert harness.manager.active == []
-    assert harness.manager.succeeded == [simulation]
-    harness.display.simulation_finished.assert_called_once_with(simulation)
-    # QueueProcess has no read_line API; all manager activity uses only send/shutdown.
-    assert [entry[0] for entry in harness.process.method_calls] == ["send"]
-
-
-def test_submitted_includes_all_states_in_submission_order(
-    harness: Harness,
-    valid_inputs: tuple[Path, SimulationConfig],
-) -> None:
-    """GUI observers can discover every handle before and after acceptance."""
-    harness.process.send.side_effect = None
-    first, second, third = [
-        harness.start(lambda: harness.manager.add(*valid_inputs, blocking=False)).result()
-        for _ in range(3)
-    ]
-    handles = harness.manager.submitted
-    assert handles == [first, second, third]
-    assert harness.manager.simulations == []
-
-    harness.emit(
-        accepted("3"),
-        stream("3", "STATUS", status="DONE"),
-        completed("3"),
-        accepted("2"),
-        stream("2", "STATUS", status="RUNNING"),
-    )
-    assert not first.is_accepted
-    assert second.status is SimulationStatus.RUNNING
-    assert third.succeeded
-    assert harness.manager.submitted == [first, second, third]
-    assert harness.manager.simulations == [second, third]
-    assert harness.manager.active == [first, second]
-    assert handles[2].succeeded
-
-    handles.clear()
-    assert harness.manager.submitted == [first, second, third]
-    harness.start(harness.manager.shutdown).result()
-    assert harness.manager.submitted == [first, second, third]
-
-
-def test_nonblocking_add_returns_pending_handle_and_waits_for_completion(
-    harness: Harness,
-    valid_inputs: tuple[Path, SimulationConfig],
-) -> None:
-    """A submitted handle can be waited on before a worker accepts it."""
-    harness.process.send.side_effect = None
-    simulation = harness.start(lambda: harness.manager.add(*valid_inputs, blocking=False)).result()
-    assert not simulation.is_accepted
-    assert harness.manager.active == [simulation]
-    assert harness.manager.simulations == []
-
-    waiting = harness.start(lambda: harness.manager.wait(simulation))
-    waiting.blocked()
-    harness.emit(accepted("1"))
-    waiting.blocked()
-    assert harness.manager.simulations == [simulation]
-    harness.emit(completed("1"))
-    assert waiting.result() is None
-    assert simulation.is_finished
-    assert harness.manager.active == []
-
-
-def test_noise_malformed_unknown_and_duplicate_events_are_ignored(
-    harness: Harness,
-    valid_inputs: tuple[Path, SimulationConfig],
-) -> None:
-    """Invalid or redundant lines leave state and display unchanged without stopping routing."""
-    simulation = harness.add(valid_inputs)
-    harness.display.reset_mock()
-    before = simulation.snapshot()
-    harness.emit(
-        "native diagnostic output\n",
-        "{not json",
-        stream("1", "STATUS"),
-        stream("1", "STATUS", status="FUTURE"),
-        accepted("999"),
-        completed("999"),
-        stream("1", "QUEUE", event="ENQUEUED"),
-        accepted("1"),
-    )
-    assert simulation.snapshot() == before
-    assert harness.manager.simulations == [simulation]
-    assert harness.display.method_calls == []
-
-    harness.emit(progress("1", 0.25))
-    assert simulation.progress is not None
-    assert simulation.progress.percent == 0.25
-    harness.display.refresh.assert_called_once_with()
-
-
-def test_background_completion_counters_and_result_lists_are_live_handles(
-    harness: Harness,
-    valid_inputs: tuple[Path, SimulationConfig],
-) -> None:
-    """Callbacks maintain counters and ordered results while snapshots stay immutable."""
-    first, second, third = [harness.add(valid_inputs) for _ in range(3)]
-    frozen = first.snapshot()
-    harness.emit(
-        stream("1", "LOG", severity="Notice", message="notice"),
-        stream("1", "LOG", severity="Warning", message="warning"),
-        stream("1", "LOG", severity="Fatal", message="fatal"),
-        stream("2", "STATUS", status="ERROR"),
-        completed("2"),
-        completed("3", None),
-        stream("1", "STATUS", status="DONE"),
-    )
-    assert harness.manager.active == [first]
-    assert not first.succeeded  # Runner DONE does not replace QUEUE/COMPLETED.
-    harness.emit(completed("1", 17))
-    assert harness.manager.simulations == [first, second, third]
-    assert harness.manager.succeeded == [first]
-    assert harness.manager.failed == [second, third]
-    assert harness.manager.active == []
-    snapshot = first.snapshot()
-    assert (snapshot.log_count, snapshot.notices, snapshot.warnings, snapshot.fatals) == (3, 1, 1, 1)
-    assert frozen.log_count == 0
-    assert not frozen.is_finished
-    for name in ("submitted", "simulations", "active", "succeeded", "failed"):
-        result = getattr(harness.manager, name)
-        assert isinstance(result, list)
-        expected = result.copy()
-        result.clear()
-        assert getattr(harness.manager, name) == expected
-
-    harness.display.simulation_started.assert_has_calls([call(first), call(second), call(third)])
-    harness.display.simulation_finished.assert_has_calls([call(second), call(third), call(first)])
-    harness.display.reset_mock()
-    harness.emit(completed("1"), progress("1", 0.99), accepted("1"))
-    assert first.snapshot() == snapshot
-    assert harness.display.method_calls == []
+    harness.daemon.add_error = None
+    assert harness.add(valid_inputs).id == 2
 
 
 def test_add_rejects_invalid_paths_before_sending(
@@ -540,216 +403,344 @@ def test_add_rejects_invalid_paths_before_sending(
     valid_inputs: tuple[Path, SimulationConfig],
     tmp_path: Path,
 ) -> None:
-    """Invalid deck or runner paths fail before registration and process submission."""
+    """Invalid deck or TRNSYS paths fail before registration and submission."""
     deck, config = valid_inputs
     with pytest.raises(FileNotFoundError, match="Deck file not found"):
         harness.add((tmp_path / "missing.dck", config))
-    invalid = SimulationConfig(trnrun_path=tmp_path / "missing.exe", trnexe_path=config.trnexe_path)
-    with pytest.raises(FileNotFoundError, match="TRNRun executable not found"):
-        harness.add((deck, invalid))
-    harness.process.send.assert_not_called()
-    assert harness.manager.simulations == []
+    with pytest.raises(FileNotFoundError, match="TrnEXE executable not found"):
+        harness.add((deck, SimulationConfig(trnexe_path=tmp_path / "missing.exe")))
+    assert harness.daemon.requests == []
     assert harness.manager.active == []
 
 
-def test_ownership_uses_identity_even_when_ids_match(
+def test_blocking_add_waits_while_queued(
     harness: Harness,
     valid_inputs: tuple[Path, SimulationConfig],
 ) -> None:
-    """Wait rejects foreign handles even if their IDs match an owned run."""
+    """A queued run blocks its submission until a poll observes acceptance."""
+    harness.daemon.accept_on_add = False
+    submission = harness.start(lambda: harness.manager.add(*valid_inputs))
+    submission.blocked()
+    (simulation,) = harness.manager.active
+    harness.poll()
+    assert not submission.done.is_set()
+    assert not simulation.is_accepted
+
+    harness.daemon.set("1", state="RUNNING", status={"status": "RUNNING", "message": "launched"})
+    harness.poll()
+
+    assert submission.result() is simulation
+    assert simulation.status_event == StatusEvent(SimulationStatus.RUNNING, "launched")
+
+
+def test_blocking_add_returns_a_run_accepted_and_finished_within_one_poll(
+    harness: Harness,
+    valid_inputs: tuple[Path, SimulationConfig],
+) -> None:
+    """A run that finishes before any poll saw it accepted still releases its submission."""
+    harness.daemon.accept_on_add = False
+    submission = harness.start(lambda: harness.manager.add(*valid_inputs))
+    submission.blocked()
+    harness.daemon.finish("1")
+    harness.poll()
+
+    simulation = submission.result()
+    assert simulation.succeeded
+    assert harness.manager.active == []
+
+
+def test_nonblocking_add_never_waits_for_a_worker(
+    harness: Harness,
+    valid_inputs: tuple[Path, SimulationConfig],
+) -> None:
+    """Queued runs return at once, can be waited on, and leave the manager once finished."""
+    harness.daemon.accept_on_add = False
+    first, second, third = [harness.add(valid_inputs, blocking=False) for _ in range(3)]
+    harness.poll()
+    assert [simulation.state for simulation in (first, second, third)] == [SimulationState.QUEUED] * 3
+    assert harness.manager.active == [first, second, third]
+
+    waiting = harness.start(lambda: harness.manager.wait(first))
+    waiting.blocked()
+    harness.daemon.finish("3")
+    harness.daemon.set("2", state="RUNNING", status={"status": "RUNNING", "message": "launched"})
+    harness.poll()
+    waiting.blocked()
+    assert third.succeeded
+    assert second.status_event == StatusEvent(SimulationStatus.RUNNING, "launched")
+    assert harness.manager.active == [first, second]
+
+    harness.daemon.finish("1")
+    harness.poll()
+    assert waiting.result() is None
+    assert first.is_finished
+    assert harness.manager.active == [second]
+
+
+def test_poll_fetches_only_new_logs_and_skips_unchanged_runs(
+    harness: Harness,
+    valid_inputs: tuple[Path, SimulationConfig],
+) -> None:
+    """Logs are requested from the count already held, and only when the daemon has more."""
+    simulation = harness.add(valid_inputs)
+    harness.daemon.log("1", "Notice", "one")
+    harness.daemon.log("1", "Warning", "two")
+    harness.poll()
+    assert [event.message for event in simulation.logs] == ["one", "two"]
+
+    harness.daemon.log("1", "Fatal", "three")
+    harness.poll()
+    harness.poll()
+
+    log_requests = [request for request in harness.daemon.requests if request["cmd"] == "logs"]
+    assert log_requests == [
+        {"cmd": "logs", "runId": "1", "start": 0, "stop": 2},
+        {"cmd": "logs", "runId": "1", "start": 2, "stop": 3},
+    ]
+    assert simulation.logs == [
+        LogEvent("Notice", 0.0, message="one"),
+        LogEvent("Warning", 0.0, message="two"),
+        LogEvent("Fatal", 0.0, message="three"),
+    ]
+    assert (simulation.notices, simulation.warnings, simulation.fatals) == (1, 1, 1)
+
+
+def test_logs_stop_at_the_snapshot_counters(
+    harness: Harness,
+    valid_inputs: tuple[Path, SimulationConfig],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A log written between the snapshot and the logs request waits for the next poll."""
+    simulation = harness.add(valid_inputs)
+    harness.daemon.log("1", "Notice", "one")
+    request = harness.daemon.request
+
+    def log_after_snapshot(payload: dict[str, object]) -> dict[str, object]:
+        reply = request(payload)
+        if payload["cmd"] == "snapshots":
+            harness.daemon.log("1", "Warning", "late")
+        return reply
+
+    monkeypatch.setattr(harness.daemon, "request", log_after_snapshot)
+    harness.poll()
+    assert [event.message for event in simulation.logs] == ["one"]
+    assert (simulation.log_count, simulation.notices, simulation.warnings) == (1, 1, 0)
+
+    monkeypatch.setattr(harness.daemon, "request", request)
+    harness.poll()
+    assert [event.message for event in simulation.logs] == ["one", "late"]
+    assert (simulation.log_count, simulation.notices, simulation.warnings) == (2, 1, 1)
+
+
+def test_finished_run_is_collected_with_its_final_logs_and_forgotten(
+    harness: Harness,
+    valid_inputs: tuple[Path, SimulationConfig],
+) -> None:
+    """Completion arrives with the remaining logs; the daemon and the manager forget the run."""
+    simulation = harness.add(valid_inputs)
+    harness.daemon.log("1", "Notice", "early")
+    harness.poll()
+    harness.daemon.log("1", "Warning", "late")
+    harness.daemon.finish("1", exit_code=0)
+    harness.poll()
+
+    snapshot = simulation.snapshot()
+    assert snapshot.is_finished
+    assert snapshot.succeeded
+    assert snapshot.exit_code == 0
+    assert snapshot.log_count == 2
+    assert [event.message for event in simulation.logs] == ["early", "late"]
+    assert harness.daemon.runs == {}
+    assert harness.daemon.commands().count("collect") == 1
+    assert harness.manager.active == []
+    assert harness.manager._simulations == {}
+
+    harness.poll()
+    assert harness.daemon.commands()[-1] == "collect"  # Nothing is left to poll.
+
+
+def test_results_follow_the_daemon_verdict(
+    harness: Harness,
+    valid_inputs: tuple[Path, SimulationConfig],
+) -> None:
+    """A DONE status with a failing exit code or daemon error is not a success."""
+    done, nonzero, error, unlaunched = [harness.add(valid_inputs) for _ in range(4)]
+    harness.daemon.finish("1")
+    harness.daemon.finish("2", exit_code=7)
+    harness.daemon.finish("3", error="capture failed")
+    harness.daemon.finish("4", status="ERROR", exit_code=None, error="launch failed")
+    harness.poll()
+
+    assert [simulation.succeeded for simulation in (done, nonzero, error, unlaunched)] == [True, False, False, False]
+    assert nonzero.status is SimulationStatus.DONE
+    assert (unlaunched.exit_code, unlaunched.error) == (None, "launch failed")
+    assert harness.manager.active == []
+
+
+def test_periodic_polling_without_wakeups(
+    make_harness: Callable[..., Harness],
+    valid_inputs: tuple[Path, SimulationConfig],
+) -> None:
+    """The poller also runs on its own interval."""
+    harness = make_harness(poll_interval=0.01)
+    simulation = harness.add(valid_inputs)
+    harness.daemon.finish("1")
+
+    assert harness.start(lambda: harness.manager.wait(simulation)).result() is None
+    assert simulation.succeeded
+
+
+def test_wait_rejects_foreign_unfinished_handles_even_when_ids_match(
+    harness: Harness,
+    valid_inputs: tuple[Path, SimulationConfig],
+) -> None:
+    """Wait uses identity for unfinished runs; any finished handle returns at once."""
     owned = harness.add(valid_inputs)
     outsider = Simulation(*valid_inputs, sim_id=owned.id)
     harness.start(lambda: harness.manager.wait(outsider)).raises(ValueError)
-    assert harness.manager.simulations == [owned]
+
+    assert outsider.abandon(SimulationStatus.CANCELLED, "outside")
+    assert harness.start(lambda: harness.manager.wait(outsider)).result() is None
 
 
-def test_wait_targets_only_selected_run(
+def test_wait_targets_only_selected_runs(
     harness: Harness,
     valid_inputs: tuple[Path, SimulationConfig],
 ) -> None:
-    """Waiting for one run does not depend on other runs completing."""
-    first, second = [harness.add(valid_inputs) for _ in range(2)]
-    targeted = harness.start(lambda: harness.manager.wait(first))
+    """Waiting for some runs does not depend on other runs completing."""
+    first, second, third = [harness.add(valid_inputs) for _ in range(3)]
+    targeted = harness.start(lambda: harness.manager.wait(first, second))
     all_runs = harness.start(harness.manager.wait)
     targeted.blocked()
     all_runs.blocked()
-    harness.emit(progress("2", 0.2))
+    harness.daemon.finish("1")
+    harness.poll()
     targeted.blocked()
-    all_runs.blocked()
-    harness.emit(completed("1"))
+    harness.daemon.finish("2")
+    harness.poll()
     assert targeted.result() is None
     all_runs.blocked()
-    assert not second.is_finished
-    assert harness.start(lambda: harness.manager.wait(first)).result() is None
-    harness.emit(completed("2"))
+    assert not third.is_finished
+    harness.daemon.finish("3")
+    harness.poll()
     assert all_runs.result() is None
 
 
-def test_all_waits_include_submitted_but_unaccepted_runs(
-    harness: Harness,
-    valid_inputs: tuple[Path, SimulationConfig],
-) -> None:
-    """Waiting for all includes a submission still awaiting acceptance."""
-    harness.process.send.side_effect = None
-    submission = harness.start(lambda: harness.manager.add(*valid_inputs))
-    submission.blocked()
-    waiting = harness.start(harness.manager.wait)
-    waiting.blocked()
-    harness.emit(accepted("1"))
-    submission.result()
-    waiting.blocked()
-    harness.emit(completed("1"))
-    assert waiting.result() is None
-
-
-def test_completed_target_succeeds_despite_unrelated_unfinished_runs(
-    harness: Harness,
-    valid_inputs: tuple[Path, SimulationConfig],
-) -> None:
-    """A completed target returns while all-run observers still wait for other runs."""
-    first, second = [harness.add(valid_inputs) for _ in range(2)]
-    harness.emit(completed("1"))
-    assert harness.start(lambda: harness.manager.wait(first)).result() is None
-    pending = harness.start(harness.manager.wait)
-    pending.blocked()
-    assert not second.is_finished
-    harness.emit(completed("2"))
-    assert pending.result() is None
-
-
 def test_no_outstanding_runs_returns_from_wait(harness: Harness) -> None:
-    """An empty completion scope returns without waiting for output."""
+    """An empty completion scope returns without polling."""
     assert harness.start(harness.manager.wait).result() is None
 
 
-@pytest.mark.parametrize("accept_before_error", [False, True])
-@pytest.mark.parametrize("blocking", [False, True])
-def test_send_failure_rolls_back_only_unaccepted_runs(
+def test_poller_failure_finishes_unfinished_runs_as_errors(
     harness: Harness,
     valid_inputs: tuple[Path, SimulationConfig],
-    *,
-    accept_before_error: bool,
-    blocking: bool,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Send failures remove pending registrations but preserve accepted live runs."""
-    failure = OSError("send failed")
-    registered: list[Simulation] = []
-
-    def send(request: dict[str, object]) -> None:
-        run_id = request["runId"]
-        assert isinstance(run_id, str)
-        assert harness.manager.simulations == []
-        (simulation,) = harness.manager.active
-        assert simulation.id == int(run_id)
-        registered.append(simulation)
-        assert harness.manager.submitted == [simulation]
-        if accept_before_error:
-            harness.output(accepted(str(request["runId"])))
-        raise failure
-
-    harness.process.send.side_effect = send
-    assert harness.start(lambda: harness.manager.add(*valid_inputs, blocking=blocking)).raises(OSError) is failure
-    simulation = registered[0]
-    assert harness.manager.submitted == ([simulation] if accept_before_error else [])
-    if accept_before_error:
-        assert harness.manager.simulations == [simulation]
-        assert harness.manager.active == [simulation]
-        harness.emit(stream("1", "STATUS", status="DONE"), completed("1"))
-        assert harness.manager.succeeded == [simulation]
-    else:
-        assert harness.manager.simulations == []
-        assert harness.manager.active == []
-        harness.emit(accepted("1"), completed("1"))
-        assert harness.manager.simulations == []
-        harness.display.simulation_started.assert_not_called()
-
-
-def test_send_rollback_notifies_all_waiters(
-    harness: Harness,
-    valid_inputs: tuple[Path, SimulationConfig],
-) -> None:
-    """Removing the last pending submission wakes every completion observer."""
-    sending = Event()
-    release = harness.gate()
-    failure = OSError("send rolled back")
-
-    def send(request: dict[str, object]) -> None:
-        del request
-        sending.set()
-        assert release.wait(TEST_TIMEOUT)
-        raise failure
-
-    harness.process.send.side_effect = send
-    submission = harness.start(lambda: harness.manager.add(*valid_inputs))
-    assert sending.wait(TEST_TIMEOUT)
-    waits = [harness.start(harness.manager.wait) for _ in range(2)]
-    for worker in waits:
-        worker.blocked()
-    release.set()
-    assert submission.raises(OSError) is failure
-    for worker in waits:
-        assert worker.result() is None
-
-    assert harness.manager.active == []
-    assert harness.manager.simulations == []
-
-
-def test_reader_exit_wakes_only_unfinished_work(
-    harness: Harness,
-    valid_inputs: tuple[Path, SimulationConfig],
-) -> None:
-    """Unexpected stdout EOF must not leave acceptance or completion waiters blocked."""
+    """A daemon that dies mid-run finishes every unfinished handle and fails callers loudly."""
+    errors: list[threading.ExceptHookArgs] = []
+    monkeypatch.setattr(threading, "excepthook", errors.append)
     finished = harness.add(valid_inputs)
-    harness.emit(completed("1"))
-    harness.process.send.side_effect = None
+    harness.daemon.finish("1")
+    harness.poll()
+    running = harness.add(valid_inputs)
+    harness.daemon.set("2", state="RUNNING", progress={"time": 5, "percent": 0.5, "elapsedMs": 1, "etaMs": 1})
+    harness.poll()
+    harness.daemon.accept_on_add = False
     submission = harness.start(lambda: harness.manager.add(*valid_inputs))
     submission.blocked()
     waiting = harness.start(harness.manager.wait)
     waiting.blocked()
 
-    harness.exit_reader()
+    failure = RuntimeError("TRNRun daemon exited with code 1")
+    harness.daemon.failure = failure
+    harness.manager._wake.set()
 
-    assert "before acceptance" in str(submission.raises(RuntimeError))
-    assert "before completion" in str(waiting.raises(RuntimeError))
-    assert harness.start(lambda: harness.manager.wait(finished)).result() is None
-    harness.start(lambda: harness.manager.add(*valid_inputs, blocking=False)).raises(RuntimeError)
-    assert harness.manager.active[0].id == 2
+    for worker in (submission, waiting):
+        assert worker.raises(RuntimeError).__cause__ is failure
+    harness.manager._poller.join(TEST_TIMEOUT)
+    assert [args.exc_value for args in errors] == [failure]
+    assert harness.manager.error is failure
+    assert harness.manager.active == []
+
+    snapshot = running.snapshot()
+    assert snapshot.is_finished
+    assert not snapshot.succeeded
+    assert snapshot.status is SimulationStatus.ERROR
+    assert snapshot.error == "TRNRun daemon polling stopped: TRNRun daemon exited with code 1"
+    assert snapshot.progress is not None
+    assert finished.succeeded
+
+    harness.start(lambda: harness.manager.wait(finished)).raises(RuntimeError)
+    harness.start(lambda: harness.manager.add(*valid_inputs)).raises(RuntimeError)
 
 
-def test_shutdown_wakes_waiting_add_and_wait_and_ignores_late_output(
+def test_add_completing_after_polling_stopped_is_not_registered(
+    harness: Harness,
+    valid_inputs: tuple[Path, SimulationConfig],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A run nothing could ever finish is refused instead of returned."""
+    monkeypatch.setattr(threading, "excepthook", lambda _args: None)
+    request = harness.daemon.request
+
+    def stop_polling_during_add(payload: dict[str, object]) -> dict[str, object]:
+        reply = request(payload)
+        if payload["cmd"] == "add":
+            harness.manager._stop_polling()
+        return reply
+
+    monkeypatch.setattr(harness.daemon, "request", stop_polling_during_add)
+
+    harness.start(lambda: harness.manager.add(*valid_inputs)).raises(RuntimeError)
+    assert harness.manager.active == []
+
+
+def test_shutdown_cancels_unfinished_runs_and_wakes_waiters(
     harness: Harness,
     valid_inputs: tuple[Path, SimulationConfig],
 ) -> None:
-    """Shutdown releases all blocked callers and prevents late output from changing state."""
-    accepted_simulation = harness.add(valid_inputs)
-    harness.process.send.side_effect = None
-    submission = harness.start(lambda: harness.manager.add(*valid_inputs))
-    submission.blocked()
-    assert harness.manager.simulations == [accepted_simulation]
-    unfinished = next(simulation for simulation in harness.manager.active if simulation.id == 2)
-    snapshots = [simulation.snapshot() for simulation in (accepted_simulation, unfinished)]
-    waits = [harness.start(harness.manager.wait) for _ in range(2)]
+    """Shutdown releases blocked callers and finishes every unfinished handle as CANCELLED."""
+    finished = harness.add(valid_inputs)
+    harness.daemon.finish("1")
+    harness.poll()
+    finished_before = finished.snapshot()
+    accepted = harness.add(valid_inputs)
+    harness.daemon.accept_on_add = False
+    queued = harness.add(valid_inputs, blocking=False)
+    harness.poll()
+    waits = [
+        harness.start(harness.manager.wait),
+        harness.start(lambda: harness.manager.wait(queued)),
+        harness.start(lambda: harness.manager.add(*valid_inputs)),
+    ]
     for worker in waits:
         worker.blocked()
-    harness.display.reset_mock()
+
     harness.start(harness.manager.shutdown).result()
-    for worker in [submission, *waits]:
+
+    for worker in waits:
         worker.raises(RuntimeError)
-    harness.emit(accepted("2"), stream("1", "STATUS", status="DONE"), completed("1"), completed("2"))
-    assert [simulation.snapshot() for simulation in (accepted_simulation, unfinished)] == snapshots
-    assert harness.manager.succeeded == []
-    assert harness.manager.failed == []
-    assert harness.display.method_calls == [call.close()]
+    for simulation in (accepted, queued):
+        snapshot = simulation.snapshot()
+        assert snapshot.is_finished
+        assert not snapshot.succeeded
+        assert snapshot.status is SimulationStatus.CANCELLED
+        assert snapshot.error == SHUTDOWN_REASON
+    assert finished.snapshot() == finished_before
+    assert harness.manager.active == []
+
+    harness.daemon.finish("2")
+    assert accepted.status is SimulationStatus.CANCELLED
+    assert not harness.manager._poller.is_alive()
     harness.start(harness.manager.shutdown).result()
-    harness.process.shutdown.assert_called_once_with()
-    harness.display.close.assert_called_once_with()
+    harness.daemon.shutdown.assert_called_once_with()
 
 
 def test_shutdown_notifies_before_blocking_process_cleanup(
     harness: Harness,
     valid_inputs: tuple[Path, SimulationConfig],
 ) -> None:
-    """Waiters learn the manager is closed before process cleanup finishes."""
+    """Waiters learn the manager is closed before daemon cleanup finishes."""
     harness.add(valid_inputs)
     pending = harness.start(harness.manager.wait)
     pending.blocked()
@@ -760,7 +751,7 @@ def test_shutdown_notifies_before_blocking_process_cleanup(
         cleaning.set()
         assert release.wait(TEST_TIMEOUT)
 
-    harness.process.shutdown.side_effect = shutdown
+    harness.daemon.shutdown.side_effect = shutdown
     closing = harness.start(harness.manager.shutdown)
     assert cleaning.wait(TEST_TIMEOUT)
     pending.raises(RuntimeError)
@@ -769,124 +760,136 @@ def test_shutdown_notifies_before_blocking_process_cleanup(
     closing.result()
 
 
-def test_shutdown_retries_queue_cleanup_after_failure(harness: Harness) -> None:
+def test_shutdown_retries_daemon_cleanup_after_failure(
+    harness: Harness,
+    valid_inputs: tuple[Path, SimulationConfig],
+) -> None:
     """A failed cleanup keeps work closed but allows a later shutdown to finish."""
-    failure = TimeoutError("queue reader did not exit")
-    harness.process.shutdown.side_effect = failure
+    simulation = harness.add(valid_inputs)
+    tracker = FakeTracker()
+    harness.manager._attach(tracker)
+    failure = TimeoutError("daemon did not exit")
+    harness.daemon.shutdown.side_effect = failure
     assert harness.start(harness.manager.shutdown).raises(TimeoutError) is failure
-    harness.display.close.assert_not_called()
+    assert tracker.closed_with == []
     harness.start(harness.manager.__enter__).raises(RuntimeError)
     harness.start(harness.manager.wait).raises(RuntimeError)
 
-    harness.process.shutdown.side_effect = None
+    harness.daemon.shutdown.side_effect = None
     harness.start(harness.manager.shutdown).result()
-    assert harness.process.shutdown.call_count == 2
-    harness.display.close.assert_called_once_with()
+    assert harness.daemon.shutdown.call_count == 2
+    assert simulation.status is SimulationStatus.CANCELLED
+    assert len(tracker.closed_with) == 1
     harness.start(harness.manager.shutdown).result()
-    assert harness.process.shutdown.call_count == 2
-    harness.display.close.assert_called_once_with()
-
-
-def test_shutdown_retries_display_close_after_failure(harness: Harness) -> None:
-    """A display close error also leaves shutdown retryable."""
-    failure = OSError("display close failed")
-    harness.display.close.side_effect = failure
-    assert harness.start(harness.manager.shutdown).raises(OSError) is failure
-    harness.process.shutdown.assert_called_once_with()
-
-    harness.display.close.side_effect = None
-    harness.start(harness.manager.shutdown).result()
-    assert harness.process.shutdown.call_count == 2
-    assert harness.display.close.call_count == 2
-    harness.start(harness.manager.shutdown).result()
-    assert harness.process.shutdown.call_count == 2
-    assert harness.display.close.call_count == 2
+    assert harness.daemon.shutdown.call_count == 2
 
 
 def test_shutdown_rejects_future_operations(
     harness: Harness,
     valid_inputs: tuple[Path, SimulationConfig],
 ) -> None:
-    """Closed managers reject new operations."""
+    """Closed managers reject new operations, including attaching trackers."""
     harness.add(valid_inputs)
     harness.start(harness.manager.shutdown).result()
-    actions = [
+    actions: list[Callable[[], object]] = [
         lambda: harness.manager.add(*valid_inputs),
         harness.manager.wait,
         harness.manager.__enter__,
+        lambda: harness.manager._attach(FakeTracker()),
     ]
     for action in actions:
         harness.start(action).raises(RuntimeError)
-    harness.process.send.assert_called_once()
+    assert harness.daemon.commands().count("add") == 1
 
 
-@pytest.mark.parametrize("callback", ["simulation_started", "refresh", "simulation_finished"])
-def test_display_failures_are_silent_and_do_not_escape(
-    harness: Harness,
-    valid_inputs: tuple[Path, SimulationConfig],
-    callback: str,
-    recwarn: pytest.WarningsRecorder,
-) -> None:
-    """Display update failures are silent without disrupting simulation results."""
-    failure = RuntimeError(f"{callback} display failed")
-    getattr(harness.display, callback).side_effect = failure
-
-    def run_with_broken_display() -> Simulation:
-        simulation = harness.add(valid_inputs)
-        harness.emit(progress("1", 0.5), stream("1", "STATUS", status="DONE"), completed("1"))
-        assert harness.start(harness.manager.wait).result() is None
-        harness.start(harness.manager.shutdown).result()
-        return simulation
-
-    simulation = run_with_broken_display()
-    assert not recwarn
-    assert simulation.succeeded
-    assert harness.manager.succeeded == [simulation]
-
-    harness.display.close.assert_called_once_with()
-
-
-def test_shutdown_closes_display_only_after_reader_exits(
+def test_trackers_receive_only_runs_a_worker_accepted(
     harness: Harness,
     valid_inputs: tuple[Path, SimulationConfig],
 ) -> None:
-    """A callback in progress completes before queue cleanup closes the display."""
+    """Queued runs never reach a tracker; each run is handed over once, when accepted."""
+    finished = harness.add(valid_inputs)
+    harness.daemon.finish("1")
+    harness.poll()
+    running = harness.add(valid_inputs)
+    harness.daemon.accept_on_add = False
+    queued = harness.add(valid_inputs, blocking=False)
+    harness.poll()
+    tracker = FakeTracker()
+
+    harness.manager._attach(tracker)
+    assert tracker.tracked == [running]
+
+    later = harness.add(valid_inputs, blocking=False)
+    harness.poll()
+    assert tracker.tracked == [running]
+
+    harness.daemon.set("3", state="ACCEPTED")
+    harness.daemon.finish("4")  # Accepted and finished between two polls.
+    harness.poll()
+    harness.poll()
+    assert tracker.tracked == [running, queued, later]
+    assert later.succeeded
+
+    harness.manager._detach(tracker)
+    harness.manager._detach(tracker)
+    harness.daemon.accept_on_add = True
     harness.add(valid_inputs)
-    entered = Event()
-    release = harness.gate()
+    assert tracker.tracked == [running, queued, later]
+    assert finished not in tracker.tracked
 
-    def refresh() -> None:
-        entered.set()
-        assert release.wait(TEST_TIMEOUT)
 
-    harness.display.refresh.side_effect = refresh
-    reader = harness.start(lambda: harness.output(progress("1", 0.5)))
-    assert entered.wait(TEST_TIMEOUT)
+def test_shutdown_never_hands_trackers_runs_that_stayed_queued(
+    harness: Harness,
+    valid_inputs: tuple[Path, SimulationConfig],
+) -> None:
+    """Cancelling a long queue costs trackers nothing; started runs still close as CANCELLED."""
+    running = harness.add(valid_inputs)
+    harness.daemon.accept_on_add = False
+    queued = [harness.add(valid_inputs, blocking=False) for _ in range(3)]
+    harness.poll()
+    tracker = FakeTracker()
+    harness.manager._attach(tracker)
 
-    def shutdown_process() -> None:
-        reader.finish()  # QueueProcess.shutdown joins its output reader.
+    harness.start(harness.manager.shutdown).result()
 
-    harness.process.shutdown.side_effect = shutdown_process
-    closing = harness.start(harness.manager.shutdown)
-    assert not reader.done.is_set()
-    harness.display.close.assert_not_called()
-    release.set()
-    closing.result()
-    harness.display.close.assert_called_once_with()
+    assert tracker.tracked == [running]
+    assert [snapshot.status for snapshot in tracker.closed_with[0]] == [SimulationStatus.CANCELLED]
+    assert all(simulation.status is SimulationStatus.CANCELLED for simulation in queued)
+
+
+def test_shutdown_closes_trackers_after_cancelling_runs(
+    harness: Harness,
+    valid_inputs: tuple[Path, SimulationConfig],
+) -> None:
+    """Trackers see final states at close; one failing close does not skip the others."""
+    simulation = harness.add(valid_inputs)
+    failure = OSError("tracker close failed")
+    failing, other = FakeTracker(close_error=failure), FakeTracker()
+    harness.manager._attach(failing)
+    harness.manager._attach(other)
+
+    assert harness.start(harness.manager.shutdown).raises(OSError) is failure
+
+    for tracker in (failing, other):
+        assert [snapshot.status for snapshot in tracker.closed_with[0]] == [SimulationStatus.CANCELLED]
+    assert simulation.is_finished
+    harness.start(harness.manager.shutdown).result()
+    assert len(failing.closed_with) == 1
+    harness.daemon.shutdown.assert_called_once_with()
 
 
 @pytest.mark.parametrize("finish_before_exit", [False, True])
-def test_context_manager_preserves_state_without_synthesizing_completion(
+def test_context_manager_keeps_completed_state(
     harness: Harness,
     valid_inputs: tuple[Path, SimulationConfig],
     *,
     finish_before_exit: bool,
 ) -> None:
-    """Context exit aborts pending runs but retains already completed results."""
+    """Context exit cancels unfinished runs but leaves completed results unchanged."""
     simulation = harness.add(valid_inputs)
     if finish_before_exit:
-        harness.emit(stream("1", "STATUS", status="DONE"), completed("1"))
-        assert harness.start(harness.manager.wait).result() is None
+        harness.daemon.finish("1")
+        harness.poll()
     before = simulation.snapshot()
 
     def use_context() -> None:
@@ -894,7 +897,56 @@ def test_context_manager_preserves_state_without_synthesizing_completion(
             assert entered is harness.manager
 
     harness.start(use_context).result()
-    assert simulation.snapshot() == before
-    assert harness.manager.succeeded == ([simulation] if finish_before_exit else [])
-    harness.process.shutdown.assert_called_once_with()
-    harness.display.close.assert_called_once_with()
+    if finish_before_exit:
+        assert simulation.snapshot() == before
+    else:
+        assert simulation.status is SimulationStatus.CANCELLED
+    harness.daemon.shutdown.assert_called_once_with()
+
+
+class RecordingRenderer:
+    """Thread-safe renderer recording final lines, for the end-to-end display check."""
+
+    def __init__(self) -> None:
+        self.lock: Lock = Lock()
+        self.finished_ids: list[int] = []
+        self.closed: bool = False
+
+    def show(self, active: Sequence[SimulationSnapshot]) -> None:
+        """Ignore live rows."""
+        del active
+
+    def finished(self, snapshot: SimulationSnapshot) -> None:
+        """Record one final line."""
+        with self.lock:
+            self.finished_ids.append(snapshot.id)
+
+    def close(self) -> None:
+        """Record closure."""
+        self.closed = True
+
+
+def test_real_daemon_runs_a_batch_with_a_progress_display(tmp_path: Path, fake_trnrun: Path) -> None:
+    """End to end through the bundled daemon, using trnrund's fake TRNRun."""
+    trnexe = tmp_path / "TrnEXE64.exe"
+    trnexe.touch()
+    decks = [tmp_path / f"{mode}-{index}.dck" for index, mode in enumerate(("done", "done", "failed"))]
+    for deck in decks:
+        deck.touch()
+    config = SimulationConfig(trnexe_path=trnexe)
+    renderer = RecordingRenderer()
+
+    with SimulationManager(max_concurrent=2, poll_interval=0.01, trnrun_path=fake_trnrun) as manager:
+        ProgressDisplay(manager, refresh_interval=0.01, renderer=renderer)
+        simulations = [manager.add(deck, config) for deck in decks]
+        manager.wait()
+
+    assert [simulation.succeeded for simulation in simulations] == [True, True, False]
+    assert sorted(renderer.finished_ids) == [simulation.id for simulation in simulations]
+    assert renderer.closed
+    for simulation in simulations:
+        assert simulation.is_finished
+        assert simulation.log_count == simulation.notices + simulation.warnings + simulation.fatals
+    assert simulations[0].exit_code == 0
+    assert simulations[0].log_count > 0
+    assert simulations[2].exit_code != 0

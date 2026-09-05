@@ -1,9 +1,13 @@
-"""Progress displays for TRNRun-manager simulations.
+"""Built-in progress display for TRNRun-manager simulations.
 
-Rich renders the same status lines for terminals and notebooks. IPython
-``DisplayHandle`` replaces notebook output in place without widgets or clearing
-other cell output. Displays do not own simulation state; they render immutable
-snapshots of the live ``Simulation`` objects supplied by ``SimulationManager``.
+``ProgressDisplay`` attaches to a ``SimulationManager`` and redraws from its
+own background thread, so nothing blocks the caller. It follows only runs a
+daemon worker has accepted, so its cost tracks ``max_concurrent``, not the
+queue length. Each redraw reads immutable snapshots of those handles, prints each
+finished run once, then stops following it. Renderers only ever receive
+snapshots: Rich renders the same status lines for terminals and notebooks, and
+IPython ``DisplayHandle`` replaces notebook output in place without widgets or
+clearing other cell output.
 """
 
 # pyright: reportUnusedCallResult=false
@@ -11,18 +15,23 @@ snapshots of the live ``Simulation`` objects supplied by ``SimulationManager``.
 from __future__ import annotations
 
 import builtins
-import time
-from collections.abc import Callable, Iterable
+import logging
+from collections.abc import Callable, Sequence
 from io import StringIO
-from typing import Protocol, cast
+from threading import Event, Lock, Thread, current_thread
+from types import TracebackType
+from typing import Protocol, Self, cast
 
 from rich.console import Console, Group
 from rich.live import Live
 from rich.text import Text
 
 from trnrun.events import SimulationStatus
-from trnrun.simulation import Simulation
+from trnrun.manager import SimulationManager
+from trnrun.simulation import Simulation, SimulationSnapshot
 from trnrun.utils import format_hhmmss, truncate_left
+
+logger = logging.getLogger(__name__)
 
 # -----------------------------------------------------------------
 # Constants
@@ -43,24 +52,21 @@ PROGRESS_BAR_WIDTH = 20
 MS_PER_SECOND = 1000
 
 
-class DisplayCallback(Protocol):
-    """Callback surface used by ``SimulationManager``."""
+class Renderer(Protocol):
+    """Output surface driven by ``ProgressDisplay`` from one thread at a time."""
 
-    def simulation_started(self, simulation: Simulation) -> None:
-        """Show a newly accepted simulation."""
+    def show(self, active: Sequence[SimulationSnapshot]) -> None:
+        """Replace the live region with the unfinished runs, or clear it when empty."""
 
-    def simulation_finished(self, simulation: Simulation) -> None:
-        """Show a completed simulation."""
-
-    def refresh(self) -> None:
-        """Refresh changed simulation state when due."""
+    def finished(self, snapshot: SimulationSnapshot) -> None:
+        """Print the final state of a run once, outside the live region."""
 
     def close(self) -> None:
-        """Release display resources without completing simulations."""
+        """Release output resources."""
 
 
 class _DisplayHandle(Protocol):
-    """Subset of an IPython ``DisplayHandle`` used by the notebook display."""
+    """Subset of an IPython ``DisplayHandle`` used by the notebook renderer."""
 
     def update(self, obj: object) -> None:
         """Replace the existing output with ``obj``."""
@@ -75,9 +81,8 @@ def _progress_bar(percent: float, width: int = PROGRESS_BAR_WIDTH) -> str:
     return "[" + "#" * filled + "-" * (width - filled) + "]"
 
 
-def _render_line(sim: Simulation) -> Text:
-    """Render one coherent snapshot as a shared Rich status line."""
-    snapshot = sim.snapshot()
+def _render_line(snapshot: SimulationSnapshot) -> Text:
+    """Render one snapshot as a shared Rich status line."""
     path = truncate_left(str(snapshot.deck_path), PATH_WIDTH)
 
     status = snapshot.status
@@ -130,134 +135,63 @@ def _in_notebook_kernel() -> bool:
 def _load_notebook_api() -> tuple[Callable[[str], object], Callable[..., object]]:
     """Load the optional IPython display API only for notebook rendering."""
     try:
-        from IPython.display import HTML, display
+        from IPython.display import HTML, display  # noqa: PLC0415 - optional dependency
     except ImportError as error:
         raise ImportError("Notebook display mode requires IPython") from error
     return cast("Callable[[str], object]", HTML), cast("Callable[..., object]", display)
 
 
 # -----------------------------------------------------------------
-# Null Display
+# Terminal Renderer
 # -----------------------------------------------------------------
-class NullDisplay:
-    """Display that renders nothing; for headless runs and tests."""
+class TerminalRenderer:
+    """Transient Rich live region of unfinished runs, with final lines printed above it.
 
-    def simulation_started(self, simulation: Simulation) -> None:
-        """Ignore simulation start events."""
-        del simulation
-
-    def simulation_finished(self, simulation: Simulation) -> None:
-        """Ignore simulation finish events."""
-        del simulation
-
-    def refresh(self) -> None:
-        """Ignore refresh requests."""
-
-    def close(self) -> None:
-        """Ignore cleanup requests."""
-
-
-# -----------------------------------------------------------------
-# Terminal Display
-# -----------------------------------------------------------------
-class Display:
-    """Live terminal view of currently running simulations.
-
-    The manager's reader thread drives every redraw, so the live region never
-    refreshes on a timer of its own. Each status line uses a coherent simulation
-    snapshot and renders after releasing the simulation's lock.
-
-    Parameters
-    ----------
-    refresh_interval : float, optional
-        Minimum time in seconds between live region redraws. Must be positive.
+    The region exists only while runs are unfinished, and redraws only when
+    ``ProgressDisplay`` asks, never on a timer of its own.
     """
 
-    def __init__(self, refresh_interval: float = 1.0) -> None:
-        if refresh_interval <= 0:
-            raise ValueError("refresh_interval must be positive")
-
-        self.console: Console = Console()
-
-        self._active: dict[int, Simulation] = {}
-        self._refresh_interval: float = refresh_interval
-        self._last_refresh: float = 0.0
+    def __init__(self, console: Console | None = None) -> None:
+        self.console: Console = console if console is not None else Console()
         self._live: Live | None = None
 
-    # -----------------------------------------------------------------
-    # Event Handlers
-    # -----------------------------------------------------------------
-    def simulation_started(self, simulation: Simulation) -> None:
-        """Add a simulation to the live display."""
-        self._active[simulation.id] = simulation
-
-        if self._live is None:
-            live = self._make_live()
-            live.start()
-            self._live = live
-
-    def simulation_finished(self, simulation: Simulation) -> None:
-        """Remove a simulation and print its final state."""
-        _ = self._active.pop(simulation.id, None)
-
-        self.console.print(_render_line(simulation))
-
-        if not self._active:
+    def show(self, active: Sequence[SimulationSnapshot]) -> None:
+        """Redraw the live region, starting it on demand and stopping it when empty."""
+        if not active:
             self.close()
+            return
+
+        lines = Group(*(_render_line(snapshot) for snapshot in active))
+        if self._live is None:
+            live = Live(lines, console=self.console, auto_refresh=False, transient=True)
+            live.start(refresh=True)
+            self._live = live
+        else:
+            self._live.update(lines, refresh=True)
+
+    def finished(self, snapshot: SimulationSnapshot) -> None:
+        """Print a final line above the live region."""
+        self.console.print(_render_line(snapshot))
 
     def close(self) -> None:
-        """Stop the live region without printing results or changing simulations."""
-        self._active.clear()
+        """Stop and erase the live region; printed lines stay."""
         if self._live is not None:
             live, self._live = self._live, None
             live.stop()
 
-    def refresh(self) -> None:
-        """Redraw the live region, at most once per refresh interval."""
-        if self._live is None:
-            return
-
-        now = time.monotonic()
-        if now - self._last_refresh < self._refresh_interval:
-            return
-
-        self._last_refresh = now
-        self._live.refresh()
-
-    # -----------------------------------------------------------------
-    # Rendering
-    # -----------------------------------------------------------------
-    def _make_live(self) -> Live:
-        """Build a fresh transient live display the manager refreshes itself."""
-        return Live(
-            get_renderable=self._render_all,
-            console=self.console,
-            auto_refresh=False,
-            transient=True,
-        )
-
-    def _render_all(self) -> Group:
-        """Render all active simulations."""
-        return Group(*(_render_line(sim) for sim in self._active.values()))
-
 
 # -----------------------------------------------------------------
-# Notebook Display
+# Notebook Renderer
 # -----------------------------------------------------------------
-class NotebookDisplay:
-    """Notebook view with one live region for active simulations.
+class NotebookRenderer:
+    """Notebook view with one live output area for unfinished runs.
 
-    Each completed result is printed once to stdout with ANSI status colours,
-    never included in subsequent refreshes. Starts and
-    completions update immediately; ordinary updates are throttled by
-    ``refresh_interval`` and unchanged frames are not published. Rich exports
+    Each final line is printed once to stdout with ANSI status colours, never
+    included in later updates. Unchanged frames are not published. Rich exports
     unwrapped status lines as HTML without widgets.
     """
 
-    def __init__(self, refresh_interval: float = 1.0) -> None:
-        if refresh_interval <= 0:
-            raise ValueError("refresh_interval must be positive")
-
+    def __init__(self) -> None:
         html, display_html = _load_notebook_api()
         self._html: Callable[[str], object] = html
         self._display_html: Callable[..., object] = display_html
@@ -266,69 +200,47 @@ class NotebookDisplay:
             force_terminal=True,
             color_system="standard",
         )
-        self._active: dict[int, Simulation] = {}
-
-        self._refresh_interval: float = refresh_interval
-        self._last_refresh: float = 0.0
         self._handle: _DisplayHandle | None = None
         self._last_html: str | None = None
 
-    def simulation_started(self, simulation: Simulation) -> None:
-        """Add a simulation and show it immediately."""
-        self._active[simulation.id] = simulation
-        self._update()
+    def show(self, active: Sequence[SimulationSnapshot]) -> None:
+        """Replace the live output area, publishing it on first use."""
+        if self._handle is None and not active:
+            return
 
-    def simulation_finished(self, simulation: Simulation) -> None:
-        """Print a final line to stdout, then remove it from the live region."""
-        _ = self._active.pop(simulation.id, None)
-        self._completed_console.print(_render_line(simulation), soft_wrap=True)
-        self._update()
+        html = self._render_html(active)
+        if html == self._last_html:
+            return
+
+        rendered = self._html(html)
+        if self._handle is None:
+            handle = self._display_html(rendered, display_id=True)
+            if handle is None or not hasattr(handle, "update"):
+                raise RuntimeError("IPython did not return a display handle")
+            self._handle = cast("_DisplayHandle", handle)
+        else:
+            self._handle.update(rendered)
+        self._last_html = html
+
+    def finished(self, snapshot: SimulationSnapshot) -> None:
+        """Print a final line to stdout."""
+        self._completed_console.print(_render_line(snapshot), soft_wrap=True)
 
     def close(self) -> None:
-        """Release tracking and the handle without publishing or completing simulations."""
-        self._active.clear()
+        """Release the handle without publishing."""
         self._handle = None
         self._last_html = None
 
-    def refresh(self) -> None:
-        """Update active progress at most once per refresh interval."""
-        if not self._active:
-            return
-
-        now = time.monotonic()
-        if now - self._last_refresh < self._refresh_interval:
-            return
-        self._update(now)
-
-    def _update(self, now: float | None = None) -> None:
-        """Replace only active output, leaving completed output untouched."""
-        if self._handle is None and not self._active:
-            return
-
-        html = self._render_html(self._active.values())
-        if html != self._last_html:
-            rendered = self._html(html)
-            if self._handle is None:
-                handle = self._display_html(rendered, display_id=True)
-                if handle is None or not hasattr(handle, "update"):
-                    raise RuntimeError("IPython did not return a display handle")
-                self._handle = cast("_DisplayHandle", handle)
-            else:
-                self._handle.update(rendered)
-            self._last_html = html
-        self._last_refresh = time.monotonic() if now is None else now
-
     @staticmethod
-    def _render_html(simulations: Iterable[Simulation]) -> str:
-        """Export only the supplied simulations as a Rich HTML fragment."""
-        lines = [_render_line(simulation) for simulation in simulations]
-        if not lines:
+    def _render_html(snapshots: Sequence[SimulationSnapshot]) -> str:
+        """Export only the supplied snapshots as a Rich HTML fragment."""
+        if not snapshots:
             return ""
 
         # A fresh, private console keeps frame buffers bounded and bypasses Rich's
         # Jupyter output hook; publishing is handled explicitly by the caller.
         console = Console(file=StringIO(), record=True, force_jupyter=False, color_system=None)
-        console.print(Group(*lines), soft_wrap=True)
+        console.print(Group(*(_render_line(snapshot) for snapshot in snapshots)), soft_wrap=True)
         return console.export_html(
             inline_styles=True,
             code_format=(
@@ -338,10 +250,126 @@ class NotebookDisplay:
         )
 
 
-def create_display(refresh_interval: float) -> DisplayCallback:
-    """Select the environment-appropriate display without eagerly importing IPython."""
-    if refresh_interval <= 0:
-        return NullDisplay()
+def _auto_renderer() -> Renderer:
+    """Select the environment-appropriate renderer without eagerly importing IPython."""
     if _in_notebook_kernel():
-        return NotebookDisplay(refresh_interval=refresh_interval)
-    return Display(refresh_interval=refresh_interval)
+        return NotebookRenderer()
+    return TerminalRenderer()
+
+
+# -----------------------------------------------------------------
+# Progress Display
+# -----------------------------------------------------------------
+class ProgressDisplay:
+    """Show live progress of a manager's runs from a background thread.
+
+    Follows only runs a daemon worker has accepted: those already running
+    when created, and every other run once a worker accepts it. Queued runs
+    are never followed, so 10,000 queued submissions cost nothing; at most
+    ``max_concurrent`` runs are drawn. Every `refresh_interval` seconds it
+    prints each newly finished run once and redraws the running ones.
+    Rendering failures are logged and never affect the runs.
+
+    The manager closes it on shutdown, after finishing unfinished runs as
+    ``CANCELLED``, so final lines are printed for the runs that had started;
+    runs still queued are not printed. Closing it earlier,
+    for example by leaving a ``with ProgressDisplay(...)`` block, stops
+    following runs that are still unfinished.
+
+    Parameters
+    ----------
+    manager : SimulationManager
+        Manager whose runs to show. Must be open.
+    refresh_interval : float, optional
+        Seconds between redraws. Must be positive.
+    renderer : Renderer, optional
+        Output surface; by default a notebook renderer inside a Jupyter
+        kernel, otherwise a terminal renderer.
+    """
+
+    def __init__(
+        self,
+        manager: SimulationManager,
+        *,
+        refresh_interval: float = 1.0,
+        renderer: Renderer | None = None,
+    ) -> None:
+        if not refresh_interval > 0:
+            raise ValueError("refresh_interval must be positive")
+
+        self._manager: SimulationManager = manager
+        self._refresh_interval: float = refresh_interval
+        self._renderer: Renderer = renderer if renderer is not None else _auto_renderer()
+        self._lock: Lock = Lock()
+        self._rows: dict[int, Simulation] = {}
+        self._closed: bool = False
+        self._stop: Event = Event()
+        self._thread: Thread = Thread(target=self._run, name="trnrun-progress", daemon=True)
+
+        manager._attach(self)  # noqa: SLF001  # pyright: ignore[reportPrivateUsage] - tracker interface
+        try:
+            self._thread.start()
+        except BaseException:
+            manager._detach(self)  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+            raise
+
+    def track(self, simulation: Simulation) -> None:
+        """Follow an accepted `simulation` until it has finished and been printed."""
+        with self._lock:
+            self._rows[simulation.id] = simulation
+
+    def close(self) -> None:
+        """Stop following runs, print those already finished, and release the output."""
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+
+        self._manager._detach(self)  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+        self._stop.set()
+        if current_thread() is not self._thread:
+            self._thread.join()
+        self._tick()
+        self._renderer.close()
+
+    def __enter__(self) -> Self:
+        """Return the running display."""
+        return self
+
+    def __exit__(
+        self,
+        _exc_type: type[BaseException] | None,
+        _exc_value: BaseException | None,
+        _traceback: TracebackType | None,
+    ) -> None:
+        """Close the display when leaving the context."""
+        self.close()
+
+    def _run(self) -> None:
+        """Redraw every refresh interval until closed."""
+        while not self._stop.wait(self._refresh_interval):
+            self._tick()
+
+    def _tick(self) -> None:
+        """Redraw once; a renderer failure is logged, never raised."""
+        try:
+            self._render()
+        except Exception:
+            logger.exception("TRNRun progress display failed to render")
+
+    def _render(self) -> None:
+        """Print and drop newly finished runs, then show the unfinished ones."""
+        with self._lock:
+            rows = list(self._rows.values())
+
+        active: list[SimulationSnapshot] = []
+        for simulation in rows:
+            snapshot = simulation.snapshot()
+            if snapshot.is_finished:
+                # Drop first, so a failing renderer cannot print the same run twice.
+                with self._lock:
+                    del self._rows[snapshot.id]
+                self._renderer.finished(snapshot)
+            else:
+                active.append(snapshot)
+        self._renderer.show(active)
