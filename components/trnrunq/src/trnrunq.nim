@@ -28,9 +28,9 @@ Options:
 Read one JSON request per stdin line:
   {"runId":"1","deckFile":"model.dck","runnerPath":"trnrun.exe","runnerArgs":[]}
 
-EOF ends submission and waits for every accepted run. Child output is forwarded
-unchanged to stdout. Diagnostics are written to stderr as plain text; they are
-not a protocol and must not be read as run results.
+EOF ends submission and waits for every accepted run. Queue acknowledgments and
+unchanged child output are written to stdout. Diagnostics are written to stderr
+as plain text; they are not a protocol and must not be read as run results.
 
 Exit codes: 0 ok  1 fatal  2 usage error"""
 

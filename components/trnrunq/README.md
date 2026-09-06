@@ -82,8 +82,21 @@ completion, after which queue stdout closes.
 
 ## Output protocol
 
-Every merged child stdout/stderr line is forwarded unchanged to queue stdout.
-For example:
+After a request enters the worker pool, the queue writes and flushes an
+acknowledgment to stdout:
+
+```json
+{"kind":"QUEUE","timestamp":"2026-06-19T19:37:15","event":"ACCEPTED","runId":"building-a"}
+```
+
+With a positive `--maxPending`, this acknowledgment is delayed while the pending
+queue is full. It confirms admission only; paths and runner startup are validated
+later by a worker. Queue acknowledgments have no ordering guarantee relative to
+runner events, so wrappers must route the shared stdout stream by `kind` rather
+than treat the next line as an acknowledgment.
+
+Every merged child stdout/stderr line is also forwarded unchanged to queue
+stdout. For example:
 
 ```json
 {"kind":"STATUS","timestamp":"2026-06-19T19:37:15","status":"RUNNING","message":"","seq":4,"runId":"building-a"}
@@ -105,13 +118,15 @@ stdout reaches EOF.
 A wrapper should:
 
 1. Start one dedicated queue-stdout reader before submitting work.
-2. Route valid runner events to simulations by `runId`.
+2. Resolve submission waiters from `QUEUE/ACCEPTED` events and route runner
+   events to simulations by `runId`.
 3. Generate and write requests incrementally rather than retaining the complete
    workload.
 4. Set a positive `--maxPending` when submission backpressure is required, and
-   keep reading stdout while submission is blocked.
-5. Close queue stdin after generating the final request.
-6. Continue reading stdout through EOF and mark runs without terminal statuses
+   keep reading stdout while submission is blocked awaiting acknowledgment.
+5. Treat queue EOF before acknowledgment as a submission failure.
+6. Close queue stdin after generating the final request.
+7. Continue reading stdout through EOF and mark runs without terminal statuses
    according to wrapper policy.
 
 ## Concurrency model

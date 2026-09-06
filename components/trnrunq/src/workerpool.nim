@@ -7,10 +7,22 @@
 ## Pools are single-use because their channel remains open to avoid a Nim 2.2
 ## ORC crash when closing channels that transported moved strings.
 
+import std/[json, times]
+
 import ./outputsink
 import ./request
 import ./status
 import ./trnrun
+
+
+proc acceptedLine(runId: string): string =
+  ## Formats the event marking one request as admitted to the worker pool.
+  result = $(%*{
+    "kind": "QUEUE",
+    "timestamp": now().format("yyyy-MM-dd'T'HH:mm:ss"),
+    "event": "ACCEPTED",
+    "runId": runId,
+  })
 
 
 type
@@ -121,11 +133,19 @@ proc start*(pool: var WorkerPool, maxConcurrent: int, maxPending: int = 0) =
 
 
 proc submit*(pool: var WorkerPool, request: RunRequest) =
-  ## Queues a request, blocking while a bounded pending queue is full.
+  ## Queues a request, blocking while a bounded pending queue is full, then
+  ## emits `QUEUE/ACCEPTED`.
+  ##
+  ## The emit follows `send` because `send` returning is the acceptance: with a
+  ## bounded channel it returns only once a slot is free, which is the event a
+  ## wrapper blocks on. `runId` is copied first because `request` is moved into
+  ## the channel and must not be read afterwards.
   if pool.state != psRunning:
     raise newException(ValueError, "worker pool is not running")
 
+  let runId = request.runId
   pool.work.send(Work(kind: wkRun, request: request))
+  pool.output.emit(acceptedLine(runId))
 
 
 proc shutdown*(pool: var WorkerPool) =
