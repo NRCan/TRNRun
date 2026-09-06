@@ -193,6 +193,22 @@ proc runTests() =
 
         pool.shutdown()
 
+      test "enforces the single-use lifecycle":
+        var pool = default(WorkerPool)
+
+        pool.shutdown()
+        expect ValueError:
+          pool.submit(default(RunRequest))
+
+        pool.start(maxConcurrent = 1)
+        pool.shutdown()
+        pool.shutdown()
+
+        expect ValueError:
+          pool.submit(default(RunRequest))
+        expect ValueError:
+          pool.start(maxConcurrent = 1)
+
       test "shutdown drains queued work":
         let
           deckFile = createDeck(testDirectory, "slow.dck")
