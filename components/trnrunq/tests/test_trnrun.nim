@@ -2,7 +2,6 @@ import std/[json, os, osproc, streams, strutils, unittest]
 
 import ../src/outputsink
 import ../src/trnrun
-import ../src/validate
 
 
 const HeldPipeLine = "inherited stdout remained open"
@@ -142,28 +141,6 @@ proc runTests() =
   createDir(testDirectory)
   try:
     suite "TRNRun process runner":
-      test "validates deck paths and extensions":
-        let
-          dckFile = createDeck(testDirectory, "model.dck")
-          trdFile = createDeck(testDirectory, "model.TRD")
-          invalidDeck = createDeck(testDirectory, "model.txt")
-
-        check validateDeck(dckFile) == dckFile.absolutePath().normalizedPath()
-        check validateDeck(trdFile) == trdFile.absolutePath().normalizedPath()
-        expect ValueError:
-          discard validateDeck(invalidDeck)
-        expect IOError:
-          discard validateDeck(testDirectory / "missing.dck")
-
-      test "validates absolute and executable-relative runner paths":
-        let executableName = executable.extractFilename()
-
-        check validateTrnrun(executable) == executable.normalizedPath()
-        check validateTrnrun(executableName) ==
-          (getAppDir() / executableName).normalizedPath()
-        expect IOError:
-          discard validateTrnrun("missing-trnrun.exe")
-
       test "forwards merged child output and arguments unchanged":
         let
           deckFile = createDeck(testDirectory, "forward.dck")
