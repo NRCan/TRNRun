@@ -131,9 +131,6 @@ proc submit*(pool: var WorkerPool, request: RunRequest) =
 proc shutdown*(pool: var WorkerPool) =
   ## Drains accepted work, stops the workers, and waits for them to exit.
   ## Safe to call before `start` or more than once.
-  ##
-  ## The channel stays open to avoid a Nim 2.2 ORC crash when closing channels
-  ## that transported moved strings.
   if pool.state != psRunning:
     return
 
