@@ -153,6 +153,15 @@ class LogEvent:
 
 type TrnRunEvent = StatusEvent | ProgressEvent | ConfigEvent | SettingEvent | LogEvent
 
+TERMINAL_STATUSES: Final[frozenset[str]] = frozenset(
+    {"DONE", "ERROR", "CANCELLED", "TIMEOUT", "STALLED"},
+)
+
+
+def is_terminal_status(status: str) -> bool:
+    """Return whether a status finishes a simulation."""
+    return status.upper() in TERMINAL_STATUSES
+
 
 # -----------------------------------------------------------------
 # Validation Helpers
@@ -331,6 +340,11 @@ def parse_event(line: str) -> TrnRunEvent:
 
     data = cast("dict[str, object]", value)
 
+    return parse_event_data(data)
+
+
+def parse_event_data(data: dict[str, object]) -> TrnRunEvent:
+    """Parse an already decoded runner event object."""
     kind = _require_str(data, "kind").upper()
 
     try:

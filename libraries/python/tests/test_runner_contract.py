@@ -17,6 +17,7 @@ from trnrun.events import (
     parse_event,
     stream_events,
 )
+from trnrun.manager import SimulationManager
 from trnrun.simulation import Simulation
 
 TIMESTAMP = "2026-08-26T12:34:56"
@@ -173,12 +174,17 @@ def test_stream_skips_runner_diagnostics_without_losing_events() -> None:
 
 def test_simulation_folds_runner_events() -> None:
     """Keep event-state and success semantics stable for manager consumers."""
-    simulation = Simulation("example.dck", SimulationConfig(), max_log_events=1)
-    simulation.apply(StatusEvent(status="RUNNING", timestamp=TIMESTAMP))
-    simulation.apply(ConfigEvent(start=0.0, stop=1.0, step=0.25, timestamp=TIMESTAMP))
-    simulation.apply(ProgressEvent(time=0.5, percent=0.5, elapsed=100.0, eta=100.0, timestamp=TIMESTAMP))
-    simulation.apply(LogEvent(severity="Notice", timestamp=TIMESTAMP, message="first"))
-    simulation.apply(LogEvent(severity="Warning", timestamp=TIMESTAMP, message="second"))
+    simulation = Simulation(
+        "example.dck",
+        SimulationConfig(),
+        sim_id=1,
+        max_log_events=1,
+    )
+    simulation.apply_event(StatusEvent(status="RUNNING", timestamp=TIMESTAMP))
+    simulation.apply_event(ConfigEvent(start=0.0, stop=1.0, step=0.25, timestamp=TIMESTAMP))
+    simulation.apply_event(ProgressEvent(time=0.5, percent=0.5, elapsed=100.0, eta=100.0, timestamp=TIMESTAMP))
+    simulation.apply_event(LogEvent(severity="Notice", timestamp=TIMESTAMP, message="first"))
+    simulation.apply_event(LogEvent(severity="Warning", timestamp=TIMESTAMP, message="second"))
 
     snapshot = simulation.snapshot()
     assert snapshot.status == StatusEvent(status="RUNNING", timestamp=TIMESTAMP)
@@ -194,6 +200,12 @@ def test_simulation_folds_runner_events() -> None:
     assert snapshot.notices == 1
     assert snapshot.warnings == 1
     assert snapshot.log_count == 2
+    assert not simulation.is_finished
+
+    simulation.apply_event(StatusEvent(status="DONE", timestamp=TIMESTAMP))
+
+    assert simulation.is_finished
+    assert simulation.succeeded
 
 
 def test_bundled_runner_end_to_end(tmp_path: Path) -> None:
@@ -214,12 +226,10 @@ def test_bundled_runner_end_to_end(tmp_path: Path) -> None:
         watch_timeout_ms=5_000,
         poll_ms=10,
     )
-    simulation = Simulation(deck_path, config)
+    with SimulationManager(max_concurrent=1, refresh_interval=0) as manager:
+        simulation = manager.add(deck_path, config)
+        assert manager.wait(timeout=10)
 
-    simulation.run()
-
-    assert simulation.error is None
-    assert simulation.exit_code == 0
     assert simulation.status is not None
     assert simulation.status.status == "DONE"
     assert simulation.setting_event is not None

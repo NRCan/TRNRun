@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
 from pathlib import Path
 
 # -----------------------------------------------------------------
 # Constants
 # -----------------------------------------------------------------
-# `trnrun.exe` is bundled inside this package under `bin/`.
+# Queue and runner executables are bundled inside this package under `bin/`.
 _PACKAGE_DIR = Path(__file__).resolve().parent
 BUNDLED_TRNRUN_PATH = _PACKAGE_DIR / "bin" / "trnrun.exe"
+BUNDLED_TRNRUNQ_PATH = _PACKAGE_DIR / "bin" / "trnrunq.exe"
 
 DEFAULT_TRNEXE_PATH = Path(r"C:\TRNSYS18\Exe\TrnEXE64.exe")
 

@@ -156,10 +156,6 @@ class Display:
         text.append(f"Logs: {logs:<12} │ ")
         text.append(f"Elapsed: {elapsed:<8} │ ETA: {eta:<8} │ ")
         text.append(f"{bar} {sim_progress} {sim_percent:6}")
-
-        if sim.error is not None:
-            text.append(f" │ error: {sim.error}", style="red")
-
         return text
 
     def _render_all(self) -> Group:

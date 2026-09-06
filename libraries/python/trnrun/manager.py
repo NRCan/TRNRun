@@ -1,226 +1,158 @@
-"""Manage concurrent TRNRun simulations.
-
-Provides ``SimulationManager`` to run multiple simulations with a fixed
-concurrency limit, monitor their progress, and access completed results.
-The manager optionally displays live terminal progress.
-"""
+"""Manage simulations through one TRNRun Queue process."""
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import subprocess
 import threading
+import time
 from collections.abc import Callable
-from concurrent.futures import Future, ThreadPoolExecutor
-from concurrent.futures import wait as wait_for_futures
 from pathlib import Path
 from types import TracebackType
-from typing import Final, Self
+from typing import IO, Final, Self, cast
 
-from trnrun.config import SimulationConfig
+from trnrun.config import BUNDLED_TRNRUNQ_PATH, SimulationConfig
 from trnrun.display import Display, NullDisplay
+from trnrun.events import EventParseError, parse_event_data
 from trnrun.simulation import Simulation
 
 logger = logging.getLogger(__name__)
 
-
-# -----------------------------------------------------------------
-# Constants
-# -----------------------------------------------------------------
 DEFAULT_MAX_CONCURRENT: Final[int] = max((os.cpu_count() or 1) - 1, 1)
+CREATE_NO_WINDOW: Final[int] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
-# -----------------------------------------------------------------
-# Slot Strategies
-# -----------------------------------------------------------------
-class _UnboundedSlots:
-    """No-op stand-in for `threading.BoundedSemaphore`.
-
-    Used when `add()` must never block; pending simulations wait in the
-    worker pool's internal queue instead of holding the caller.
-    """
-
-    def acquire(self) -> bool:
-        """Grant a slot immediately."""
-        return True
-
-    def release(self) -> None:
-        """Do nothing; slots are not tracked."""
-
-
-# -----------------------------------------------------------------
-# Simulation Manager
-# -----------------------------------------------------------------
 class SimulationManager:
-    """Run simulations using a bounded pool of worker threads.
-
-    `add()` starts simulations using a fixed number of worker threads, so no
-    more than `max_concurrent` TRNRun processes run at the same time. If all
-    workers are busy, `add()` either waits until a worker becomes available
-    (`block=True`, the default) or returns immediately and leaves
-    the simulation queued until a worker frees up (`block=False`).
-
-    Each added simulation returns a `Simulation` object that can be monitored
-    while running through its `progress`, `status`, `logs`, `is_finished`, and
-    `succeeded` properties.
-
-    After `wait()` completes, `succeeded` and `failed` provide shortcuts to
-    access completed simulations while preserving the original `Simulation`
-    objects.
-
-    A live terminal display is enabled by default. Set `refresh_interval` to
-    zero or a negative value to disable terminal output.
-
-    Parameters
-    ----------
-    max_concurrent : int, optional
-        Maximum number of simulations running at the same time.
-    refresh_interval : float, optional
-        Time in seconds between terminal display updates. A value less than
-        or equal to zero disables the display. Defaults to `1.0`.
-    block : bool, optional
-        When `True`, `add()` blocks while all workers are busy. When `False`,
-        `add()` never blocks and pending simulations wait in the worker
-        pool's unbounded queue. Defaults to `True`.
-    """
+    """Submit and monitor simulations through one `trnrunq.exe` process."""
 
     def __init__(
         self,
         max_concurrent: int = DEFAULT_MAX_CONCURRENT,
+        max_pending: int = 0,
         refresh_interval: float = 1.0,
         *,
-        block: bool = True,
+        trnrunq_path: str | Path = BUNDLED_TRNRUNQ_PATH,
     ) -> None:
-        """Initialize the simulation manager."""
+        """Start the queue process and its output reader."""
         if max_concurrent < 1:
             raise ValueError("max_concurrent must be at least 1")
+        if max_pending < 0:
+            raise ValueError("max_pending must be at least 0")
+
+        trnrunq_path = Path(trnrunq_path)
+        if not trnrunq_path.is_file():
+            raise FileNotFoundError(f"TRNRun queue executable not found: {trnrunq_path}")
 
         self._display: Display | NullDisplay = (
             Display(refresh_interval=refresh_interval) if refresh_interval > 0 else NullDisplay()
         )
-
         self._lock: threading.Lock = threading.Lock()
-        self._slots: threading.BoundedSemaphore | _UnboundedSlots = (
-            threading.BoundedSemaphore(max_concurrent) if block else _UnboundedSlots()
-        )
-        self._executor: ThreadPoolExecutor = ThreadPoolExecutor(
-            max_workers=max_concurrent,
-            thread_name_prefix="simulation",
-        )
-
+        self._write_lock: threading.Lock = threading.Lock()
         self._simulations: list[Simulation] = []
-        self._futures: list[Future[None]] = []
-        self._next_id: int = 0
+        self._by_id: dict[str, Simulation] = {}
+        self._next_id: int = 1
         self._closed: bool = False
 
-    # -----------------------------------------------------------------
-    # Simulation Access
-    # -----------------------------------------------------------------
+        self._process: subprocess.Popen[str] = subprocess.Popen(
+            [
+                str(trnrunq_path),
+                f"--maxConcurrent:{max_concurrent}",
+                f"--maxPending:{max_pending}",
+            ],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+            creationflags=CREATE_NO_WINDOW,
+        )
+        self._stdin: IO[str] = self._require_stream(self._process.stdin, "stdin")
+        self._stdout: IO[str] = self._require_stream(self._process.stdout, "stdout")
+        self._reader: threading.Thread = threading.Thread(
+            target=self._read_output,
+            name="trnrunq-output",
+            daemon=True,
+        )
+        self._reader.start()
+
     @property
     def simulations(self) -> list[Simulation]:
-        """Return all added simulations in creation order."""
+        """Return submitted simulations in creation order."""
         with self._lock:
             return list(self._simulations)
 
-    # -----------------------------------------------------------------
-    # Scheduling
-    # -----------------------------------------------------------------
     def add(self, deck_file: str | Path, config: SimulationConfig) -> Simulation:
-        """Schedule a simulation.
-
-        Blocks until a worker is available when the manager was created with
-        `block=True`; otherwise returns immediately and the
-        simulation waits in the queue until a worker picks it up.
-        """
+        """Submit one simulation and return its state object."""
         deck_path = Path(deck_file)
-
         if not deck_path.is_file():
             raise FileNotFoundError(f"Deck file not found: {deck_path}")
-
-        _ = self._slots.acquire()
-
-        try:
-            with self._lock:
-                if self._closed:
-                    raise RuntimeError("manager is shut down")
-
-                sim_id = self._next_id
-                self._next_id += 1
-
-            simulation = Simulation(deck_path, config, sim_id)
-            future = self._executor.submit(self._run_and_release, simulation)
-        except BaseException:
-            self._slots.release()
-            raise
+        config.validate()
 
         with self._lock:
+            if self._closed:
+                raise RuntimeError("manager is shut down")
+            simulation = Simulation(deck_path, config, self._next_id)
+            self._next_id += 1
             self._simulations.append(simulation)
-            self._futures.append(future)
+            self._by_id[str(simulation.id)] = simulation
+
+        self._notify(self._display.simulation_started, simulation)
+        request = {
+            "runId": str(simulation.id),
+            "deckFile": str(deck_path),
+            "runnerPath": str(config.trnrun_path),
+            "runnerArgs": config.to_cli_args(),
+        }
+
+        try:
+            with self._write_lock:
+                _ = self._stdin.write(json.dumps(request, separators=(",", ":")) + "\n")
+                self._stdin.flush()
+        except BaseException:
+            with self._lock:
+                _ = self._by_id.pop(str(simulation.id), None)
+                self._simulations.remove(simulation)
+            self._notify(self._display.simulation_finished, simulation)
+            raise
 
         return simulation
 
-    def _notify(
-        self,
-        callback: Callable[[Simulation], None],
-        simulation: Simulation,
-    ) -> None:
-        """Notify display while ignoring display failures."""
-        try:
-            callback(simulation)
-        except Exception:
-            logger.exception("display notification failed for simulation %s", simulation.id)
-
-    def _run_and_release(self, simulation: Simulation) -> None:
-        """Execute one simulation and release its worker slot."""
-        try:
-            self._notify(self._display.simulation_started, simulation)
-            try:
-                simulation.run()
-            finally:
-                self._notify(self._display.simulation_finished, simulation)
-        finally:
-            self._slots.release()
-
-    # -----------------------------------------------------------------
-    # Waiting & Results
-    # -----------------------------------------------------------------
     def wait(self, timeout: float | None = None) -> bool:
-        """Wait for simulations added before this call."""
-        with self._lock:
-            futures = list(self._futures)
+        """Wait for simulations added before this call to finish."""
+        simulations = self.simulations
+        deadline = None if timeout is None else time.monotonic() + timeout
 
-        unfinished = wait_for_futures(futures, timeout=timeout).not_done
-        return not unfinished
+        for simulation in simulations:
+            remaining = None if deadline is None else max(deadline - time.monotonic(), 0.0)
+            if not simulation.wait(remaining):
+                return False
+        return True
 
     @property
     def succeeded(self) -> list[Simulation]:
         """Return simulations that completed successfully."""
-        return [sim for sim in self.simulations if sim.succeeded]
+        return [simulation for simulation in self.simulations if simulation.succeeded]
 
     @property
     def failed(self) -> list[Simulation]:
-        """Return simulations that completed unsuccessfully."""
-        return [sim for sim in self.simulations if sim.is_finished and not sim.succeeded]
+        """Return simulations that completed without succeeding."""
+        return [simulation for simulation in self.simulations if simulation.is_finished and not simulation.succeeded]
 
-    # -----------------------------------------------------------------
-    # Shutdown & Context
-    # -----------------------------------------------------------------
-    def cancel(self) -> None:
-        """Request cancellation of all simulations."""
-        for simulation in self.simulations:
-            simulation.cancel()
-
-    def shutdown(self, *, cancel: bool = False, wait: bool = True) -> None:
-        """Shutdown the manager and worker pool."""
+    def shutdown(self) -> None:
+        """Close queue input and drain all accepted simulations."""
         with self._lock:
             if self._closed:
                 return
             self._closed = True
 
-        if cancel:
-            self.cancel()
+        with self._write_lock:
+            self._stdin.close()
 
-        self._executor.shutdown(wait=wait, cancel_futures=cancel)
+        self._reader.join()
+        _ = self._process.wait()
 
     def __enter__(self) -> Self:
         """Enter the manager context."""
@@ -232,5 +164,46 @@ class SimulationManager:
         _exc_value: BaseException | None,
         _traceback: TracebackType | None,
     ) -> None:
-        """Exit the manager context."""
+        """Drain the queue when leaving the manager context."""
         self.shutdown()
+
+    def _read_output(self) -> None:
+        """Route valid queue events until stdout reaches EOF."""
+        for line in self._stdout:
+            try:
+                value = cast("object", json.loads(line))
+                if not isinstance(value, dict):
+                    continue
+                data = cast("dict[str, object]", value)
+                run_id = data.get("runId")
+                if not isinstance(run_id, str):
+                    continue
+                event = parse_event_data(data)
+            except (json.JSONDecodeError, EventParseError):
+                continue
+
+            with self._lock:
+                simulation = self._by_id.get(run_id)
+            if simulation is None or simulation.is_finished:
+                continue
+
+            simulation.apply_event(event)
+            if simulation.is_finished:
+                with self._lock:
+                    _ = self._by_id.pop(run_id, None)
+                self._notify(self._display.simulation_finished, simulation)
+
+    @staticmethod
+    def _notify(callback: Callable[[Simulation], None], simulation: Simulation) -> None:
+        """Notify the display without interrupting queue processing."""
+        try:
+            callback(simulation)
+        except Exception:
+            logger.exception("display notification failed for simulation %s", simulation.id)
+
+    @staticmethod
+    def _require_stream(stream: IO[str] | None, name: str) -> IO[str]:
+        """Return a configured queue stream."""
+        if stream is None:
+            raise RuntimeError(f"queue {name} is unavailable")
+        return stream

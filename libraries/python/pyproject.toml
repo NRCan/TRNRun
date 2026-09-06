@@ -44,7 +44,10 @@ path = "hatch_build.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["trnrun"]
-artifacts = ["trnrun/bin/trnrun.exe"]
+artifacts = [
+    "trnrun/bin/trnrun.exe",
+    "trnrun/bin/trnrunq.exe",
+]
 
 [tool.basedpyright]
 pythonVersion = "3.12"
