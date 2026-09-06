@@ -2,6 +2,7 @@ import std/[json, os, osproc, streams, strutils, unittest]
 
 import ../src/outputsink
 import ../src/trnrun
+import ../src/validate
 
 
 const HeldPipeLine = "inherited stdout remained open"

@@ -1,17 +1,17 @@
 ## Runs accepted requests on a fixed pool of worker threads.
 ##
-## One thread per concurrent run is required rather than chosen: `osproc`
-## exposes child stdout as a blocking read on an anonymous pipe, which supports
-## neither `select` nor Windows IOCP, so following N children concurrently needs
-## N blocked readers.
+## Each worker runs one child at a time and forwards its output through a shared,
+## synchronized sink. A positive `maxPending` bounds the pending queue; zero
+## leaves it unbounded. Shutdown drains accepted work before joining the workers.
 ##
-## With `maxPending == 0`, submission never blocks and the work channel is
-## unbounded. A positive limit applies backpressure by blocking submission when
-## that many requests are waiting for a worker.
+## Pools are single-use because their channel remains open to avoid a Nim 2.2
+## ORC crash when closing channels that transported moved strings.
 
 import ./outputsink
 import ./request
+import ./status
 import ./trnrun
+
 
 type
   WorkKind = enum
@@ -19,33 +19,42 @@ type
     wkStop
 
   Work = object
-    ## One channel message: a request to run, or a sentinel to stop a worker.
     case kind: WorkKind
     of wkRun:
       request: RunRequest
     of wkStop:
       discard
 
+  PoolState = enum
+    psNew
+    psRunning
+    psStopped
+
   WorkerPool* = object
-    ## Fixed pool of workers sharing one work channel and one output sink.
-    ##
-    ## Workers receive `addr` of this object, so it must outlive them: it may
-    ## not be copied or moved, and `shutdown` must run before its frame ends.
+    ## Must not be copied or moved while running.
     work: Channel[Work]
-    workInitialized: bool
     output: OutputSink
-    outputInitialized: bool
     threads: seq[Thread[ptr WorkerPool]]
-    startedThreads: int
+    state: PoolState
+
+
+proc emitWorkerError(pool: ptr WorkerPool, runId, message: string) =
+  ## Emits a terminal worker error without letting it escape the thread.
+  try:
+    pool[].output.emit(errorLine(runId, message))
+  except CatchableError:
+    discard
 
 
 proc runWorker(pool: ptr WorkerPool) {.thread.} =
-  ## Consumes work until a stop sentinel arrives.
+  ## Processes work until a stop message arrives.
   while true:
     let work = pool[].work.recv()
+
     case work.kind
     of wkStop:
       break
+
     of wkRun:
       try:
         runTrnrun(
@@ -56,58 +65,81 @@ proc runWorker(pool: ptr WorkerPool) {.thread.} =
           pool[].output,
         )
       except CatchableError:
-        discard
+        emitWorkerError(
+          pool,
+          work.request.runId,
+          getCurrentExceptionMsg(),
+        )
+
+
+proc stopWorkers(pool: var WorkerPool) =
+  ## Stops and joins all workers in the pool.
+  for _ in 0 ..< pool.threads.len:
+    pool.work.send(Work(kind: wkStop))
+
+  for index in 0 ..< pool.threads.len:
+    joinThread(pool.threads[index])
+
+  pool.threads = @[]
 
 
 proc start*(pool: var WorkerPool, maxConcurrent: int, maxPending: int = 0) =
-  ## Initializes queue output and starts `maxConcurrent` workers.
-  ## A positive `maxPending` bounds requests waiting in the work channel; zero
-  ## keeps the channel unbounded.
-  ##
-  ## Thread storage is allocated before any thread is created so a partly
-  ## started pool still shuts down cleanly.
+  ## Starts the worker pool. A positive `maxPending` bounds the pending queue.
   if maxConcurrent < 1:
     raise newException(ValueError, "maxConcurrent must be at least 1")
+
   if maxPending < 0:
     raise newException(ValueError, "maxPending must be at least 0")
 
-  pool.startedThreads = 0
+  if pool.state != psNew:
+    raise newException(ValueError, "worker pool is single-use")
+
+  pool.state = psStopped
+
   pool.output.initOutputSink()
-  pool.outputInitialized = true
-  pool.work.open(maxPending)
-  pool.workInitialized = true
-  pool.threads = newSeq[Thread[ptr WorkerPool]](maxConcurrent)
-
-  {.push warning[ProveInit]: off, warning[Uninit]: off.}
-  for thread in pool.threads.mitems:
-    createThread(thread, runWorker, addr pool)
-    inc pool.startedThreads
-  {.pop.}
-
-proc submit*(pool: var WorkerPool, request: RunRequest) =
-  ## Queues one request. Blocks only while a bounded pending queue is full.
-  pool.work.send(Work(kind: wkRun, request: request))
-
-proc shutdown*(pool: var WorkerPool) =
-  ## Stops every worker and waits for the runs already accepted.
-  ##
-  ## Submission must have stopped before this is called. Channel order queues
-  ## the sentinels behind every accepted request, so no worker stops while work
-  ## remains. A pool that never started is left alone.
-  if not pool.outputInitialized:
-    return
 
   try:
-    for _ in 0 ..< pool.startedThreads:
-      pool.work.send(Work(kind: wkStop))
+    pool.work.open(maxPending)
 
-    for index in 0 ..< pool.startedThreads:
-      joinThread(pool.threads[index])
+    {.push warning[ProveInit]: off, warning[Uninit]: off.}
+    pool.threads = newSeq[Thread[ptr WorkerPool]](maxConcurrent)
 
-    if pool.workInitialized:
-      pool.work.close()
-      pool.workInitialized = false
+    for index in 0 ..< maxConcurrent:
+      try:
+        createThread(pool.threads[index], runWorker, addr pool)
+      except CatchableError:
+        pool.threads.setLen(index)
+        raise
+    {.pop.}
+
+    pool.state = psRunning
+
+  except CatchableError:
+    stopWorkers(pool)
+    pool.output.deinitOutputSink()
+    raise
+
+
+proc submit*(pool: var WorkerPool, request: RunRequest) =
+  ## Queues a request, blocking while a bounded pending queue is full.
+  if pool.state != psRunning:
+    raise newException(ValueError, "worker pool is not running")
+
+  pool.work.send(Work(kind: wkRun, request: request))
+
+
+proc shutdown*(pool: var WorkerPool) =
+  ## Drains accepted work, stops the workers, and waits for them to exit.
+  ## Safe to call before `start` or more than once.
+  ##
+  ## The channel stays open to avoid a Nim 2.2 ORC crash when closing channels
+  ## that transported moved strings.
+  if pool.state != psRunning:
+    return
+
+  pool.state = psStopped
+
+  try:
+    stopWorkers(pool)
   finally:
     pool.output.deinitOutputSink()
-    pool.outputInitialized = false
-    pool.startedThreads = 0
