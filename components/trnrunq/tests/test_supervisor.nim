@@ -116,18 +116,34 @@ proc parseJsonMessages(content: string): seq[JsonNode] =
       except JsonParsingError:
         discard
 
-proc readEvent(stream: Stream, runId: string, observed: var seq[string]): JsonNode =
+proc messagesOfKind(messages: openArray[JsonNode], kind: string): seq[JsonNode] =
+  result = @[]
+  for message in messages:
+    if message.kind == JObject and message.hasKey("kind") and
+        message["kind"].kind == JString and message["kind"].getStr() == kind:
+      result.add(message)
+
+proc acceptedRunIds(messages: openArray[JsonNode]): seq[string] =
+  result = @[]
+  for message in messages.messagesOfKind("QUEUE"):
+    if message.hasKey("event") and message["event"].kind == JString and
+        message["event"].getStr() == "ACCEPTED":
+      result.add(message["runId"].getStr())
+
+proc readStatusEvent(stream: Stream, runId: string, observed: var seq[string]): JsonNode =
   var line = ""
   while stream.readLine(line):
     observed.add(line)
     try:
       let event = parseJson(line)
-      if event.kind == JObject and event.hasKey("runId") and
-          event["runId"].kind == JString and event["runId"].getStr() == runId:
+      if event.kind == JObject and event.hasKey("kind") and
+          event["kind"].kind == JString and event["kind"].getStr() == "STATUS" and
+          event.hasKey("runId") and event["runId"].kind == JString and
+          event["runId"].getStr() == runId:
         return event
     except JsonParsingError:
       discard
-  raise newException(IOError, "Queue stdout closed before run '" & runId & "' emitted an event")
+  raise newException(IOError, "Queue stdout closed before run '" & runId & "' emitted a status event")
 
 proc requestLine(runId, deckFile, runnerPath: string): string =
   $(%*{
@@ -176,14 +192,14 @@ proc runTests() =
 
           input.writeLine(requestLine("incremental-first", firstDeck, executable))
           input.flush()
-          check process.outputStream.readEvent("incremental-first", observed)["status"].getStr() ==
+          check process.outputStream.readStatusEvent("incremental-first", observed)["status"].getStr() ==
             "RUNNING"
           check process.running
 
           input.writeLine("")
           input.writeLine(requestLine("incremental-second", secondDeck, executable))
           input.flush()
-          check process.outputStream.readEvent("incremental-second", observed)["status"].getStr() ==
+          check process.outputStream.readStatusEvent("incremental-second", observed)["status"].getStr() ==
             "RUNNING"
           check process.running
 
@@ -192,11 +208,14 @@ proc runTests() =
           check process.waitForExit() == 0
           check process.errorStream.readAll().len == 0
 
-          let events = observed.join("\n").parseJsonMessages()
+          let
+            messages = observed.join("\n").parseJsonMessages()
+            events = messages.messagesOfKind("STATUS")
           var doneRuns: seq[string] = @[]
           for event in events:
             if event["status"].getStr() == "DONE":
               doneRuns.add(event["runId"].getStr())
+          check messages.acceptedRunIds() == @["incremental-first", "incremental-second"]
           check doneRuns.contains("incremental-first")
           check doneRuns.contains("incremental-second")
         finally:
@@ -216,12 +235,14 @@ proc runTests() =
               "{not valid JSON}",
             ],
           )
-          events = command.stdout.parseJsonMessages()
+          messages = command.stdout.parseJsonMessages()
+          events = messages.messagesOfKind("STATUS")
 
         checkpoint("stdout:\n" & command.stdout & "\nstderr:\n" & command.stderr)
         check command.exitCode != 0
         check command.stderr.len > 0
         check not command.stdout.contains(HeldPipeLine)
+        check messages.acceptedRunIds() == @["accepted-before-error"]
         check events.len == 1
         check events[0]["runId"].getStr() == "accepted-before-error"
         check events[0]["status"].getStr() == "CANCELLED"

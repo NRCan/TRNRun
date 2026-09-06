@@ -163,6 +163,20 @@ proc parseJsonMessages(content: string): seq[JsonNode] =
       except JsonParsingError:
         discard
 
+proc messagesOfKind(messages: openArray[JsonNode], kind: string): seq[JsonNode] =
+  result = @[]
+  for message in messages:
+    if message.kind == JObject and message.hasKey("kind") and
+        message["kind"].kind == JString and message["kind"].getStr() == kind:
+      result.add(message)
+
+proc acceptedRunIds(messages: openArray[JsonNode]): seq[string] =
+  result = @[]
+  for message in messages.messagesOfKind("QUEUE"):
+    if message.hasKey("event") and message["event"].kind == JString and
+        message["event"].getStr() == "ACCEPTED":
+      result.add(message["runId"].getStr())
+
 proc nonEmptyLines(content: string): seq[string] =
   result = @[]
   for line in content.splitLines():
@@ -222,11 +236,13 @@ proc runTests() =
               requestLine("queued-3", deckFile, executable),
             ],
           )
-          events = command.stdout.parseJsonMessages()
+          messages = command.stdout.parseJsonMessages()
+          events = messages.messagesOfKind("STATUS")
 
         checkpoint("stdout:\n" & command.stdout & "\nstderr:\n" & command.stderr)
         check command.exitCode == 0
         check command.stderr.len == 0
+        check messages.acceptedRunIds() == @["queued-1", "queued-2", "queued-3"]
         check events.len == 6
         for runId in ["queued-1", "queued-2", "queued-3"]:
           var statuses: seq[string] = @[]
@@ -249,11 +265,13 @@ proc runTests() =
               requestLine("slow-4", deckFile, executable),
             ],
           )
-          events = command.stdout.parseJsonMessages()
+          messages = command.stdout.parseJsonMessages()
+          events = messages.messagesOfKind("STATUS")
 
         checkpoint("stdout:\n" & command.stdout & "\nstderr:\n" & command.stderr)
         check command.exitCode == 0
         check command.stderr.len == 0
+        check messages.acceptedRunIds() == @["slow-1", "slow-2", "slow-3", "slow-4"]
         check events.len == 8
 
         var
@@ -285,16 +303,32 @@ proc runTests() =
             ],
             maxPending = 1,
           )
-          events = command.stdout.parseJsonMessages()
+          messages = command.stdout.parseJsonMessages()
+          events = messages.messagesOfKind("STATUS")
           timingParts = command.stderr.strip().split('=')
 
         checkpoint("stdout:\n" & command.stdout & "\nstderr:\n" & command.stderr)
         check command.exitCode == 0
+        check messages.acceptedRunIds() == @["bounded-1", "bounded-2", "bounded-3"]
         check events.len == 6
         check timingParts.len == 2
         if timingParts.len == 2:
           check timingParts[0] == "submitMilliseconds"
           check parseInt(timingParts[1]) >= 250
+
+        var
+          firstDoneIndex = -1
+          thirdAcceptedIndex = -1
+        for index, message in messages:
+          if message["runId"].getStr() == "bounded-1" and
+              message["kind"].getStr() == "STATUS" and
+              message["status"].getStr() == "DONE":
+            firstDoneIndex = index
+          elif message["runId"].getStr() == "bounded-3" and
+              message["kind"].getStr() == "QUEUE":
+            thirdAcceptedIndex = index
+        check firstDoneIndex >= 0
+        check thirdAcceptedIndex > firstDoneIndex
 
       test "accepts duplicate submissions":
         let
@@ -306,11 +340,13 @@ proc runTests() =
             2,
             [duplicate, duplicate],
           )
-          events = command.stdout.parseJsonMessages()
+          messages = command.stdout.parseJsonMessages()
+          events = messages.messagesOfKind("STATUS")
 
         checkpoint("stdout:\n" & command.stdout & "\nstderr:\n" & command.stderr)
         check command.exitCode == 0
         check command.stderr.len == 0
+        check messages.acceptedRunIds() == @["duplicate", "duplicate"]
         check events.len == 4
 
         var
@@ -341,12 +377,14 @@ proc runTests() =
               requestLine("next", nextDeck, executable),
             ],
           )
-          events = command.stdout.parseJsonMessages()
+          messages = command.stdout.parseJsonMessages()
+          events = messages.messagesOfKind("STATUS")
 
         checkpoint("stdout:\n" & command.stdout & "\nstderr:\n" & command.stderr)
         check command.exitCode == 0
         check command.stderr.len == 0
         check not command.stdout.contains(HeldPipeLine)
+        check messages.acceptedRunIds() == @["cancelled", "next"]
         check events.len == 3
         check events[0]["runId"].getStr() == "cancelled"
         check events[0]["status"].getStr() == "CANCELLED"
@@ -372,19 +410,21 @@ proc runTests() =
           )
           outputLines = command.stdout.nonEmptyLines()
           messages = command.stdout.parseJsonMessages()
+          events = messages.messagesOfKind("STATUS")
 
         checkpoint("stdout:\n" & command.stdout & "\nstderr:\n" & command.stderr)
         check command.exitCode == 0
         check command.stderr.len == 0
-        check outputLines.len == 6
+        check outputLines.len == 9
         check outputLines.contains("fake runner diagnostic")
         check outputLines.contains("fake native crash diagnostic")
         check outputLines.contains("{not valid JSON}")
-        check messages.len == 3
-        check messages[0]["runId"].getStr() == "good"
-        check messages[1]["runId"].getStr() == "good"
-        check messages[2]["runId"].getStr() == "malformed"
-        for message in messages:
+        check messages.acceptedRunIds() == @["good", "failed", "malformed"]
+        check events.len == 3
+        check events[0]["runId"].getStr() == "good"
+        check events[1]["runId"].getStr() == "good"
+        check events[2]["runId"].getStr() == "malformed"
+        for message in events:
           check message["kind"].getStr() == "STATUS"
           check not message.hasKey("queueSeq")
           check not message.hasKey("type")
