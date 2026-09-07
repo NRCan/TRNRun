@@ -24,10 +24,12 @@ proc runTrnrun*(
 
   var process: Process = nil
   try:
-    let executable = validateTrnrun(runnerPath)
+    let
+      deck = validateDeck(deckFile)
+      executable = validateTrnrun(runnerPath)
     process = startProcess(
       executable,
-      args = @[deckFile] & @runnerArgs & @["--runId:" & runId],
+      args = @[deck] & @runnerArgs & @["--runId:" & runId],
       options = {poStdErrToStdOut, poDaemon},
     )
   except CatchableError:
