@@ -1,28 +1,18 @@
-## Runs accepted requests on a fixed pool of worker threads.
+## Runs queued requests on a fixed pool of worker threads.
 ##
-## Each worker runs one child at a time and forwards its output through a shared,
-## synchronized sink. A positive `maxPending` bounds the pending queue; zero
-## leaves it unbounded. Shutdown drains accepted work before joining the workers.
+## Each worker owns one child at a time and forwards its output through a shared,
+## synchronized sink. A positive `maxPending` bounds the pending channel; zero
+## leaves it unbounded. Shutdown drains queued work before joining the workers.
 ##
 ## Pools are single-use because their channel remains open to avoid a Nim 2.2
 ## ORC crash when closing channels that transported moved strings.
 
-import std/[json, times]
+import std/options
 
 import ./outputsink
 import ./request
 import ./status
 import ./trnrun
-
-
-proc acceptedLine(runId: string): string =
-  ## Formats the event marking one request as admitted to the worker pool.
-  result = $(%*{
-    "kind": "QUEUE",
-    "timestamp": now().format("yyyy-MM-dd'T'HH:mm:ss"),
-    "event": "ACCEPTED",
-    "runId": runId,
-  })
 
 
 type
@@ -43,33 +33,29 @@ type
     psStopped
 
   WorkerPool* = object
-    ## Must not be copied or moved while running.
+    ## Owned by one supervisor thread. Its address must remain stable while
+    ## workers are running because each worker receives `ptr WorkerPool`.
     work: Channel[Work]
     output: OutputSink
     threads: seq[Thread[ptr WorkerPool]]
     state: PoolState
 
 
-proc emitWorkerError(pool: ptr WorkerPool, runId, message: string) =
-  ## Emits a terminal worker error without letting it escape the thread.
-  try:
-    pool[].output.emit(errorLine(runId, message))
-  except CatchableError:
-    discard
-
-
 proc runWorker(pool: ptr WorkerPool) {.thread.} =
-  ## Processes work until a stop message arrives.
+  ## Processes work until the circulating stop sentinel arrives.
   while true:
     let work = pool[].work.recv()
 
     case work.kind
     of wkStop:
+      pool[].work.send(Work(kind: wkStop))
       break
 
     of wkRun:
+      var exitCode = none(int)
+
       try:
-        runTrnrun(
+        exitCode = runTrnrun(
           work.request.deckFile,
           work.request.runnerPath,
           work.request.runId,
@@ -77,26 +63,29 @@ proc runWorker(pool: ptr WorkerPool) {.thread.} =
           pool[].output,
         )
       except CatchableError:
-        emitWorkerError(
-          pool,
-          work.request.runId,
-          getCurrentExceptionMsg(),
-        )
+        pool[].output.emit(errorLine(work.request.runId, getCurrentExceptionMsg()))
+
+      pool[].output.emit(completedLine(work.request.runId, exitCode))
 
 
 proc stopWorkers(pool: var WorkerPool) =
-  ## Stops and joins all workers in the pool.
-  for _ in 0 ..< pool.threads.len:
-    pool.work.send(Work(kind: wkStop))
+  ## Stops every worker and joins its thread.
+  if pool.threads.len == 0:
+    return
+
+  pool.work.send(Work(kind: wkStop))
 
   for index in 0 ..< pool.threads.len:
     joinThread(pool.threads[index])
 
-  pool.threads = @[]
+  pool.threads.setLen(0)
 
 
 proc start*(pool: var WorkerPool, maxConcurrent: int, maxPending: int = 0) =
-  ## Starts the worker pool. A positive `maxPending` bounds the pending queue.
+  ## Starts the worker pool.
+  ##
+  ## At most `maxConcurrent` requests run simultaneously. A positive
+  ## `maxPending` allows that many additional requests in the channel.
   if maxConcurrent < 1:
     raise newException(ValueError, "maxConcurrent must be at least 1")
 
@@ -106,8 +95,8 @@ proc start*(pool: var WorkerPool, maxConcurrent: int, maxPending: int = 0) =
   if pool.state != psNew:
     raise newException(ValueError, "worker pool is single-use")
 
+  # A failed startup also consumes the single-use pool.
   pool.state = psStopped
-
   pool.output.initOutputSink()
 
   try:
@@ -133,13 +122,11 @@ proc start*(pool: var WorkerPool, maxConcurrent: int, maxPending: int = 0) =
 
 
 proc submit*(pool: var WorkerPool, request: RunRequest) =
-  ## Queues a request, blocking while a bounded pending queue is full, then
-  ## emits `QUEUE/ACCEPTED`.
+  ## Queues one request and acknowledges it after channel admission.
   ##
-  ## The emit follows `send` because `send` returning is the acceptance: with a
-  ## bounded channel it returns only once a slot is free, which is the event a
-  ## wrapper blocks on. `runId` is copied first because `request` is moved into
-  ## the channel and must not be read afterwards.
+  ## A bounded channel blocks `send` while full, so `ACCEPTED` is not emitted
+  ## until capacity is available. A worker may begin before the acknowledgment;
+  ## wrappers must register and route the `runId` before submitting.
   if pool.state != psRunning:
     raise newException(ValueError, "worker pool is not running")
 
@@ -149,17 +136,14 @@ proc submit*(pool: var WorkerPool, request: RunRequest) =
 
 
 proc shutdown*(pool: var WorkerPool) =
-  ## Drains accepted work, stops the workers, and waits for them to exit.
-  ## Safe to call before `start` or more than once.
+  ## Drains accepted work and releases worker resources.
   ##
-  ## The channel stays open to avoid a Nim 2.2 ORC crash when closing channels
-  ## that transported moved strings.
+  ## Safe before `start` and after an earlier shutdown. The channel deliberately
+  ## remains open because closing it triggers a Nim 2.2 ORC failure.
   if pool.state != psRunning:
     return
 
   pool.state = psStopped
 
-  try:
-    stopWorkers(pool)
-  finally:
-    pool.output.deinitOutputSink()
+  stopWorkers(pool)
+  pool.output.deinitOutputSink()

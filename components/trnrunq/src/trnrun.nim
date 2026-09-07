@@ -1,12 +1,12 @@
 ## Runs one trnrun process from spawn through output capture and exit.
 ##
-## Runner output is authoritative. This module owns one child process, forwards
-## its complete output lines, and waits for it to finish.
+## This module owns one child process, forwards its merged output unchanged, and
+## waits for it to finish. The configured runner owns its JSONL contract.
 
 when not defined(windows):
   {.error: "trnrun.nim is Windows-only.".}
 
-import std/[os, osproc, streams]
+import std/[options, os, osproc, streams]
 import ./outputsink
 import ./status
 import ./validate
@@ -18,21 +18,21 @@ proc runTrnrun*(
     runId: string,
     runnerArgs: openArray[string],
     output: var OutputSink,
-) =
-  ## Runs one child synchronously and reports launch failures through `output`.
+): Option[int] =
+  ## Runs one child synchronously and returns its exit code when launched.
+  ## Validation and launch failures emit a terminal error and return `none`.
+
   var process: Process = nil
   try:
-    let
-      deck = validateDeck(deckFile)
-      executable = validateTrnrun(runnerPath)
+    let executable = validateTrnrun(runnerPath)
     process = startProcess(
       executable,
-      args = @[deck] & @runnerArgs & @["--runId:" & runId],
+      args = @[deckFile] & @runnerArgs & @["--runId:" & runId],
       options = {poStdErrToStdOut, poDaemon},
     )
   except CatchableError:
     output.emit(errorLine(runId, getCurrentExceptionMsg()))
-    return
+    return none(int)
 
   try:
     var line = ""
@@ -47,8 +47,10 @@ proc runTrnrun*(
       if process.outputStream.readLine(line):
         output.emit(line)
 
-    discard process.waitForExit()
+    result = some(process.waitForExit())
   finally:
-    if process.running:
-      process.kill()
-    process.close()
+    try:
+      if process.running:
+        process.kill()
+    finally:
+      process.close()

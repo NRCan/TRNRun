@@ -1,8 +1,8 @@
 ## Defines the queue request surface.
 ##
 ## Owns the wire vocabulary a wrapper writes to queue stdin: one JSON object per
-## line, and the rules that turn it into a `RunRequest`. Adding a request field
-## means touching this module and nothing else.
+## line, and the rules that turn it into a `RunRequest`. Consumers remain
+## responsible for applying the parsed fields.
 
 import std/json
 

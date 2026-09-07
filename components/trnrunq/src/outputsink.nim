@@ -1,8 +1,7 @@
-## Defines the merged destination for forwarded child output.
+## Defines the merged destination for queue and child output.
 ##
-## Every worker writes through one `OutputSink`, which holds a lock across the
-## whole write so lines from concurrent runs are never torn or interleaved.
-## Order within a single run is preserved; order between runs is not defined.
+## Every worker writes through one `OutputSink`, which holds a lock across each
+## complete stdout line so concurrent runs never tear or interleave output.
 
 import std/locks
 

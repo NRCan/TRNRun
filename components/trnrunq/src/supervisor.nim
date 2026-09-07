@@ -1,8 +1,8 @@
 ## Orchestrates the queue lifecycle.
 ##
 ## Guards process lifetime, starts the worker pool, reads one JSON request per
-## line from stdin, and shuts the pool down. Child output is forwarded unchanged
-## to stdout. Stdin EOF ends submission and waits for every accepted request.
+## line from stdin, and shuts the pool down. Child output and queue lifecycle
+## messages share stdout. Stdin EOF drains every accepted request.
 
 when not defined(windows):
   {.error: "supervisor.nim is Windows-only.".}

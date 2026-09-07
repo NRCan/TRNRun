@@ -1,21 +1,6 @@
-## Validates runner inputs.
-##
-## Deck paths are normalized and restricted to supported file types. Runner
-## paths are normalized relative to the queue executable when needed.
+## Resolves the runner executable used by queue workers.
 
-import std/[os, strformat, strutils]
-
-
-proc validateDeck*(deckFile: string): string =
-  ## Returns an existing absolute `.dck` or `.trd` path.
-  result = deckFile.absolutePath().normalizedPath()
-  if not fileExists(result):
-    raise newException(IOError, fmt"Deck file not found: '{result}'")
-  if result.splitFile().ext.toLowerAscii() notin [".dck", ".trd"]:
-    raise newException(
-      ValueError,
-      fmt"Expected .dck or .trd, got: '{deckFile}'",
-    )
+import std/[os, strformat]
 
 
 proc validateTrnrun*(runnerPath: string): string =
