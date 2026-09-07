@@ -17,6 +17,7 @@ from trnrun.events import (
     parse_event,
     stream_events,
 )
+from trnrun.manager import SimulationManager
 from trnrun.simulation import Simulation
 
 TIMESTAMP = "2026-08-26T12:34:56"
@@ -156,8 +157,46 @@ def test_parses_every_runner_event_kind() -> None:
     ]
 
 
+def test_parses_every_runner_status() -> None:
+    """Keep Python aligned with every lifecycle status emitted by TRNRun."""
+    statuses = (
+        "PENDING",
+        "LAUNCHING",
+        "RUNNING",
+        "DONE",
+        "CANCELLED",
+        "ERROR",
+        "TIMEOUT",
+        "STALLED",
+    )
+
+    for status in statuses:
+        payload = json.dumps(
+            {"kind": "STATUS", "timestamp": TIMESTAMP, "status": status},
+        )
+        assert parse_event(payload) == StatusEvent(status=status, timestamp=TIMESTAMP)
+
+
+def test_preserves_status_messages() -> None:
+    """Expose runner failure details instead of discarding them."""
+    payload = json.dumps(
+        {
+            "kind": "STATUS",
+            "timestamp": TIMESTAMP,
+            "status": "ERROR",
+            "message": "TRNSYS executable could not be launched",
+        },
+    )
+
+    assert parse_event(payload) == StatusEvent(
+        status="ERROR",
+        timestamp=TIMESTAMP,
+        message="TRNSYS executable could not be launched",
+    )
+
+
 def test_stream_skips_runner_diagnostics_without_losing_events() -> None:
-    """Match production handling of stderr merged into runner stdout."""
+    """Match production handling of direct runner output."""
     lines = [
         "Warning: orphan guard unavailable\n",
         json.dumps({"kind": "STATUS", "timestamp": TIMESTAMP, "status": "RUNNING", "seq": 1}),
@@ -173,12 +212,17 @@ def test_stream_skips_runner_diagnostics_without_losing_events() -> None:
 
 def test_simulation_folds_runner_events() -> None:
     """Keep event-state and success semantics stable for manager consumers."""
-    simulation = Simulation("example.dck", SimulationConfig(), max_log_events=1)
-    simulation.apply(StatusEvent(status="RUNNING", timestamp=TIMESTAMP))
-    simulation.apply(ConfigEvent(start=0.0, stop=1.0, step=0.25, timestamp=TIMESTAMP))
-    simulation.apply(ProgressEvent(time=0.5, percent=0.5, elapsed=100.0, eta=100.0, timestamp=TIMESTAMP))
-    simulation.apply(LogEvent(severity="Notice", timestamp=TIMESTAMP, message="first"))
-    simulation.apply(LogEvent(severity="Warning", timestamp=TIMESTAMP, message="second"))
+    simulation = Simulation(
+        "example.dck",
+        SimulationConfig(),
+        sim_id=1,
+        max_log_events=1,
+    )
+    simulation.apply_event(StatusEvent(status="RUNNING", timestamp=TIMESTAMP))
+    simulation.apply_event(ConfigEvent(start=0.0, stop=1.0, step=0.25, timestamp=TIMESTAMP))
+    simulation.apply_event(ProgressEvent(time=0.5, percent=0.5, elapsed=100.0, eta=100.0, timestamp=TIMESTAMP))
+    simulation.apply_event(LogEvent(severity="Notice", timestamp=TIMESTAMP, message="first"))
+    simulation.apply_event(LogEvent(severity="Warning", timestamp=TIMESTAMP, message="second"))
 
     snapshot = simulation.snapshot()
     assert snapshot.status == StatusEvent(status="RUNNING", timestamp=TIMESTAMP)
@@ -194,6 +238,39 @@ def test_simulation_folds_runner_events() -> None:
     assert snapshot.notices == 1
     assert snapshot.warnings == 1
     assert snapshot.log_count == 2
+    assert not simulation.is_finished
+
+    simulation.apply_event(StatusEvent(status="DONE", timestamp=TIMESTAMP))
+
+    assert simulation.has_terminal_status
+    assert not simulation.is_finished
+    assert not simulation.succeeded
+
+    simulation.mark_completed()
+
+    assert simulation.is_finished
+    assert simulation.succeeded
+
+
+def test_bundled_queue_reconciles_a_silent_runner_exit(tmp_path: Path) -> None:
+    """Fail a silent child from QUEUE/COMPLETED without waiting for queue EOF."""
+    if os.name != "nt":
+        return
+
+    deck_path = tmp_path / "silent.dck"
+    _ = deck_path.write_text("raise SystemExit(2)\n", encoding="utf-8")
+    config = SimulationConfig(
+        trnrun_path=Path(sys.executable),
+        trnexe_path=Path(sys.executable),
+    )
+
+    with SimulationManager(max_concurrent=1, refresh_interval=0) as manager:
+        simulation = manager.add(deck_path, config)
+        assert simulation.wait(timeout=10)
+
+    assert simulation.status is not None
+    assert simulation.status.status == "ERROR"
+    assert simulation.status.message == "TRNRun exited with code 2 without a terminal STATUS event"
 
 
 def test_bundled_runner_end_to_end(tmp_path: Path) -> None:
@@ -214,12 +291,10 @@ def test_bundled_runner_end_to_end(tmp_path: Path) -> None:
         watch_timeout_ms=5_000,
         poll_ms=10,
     )
-    simulation = Simulation(deck_path, config)
+    with SimulationManager(max_concurrent=1, refresh_interval=0) as manager:
+        simulation = manager.add(deck_path, config)
+        assert manager.wait(timeout=10)
 
-    simulation.run()
-
-    assert simulation.error is None
-    assert simulation.exit_code == 0
     assert simulation.status is not None
     assert simulation.status.status == "DONE"
     assert simulation.setting_event is not None

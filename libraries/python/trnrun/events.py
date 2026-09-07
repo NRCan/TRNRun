@@ -33,10 +33,13 @@ class StatusEvent:
         State reported by TRNRun.
     timestamp : str
         Timestamp attached to the event by TRNRun.
+    message : str
+        Optional outcome or failure detail reported by TRNRun.
     """
 
     status: str
     timestamp: str
+    message: str = ""
 
 
 @dataclass(frozen=True)
@@ -153,6 +156,15 @@ class LogEvent:
 
 type TrnRunEvent = StatusEvent | ProgressEvent | ConfigEvent | SettingEvent | LogEvent
 
+TERMINAL_STATUSES: Final[frozenset[str]] = frozenset(
+    {"DONE", "ERROR", "CANCELLED", "TIMEOUT", "STALLED"},
+)
+
+
+def is_terminal_status(status: str) -> bool:
+    """Return whether a status is an exact canonical terminal value."""
+    return status in TERMINAL_STATUSES
+
 
 # -----------------------------------------------------------------
 # Validation Helpers
@@ -232,6 +244,7 @@ def _parse_status(data: dict[str, object]) -> StatusEvent:
     return StatusEvent(
         status=_require_str(data, "status"),
         timestamp=_require_str(data, "timestamp"),
+        message=_optional_str(data, "message") or "",
     )
 
 
@@ -331,6 +344,11 @@ def parse_event(line: str) -> TrnRunEvent:
 
     data = cast("dict[str, object]", value)
 
+    return parse_event_data(data)
+
+
+def parse_event_data(data: dict[str, object]) -> TrnRunEvent:
+    """Parse an already decoded runner event object."""
     kind = _require_str(data, "kind").upper()
 
     try:

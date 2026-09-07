@@ -22,7 +22,9 @@ from trnrun.utils import format_hhmmss, truncate_left
 # Constants
 # -----------------------------------------------------------------
 COLOR_MAP: dict[str, str | None] = {
+    "QUEUED": None,
     "PENDING": None,
+    "LAUNCHING": None,
     "RUNNING": None,
     "DONE": "green",
     "ERROR": "red",
@@ -122,7 +124,7 @@ class Display:
         """Render one simulation snapshot."""
         path = truncate_left(str(sim.deck_path), PATH_WIDTH)
 
-        status = sim.status.status if sim.status else "PENDING"
+        status = sim.status.status if sim.status else "QUEUED"
         status_style = COLOR_MAP.get(status.upper())
 
         logs = f"N:{sim.notices} W:{sim.warnings} F:{sim.fatals}"
@@ -156,10 +158,6 @@ class Display:
         text.append(f"Logs: {logs:<12} │ ")
         text.append(f"Elapsed: {elapsed:<8} │ ETA: {eta:<8} │ ")
         text.append(f"{bar} {sim_progress} {sim_percent:6}")
-
-        if sim.error is not None:
-            text.append(f" │ error: {sim.error}", style="red")
-
         return text
 
     def _render_all(self) -> Group:

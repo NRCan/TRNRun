@@ -16,6 +16,7 @@ DCK_FOLDER = Path(r"examples\dck")
 
 SIM_COUNT = 10
 MAX_CONCURRENT = 5
+MAX_PENDING = 3
 REFRESH_INTERVAL = 1
 CLEANUP_AFTER = True
 
@@ -29,12 +30,12 @@ def copy_dck(src: Path | str, dst_dir: Path | str, n: int) -> list[Path]:
     """Copy ``src`` into ``dst_dir`` ``n`` times with a zero-padded suffix."""
     src = Path(src)
     dst_dir = Path(dst_dir)
-    dst_dir.mkdir(parents=True, exist_ok=True)
+    _ = dst_dir.mkdir(parents=True, exist_ok=True)
 
     dst_files: list[Path] = []
     for i in range(1, n + 1):
         dst = dst_dir / f"{src.stem}_{i:03d}{src.suffix}"
-        shutil.copyfile(src, dst)
+        _ = shutil.copyfile(src, dst)
         dst_files.append(dst)
     return dst_files
 
@@ -56,12 +57,12 @@ def run_simulations(dck_files: list[Path]) -> SimulationManager:
     """Launch one simulation per deck and block until all have finished."""
     with SimulationManager(
         max_concurrent=MAX_CONCURRENT,
+        max_pending=MAX_PENDING,
         refresh_interval=REFRESH_INTERVAL,
-        block=False,
     ) as manager:
         for dck in dck_files:
-            manager.add(dck, CONFIG)
-        manager.wait()
+            _ = manager.add(dck, CONFIG)
+        _ = manager.wait()
     return manager
 
 
@@ -69,8 +70,9 @@ def run_simulations(dck_files: list[Path]) -> SimulationManager:
 # Entry point
 # -----------------------------------------------------------------------------
 def main() -> None:
+    """Create, submit, and optionally clean up example decks."""
     dck_files = copy_dck(MASTER_DCK, DCK_FOLDER, n=SIM_COUNT)
-    run_simulations(dck_files)
+    _ = run_simulations(dck_files)
 
     if CLEANUP_AFTER:
         cleanup_folder(DCK_FOLDER)
