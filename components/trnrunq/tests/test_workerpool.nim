@@ -1,4 +1,4 @@
-import std/[json, monotimes, os, osproc, streams, strutils, times, unittest]
+import std/[algorithm, json, os, osproc, streams, strutils, unittest]
 
 import ../src/request
 import ../src/workerpool
@@ -84,22 +84,13 @@ proc runFakeRunner(deckFile: string) =
     quit(0)
 
 proc runPoolFromArguments() =
-  let
-    maxConcurrent = parseInt(paramStr(2))
-    maxPending = parseInt(paramStr(3))
+  let maxConcurrent = parseInt(paramStr(2))
   var pool = default(WorkerPool)
   try:
-    pool.start(maxConcurrent, maxPending)
-    let submissionStartedAt = getMonoTime()
-    if paramCount() >= 4:
-      for index in 4 .. paramCount():
+    pool.start(maxConcurrent)
+    if paramCount() >= 3:
+      for index in 3 .. paramCount():
         pool.submit(parseRequest(paramStr(index)))
-    if maxPending > 0:
-      stderr.writeLine(
-        "submitMilliseconds=" &
-        $((getMonoTime() - submissionStartedAt).inMilliseconds),
-      )
-      stderr.flushFile()
   finally:
     pool.shutdown()
 
@@ -152,9 +143,8 @@ proc runPoolCommand(
     workingDirectory: string,
     maxConcurrent: int,
     requests: openArray[string],
-    maxPending: int = 0,
 ): CommandResult =
-  var arguments = @["--run-pool", $maxConcurrent, $maxPending]
+  var arguments = @["--run-pool", $maxConcurrent]
   for request in requests:
     arguments.add(request)
   executable.runCommand(arguments, workingDirectory)
@@ -210,13 +200,13 @@ proc runTests() =
   createDir(testDirectory)
   try:
     suite "worker pool":
-      test "rejects invalid limits before starting":
+      test "rejects invalid concurrency before starting":
         var pool = default(WorkerPool)
 
         expect ValueError:
           pool.start(maxConcurrent = 0)
         expect ValueError:
-          pool.start(maxConcurrent = 1, maxPending = -1)
+          pool.start(maxConcurrent = -1)
 
         pool.shutdown()
 
@@ -256,6 +246,7 @@ proc runTests() =
         check command.exitCode == 0
         check command.stderr.len == 0
         check messages.acceptedRunIds() == @["queued-1", "queued-2", "queued-3"]
+        check messages.queueEvents("COMPLETED").len == 3
         check events.len == 6
         for runId in ["queued-1", "queued-2", "queued-3"]:
           var statuses: seq[string] = @[]
@@ -264,19 +255,18 @@ proc runTests() =
               statuses.add(event["status"].getStr())
           check statuses == @["RUNNING", "DONE"]
 
-      test "stops more workers than a bounded queue can hold":
+      test "stops more workers than the one-slot channel can hold":
         let command = runPoolCommand(
           executable,
           testDirectory,
           3,
           [],
-          maxPending = 1,
         )
 
         checkpoint("stdout:\n" & command.stdout & "\nstderr:\n" & command.stderr)
         check command.exitCode == 0
         check command.stdout.len == 0
-        check command.stderr.startsWith("submitMilliseconds=")
+        check command.stderr.len == 0
 
       test "never exceeds maximum concurrency":
         let
@@ -298,25 +288,29 @@ proc runTests() =
         checkpoint("stdout:\n" & command.stdout & "\nstderr:\n" & command.stderr)
         check command.exitCode == 0
         check command.stderr.len == 0
-        check messages.acceptedRunIds() == @["slow-1", "slow-2", "slow-3", "slow-4"]
+        check messages.acceptedRunIds().sorted() ==
+          @["slow-1", "slow-2", "slow-3", "slow-4"]
+        check messages.queueEvents("COMPLETED").len == 4
         check events.len == 8
 
         var
           active = 0
           maxActive = 0
-        for event in events:
-          case event["status"].getStr()
-          of "RUNNING":
+        for event in messages.messagesOfKind("QUEUE"):
+          case event["event"].getStr()
+          of "ACCEPTED":
             inc active
             maxActive = max(maxActive, active)
-          of "DONE":
+          of "COMPLETED":
             dec active
           else:
-            discard
+            check false
+          check active >= 0
+          check active <= 2
         check active == 0
         check maxActive == 2
 
-      test "does not accept while the pending queue is full":
+      test "does not accept the next request while the worker is busy":
         let
           deckFile = createDeck(testDirectory, "slow.dck")
           command = runPoolCommand(
@@ -328,35 +322,23 @@ proc runTests() =
               requestLine("bounded-2", deckFile, executable),
               requestLine("bounded-3", deckFile, executable),
             ],
-            maxPending = 1,
           )
           messages = command.stdout.parseJsonMessages()
           events = messages.messagesOfKind("STATUS")
-          timingParts = command.stderr.strip().split('=')
 
         checkpoint("stdout:\n" & command.stdout & "\nstderr:\n" & command.stderr)
         check command.exitCode == 0
-        check messages.acceptedRunIds() == @["bounded-1", "bounded-2", "bounded-3"]
+        check command.stderr.len == 0
         check events.len == 6
-        check timingParts.len == 2
-        if timingParts.len == 2:
-          check timingParts[0] == "submitMilliseconds"
-          check parseInt(timingParts[1]) >= 250
 
-        var
-          firstCompletedIndex = -1
-          thirdAcceptedIndex = -1
-        for index, message in messages:
-          if message["runId"].getStr() == "bounded-1" and
-              message["kind"].getStr() == "QUEUE" and
-              message["event"].getStr() == "COMPLETED":
-            firstCompletedIndex = index
-          elif message["runId"].getStr() == "bounded-3" and
-              message["kind"].getStr() == "QUEUE" and
-              message["event"].getStr() == "ACCEPTED":
-            thirdAcceptedIndex = index
-        check firstCompletedIndex >= 0
-        check thirdAcceptedIndex > firstCompletedIndex
+        var lifecycle: seq[string] = @[]
+        for event in messages.messagesOfKind("QUEUE"):
+          lifecycle.add(event["runId"].getStr() & ":" & event["event"].getStr())
+        check lifecycle == @[
+          "bounded-1:ACCEPTED", "bounded-1:COMPLETED",
+          "bounded-2:ACCEPTED", "bounded-2:COMPLETED",
+          "bounded-3:ACCEPTED", "bounded-3:COMPLETED",
+        ]
 
 
       test "continues after a runner exits before stdout closes":
@@ -431,10 +413,51 @@ proc runTests() =
               outputIndices.add(messageIndex)
 
           check acceptedIndex >= 0
-          check completedIndex >= 0
+          check completedIndex > acceptedIndex
           check outputIndices.len == 2
           for outputIndex in outputIndices:
+            check acceptedIndex < outputIndex
             check outputIndex < completedIndex
+
+      test "accepts before fast runner resolution errors with multiple workers":
+        let
+          deckFile = createDeck(testDirectory, "admission.dck")
+          missingRunner = testDirectory / "missing-runner.exe"
+        var
+          requests: seq[string] = @[]
+          runIds: seq[string] = @[]
+        # Keep batches small: runCommand waits for exit before draining stdout.
+        for index in 1 .. 6:
+          let runId = "admission-" & $index
+          runIds.add(runId)
+          requests.add(requestLine(runId, deckFile, missingRunner))
+
+        let
+          command = runPoolCommand(executable, testDirectory, 4, requests)
+          messages = command.stdout.parseJsonMessages()
+
+        checkpoint("stdout:\n" & command.stdout & "\nstderr:\n" & command.stderr)
+        check command.exitCode == 0
+        check command.stderr.len == 0
+        check messages.len == command.stdout.nonEmptyLines().len
+        check messages.len == requests.len * 3
+        check messages.acceptedRunIds().sorted() == runIds
+
+        for runId in runIds:
+          var runMessages: seq[JsonNode] = @[]
+          for message in messages:
+            if message["runId"].getStr() == runId:
+              runMessages.add(message)
+
+          require runMessages.len == 3
+          require runMessages[0]["kind"].getStr() == "QUEUE"
+          check runMessages[0]["event"].getStr() == "ACCEPTED"
+          require runMessages[1]["kind"].getStr() == "STATUS"
+          check runMessages[1]["status"].getStr() == "ERROR"
+          check runMessages[1]["message"].getStr().contains("TRNRun not found:")
+          require runMessages[2]["kind"].getStr() == "QUEUE"
+          check runMessages[2]["event"].getStr() == "COMPLETED"
+          check runMessages[2]["exitCode"].kind == JNull
 
       test "reports completion metadata for exit and launch paths":
         let

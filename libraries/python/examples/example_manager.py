@@ -16,7 +16,6 @@ DCK_FOLDER = Path(r"examples\dck")
 
 SIM_COUNT = 10
 MAX_CONCURRENT = 5
-MAX_PENDING = 3
 REFRESH_INTERVAL = 1
 CLEANUP_AFTER = True
 
@@ -57,12 +56,11 @@ def run_simulations(dck_files: list[Path]) -> SimulationManager:
     """Launch one simulation per deck and block until all have finished."""
     with SimulationManager(
         max_concurrent=MAX_CONCURRENT,
-        max_pending=MAX_PENDING,
         refresh_interval=REFRESH_INTERVAL,
     ) as manager:
         for dck in dck_files:
             _ = manager.add(dck, CONFIG)
-        _ = manager.wait()
+        manager.wait()
     return manager
 
 

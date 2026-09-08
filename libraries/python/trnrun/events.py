@@ -1,23 +1,26 @@
-"""Typed events emitted by TRNRun on stdout, and their JSONL parsers.
+"""Typed runner and queue events emitted on stdout, and their parsers.
 
 TRNRun writes one JSON object per line. ``parse_event`` turns a single
-line into a typed event; ``stream_events`` does the same for an entire
-stream of lines.
+line into a typed event, which is also how a ``--writeEvents`` ``.jsonl``
+file is read back. Queue lifecycle objects are one more ``kind`` in
+``TrnRunEvent`` and go through the same parser. ``parse_stream_line``
+decodes the merged queue stdout stream, where runner and queue events
+arrive interleaved and tagged with a ``runId``.
 """
 
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Final, cast
+from typing import Final, Literal, cast
 
 
 # -----------------------------------------------------------------
 # Exceptions
 # -----------------------------------------------------------------
 class EventParseError(ValueError):
-    """Raised when a JSON line cannot be parsed into a TRNRun event."""
+    """Raised when a runner or queue event cannot be parsed."""
 
 
 # -----------------------------------------------------------------
@@ -154,7 +157,21 @@ class LogEvent:
     information: str | None = None
 
 
-type TrnRunEvent = StatusEvent | ProgressEvent | ConfigEvent | SettingEvent | LogEvent
+@dataclass(frozen=True)
+class QueueEvent:
+    """Queue admission or completion after all child output.
+
+    ``exit_code`` is None for acceptance, or when runner resolution or
+    launch failed before completion.
+    """
+
+    event: str
+    run_id: str
+    timestamp: str
+    exit_code: int | None = None
+
+
+type TrnRunEvent = StatusEvent | ProgressEvent | ConfigEvent | SettingEvent | LogEvent | QueueEvent
 
 TERMINAL_STATUSES: Final[frozenset[str]] = frozenset(
     {"DONE", "ERROR", "CANCELLED", "TIMEOUT", "STALLED"},
@@ -227,13 +244,9 @@ def _optional_float(data: dict[str, object], key: str) -> float | None:
     return None if data.get(key) is None else _require_float(data, key)
 
 
-def _optional_int(data: dict[str, object], key: str, *aliases: str) -> int | None:
-    """Return the first present optional integer field, treating null as absent."""
-    for candidate in (key, *aliases):
-        if candidate in data:
-            return None if data[candidate] is None else _require_int(data, candidate)
-
-    return None
+def _optional_int(data: dict[str, object], key: str) -> int | None:
+    """Return an optional integer field, treating JSON null as absent."""
+    return None if data.get(key) is None else _require_int(data, key)
 
 
 # -----------------------------------------------------------------
@@ -299,11 +312,21 @@ def _parse_log(data: dict[str, object]) -> LogEvent:
         severity=_require_str(data, "severity"),
         timestamp=_require_str(data, "timestamp"),
         time=_optional_float(data, "time"),
-        unit_id=_optional_int(data, "unitID", "unitId"),
-        type_id=_optional_int(data, "typeID", "typeId"),
+        unit_id=_optional_int(data, "unitID"),
+        type_id=_optional_int(data, "typeID"),
         message_code=_optional_int(data, "messageCode"),
         message=_optional_str(data, "message"),
         information=_optional_str(data, "information"),
+    )
+
+
+def _parse_queue(data: dict[str, object]) -> QueueEvent:
+    """Parse a QUEUE event."""
+    return QueueEvent(
+        event=_require_str(data, "event"),
+        run_id=_require_str(data, "runId"),
+        timestamp=_require_str(data, "timestamp"),
+        exit_code=_optional_int(data, "exitCode"),
     )
 
 
@@ -314,6 +337,7 @@ _PARSERS: Final[dict[str, Callable[[dict[str, object]], TrnRunEvent]]] = {
     "CONFIG": _parse_config,
     "SETTING": _parse_setting,
     "LOG": _parse_log,
+    "QUEUE": _parse_queue,
 }
 
 
@@ -347,8 +371,50 @@ def parse_event(line: str) -> TrnRunEvent:
     return parse_event_data(data)
 
 
+def parse_stream_line(line: str) -> tuple[str, TrnRunEvent] | None:
+    """Decode one queue stdout line into its run id and typed event.
+
+    Parameters
+    ----------
+    line : str
+        A single line of queue stdout, carrying either a queue lifecycle
+        object or one runner event tagged with its ``runId``.
+
+    Returns
+    -------
+    tuple of (str, TrnRunEvent), or None
+        The run id and its typed event, or None for a line that carries no
+        routable event: blank lines and the non-JSON diagnostics a runner may
+        write straight to its own stdout.
+
+    Raises
+    ------
+    EventParseError
+        If the line holds a routable event whose payload is malformed.
+    """
+    stripped = line.strip()
+    if not stripped:
+        return None
+
+    try:
+        value = cast("object", json.loads(stripped))
+    except json.JSONDecodeError:
+        return None
+
+    if not isinstance(value, dict):
+        return None
+
+    data = cast("dict[str, object]", value)
+    run_id = data.get("runId")
+    kind = data.get("kind")
+    if not isinstance(run_id, str) or not isinstance(kind, str):
+        return None
+
+    return run_id, parse_event_data(data)
+
+
 def parse_event_data(data: dict[str, object]) -> TrnRunEvent:
-    """Parse an already decoded runner event object."""
+    """Parse an already decoded event object."""
     kind = _require_str(data, "kind").upper()
 
     try:
@@ -357,36 +423,3 @@ def parse_event_data(data: dict[str, object]) -> TrnRunEvent:
         raise EventParseError(f"unknown event kind '{kind}'") from e
 
     return parser(data)
-
-
-def stream_events(
-    lines: Iterable[str],
-    *,
-    skip_invalid: bool = False,
-) -> Iterator[TrnRunEvent]:
-    """Yield parsed events from a JSONL stream, skipping blank lines.
-
-    Parameters
-    ----------
-    lines : Iterable[str]
-        Lines of TRNRun stdout, one JSON object per line.
-    skip_invalid : bool, optional
-        If true, silently drop lines that fail to parse instead of
-        raising. Defaults to False.
-
-    Yields
-    ------
-    TrnRunEvent
-        One typed event per successfully parsed line.
-    """
-    for raw_line in lines:
-        line = raw_line.strip()
-
-        if not line:
-            continue
-
-        try:
-            yield parse_event(line)
-        except EventParseError:
-            if not skip_invalid:
-                raise

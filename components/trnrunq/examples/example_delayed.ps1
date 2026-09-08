@@ -21,6 +21,8 @@ try {
         "with max concurrency $ConcurrencyLimit"
     )
 
+    # The fixed one-slot handoff buffers one unacknowledged request.
+    # QUEUE/ACCEPTED marks worker pickup, not a successful pipe write.
     1..$RunCount | ForEach-Object {
         if ($_ -gt 1) {
             Start-Sleep -Seconds $SubmissionIntervalSeconds
@@ -40,7 +42,7 @@ try {
                 '--watchTmp=true'
             )
         } | ConvertTo-Json -Compress
-    } | & $QueuePath "--maxConcurrent=$ConcurrencyLimit" "--maxPending=$ConcurrencyLimit"
+    } | & $QueuePath "--maxConcurrent=$ConcurrencyLimit"
 
     if ($LASTEXITCODE) {
         throw "trnrunq failed with exit code $LASTEXITCODE"

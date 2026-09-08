@@ -25,13 +25,13 @@ Use `nimble dist` to also assemble the executable, README, and license under
 ## Usage
 
 ```powershell
-trnrunq --maxConcurrent:4 --maxPending:16
+trnrunq --maxConcurrent:4
 ```
 
 When omitted, `--maxConcurrent` defaults to one fewer than the available logical
-processors, with a minimum of one. `--maxPending` defaults to `0`, which leaves
-the pending channel unbounded. A positive value bounds that channel and blocks
-the queue input thread while it is full.
+processors, with a minimum of one. Requests pass through a fixed one-slot
+handoff channel; its capacity is not configurable. The queue input thread
+blocks when that slot is full.
 
 ### PowerShell examples
 
@@ -44,7 +44,7 @@ nimble bin
 cd ..\trnrunq
 nimble bin
 
-# Submit the complete workload immediately.
+# Stream the complete workload without an intentional delay.
 .\examples\example_concurrent.ps1
 
 # Submit one request every two seconds.
@@ -71,31 +71,33 @@ Write one JSON object per line to queue stdin:
 | `runnerPath` | string | yes | Runner executable for this request. |
 | `runnerArgs` | array of strings | no | Additional runner arguments. |
 
-With `--maxPending:0`, requests are accepted as fast as they are written and
-queued until a worker is free. A positive `--maxPending` allows that many accepted
-requests in the pending channel. Further requests are not acknowledged until a
-worker frees channel capacity. Running requests do not count toward the pending
-limit.
+A request is acknowledged only when a worker picks it up, immediately before
+resolving and launching its runner. While all workers are busy, the fixed
+one-slot handoff channel can buffer one request, but that request remains
+unacknowledged until worker pickup. Sending another request into a full channel
+blocks the queue input thread. Stdin's OS pipe and input buffering may hold
+additional data, so a successful write or flush does not imply acceptance.
 
-EOF on stdin ends submission. Requests already accepted by the queue continue to
-completion, after which queue stdout closes.
+EOF on stdin ends submission. All submitted requests, including the
+channel-buffered request, are picked up and run to completion before queue
+stdout closes.
 
 ## Output protocol
 
 Queue stdout is a line-oriented JSON protocol: every non-empty line is one JSON
-object. After a request enters the worker pool, the queue writes and flushes an
-acknowledgment:
+object. Immediately after a worker receives a request from the handoff channel,
+the worker writes and flushes an acknowledgment:
 
 ```json
 {"kind":"QUEUE","timestamp":"2026-06-19T19:37:15","event":"ACCEPTED","runId":"building-a"}
 ```
 
-The acknowledgment means the queue parsed the request, secured pending-channel
-capacity, and took ownership of it. A worker resolves and starts the runner,
-which owns deck validation. A worker may emit runner events before
-`QUEUE/ACCEPTED`, so wrappers
-must register the `runId` before writing the request and route events independently
-of acknowledgment order.
+The acknowledgment means a worker has picked up the parsed request, not merely
+that the request entered the channel. `QUEUE/ACCEPTED` always precedes runner
+output and `QUEUE/COMPLETED` for that request, including resolution or launch
+failures. Only after acknowledgment does that worker resolve and start the
+runner, which owns deck validation. Acceptance does not mean runner launch or
+deck validation has succeeded.
 
 Every merged child stdout/stderr line is forwarded unchanged. `runnerPath` must
 therefore reference a compatible `trnrun` executable that emits the documented
@@ -108,8 +110,9 @@ JSONL protocol and attaches the requested `runId`. For example:
 `trnrunq` does not parse or reinterpret child output. This keeps the queue a thin
 transport and leaves simulation-event ownership with `trnrun`.
 
-After all child output, every accepted request receives exactly one completion
-event:
+After the child exits and its output has been forwarded, every accepted request
+receives exactly one completion event (also emitted if resolution or launch
+fails):
 
 ```json
 {"kind":"QUEUE","event":"COMPLETED","timestamp":"2026-06-19T19:37:17","runId":"building-a","exitCode":0}
@@ -141,8 +144,9 @@ A wrapper should:
    events by `runId`, and resolve submission waiters from `QUEUE/ACCEPTED`.
 3. Generate and write requests incrementally rather than retaining the complete
    workload.
-4. Set a positive `--maxPending` when submission backpressure is required, and
-   keep reading stdout while the queue input thread is blocked on capacity.
+4. Await `QUEUE/ACCEPTED` for pickup-based submission backpressure, rather than
+   treating a successful stdin write as acceptance. Keep reading stdout while
+   submitting work or waiting for acknowledgment.
 5. Treat queue EOF before acknowledgment or completion as a run failure.
 6. Close queue stdin after generating the final request.
 7. Finalize each accepted run from its `QUEUE/COMPLETED` metadata, applying
@@ -150,15 +154,20 @@ A wrapper should:
 
 ## Concurrency model
 
-`serve(maxConcurrent, maxPending)` creates a fixed pool of worker threads.
-Requests cross a `Channel` that is unbounded when `maxPending` is `0`; a positive
-value bounds accepted requests stored in the channel and blocks its input thread
-while the channel is full. `QUEUE/ACCEPTED` is emitted after `send` secures channel
-capacity; a worker may receive that request first. Workers write complete lines
-under one output lock. At stdin EOF, one stop sentinel is queued after all
-accepted requests and passed from worker to worker; channel order guarantees
-every pending request runs before any worker stops. Circulating one sentinel also
-prevents shutdown from filling a bounded pending channel.
+`serve(maxConcurrent)` creates a fixed pool of worker threads. Requests cross a
+`Channel` with capacity `1`, a single handoff slot independent of the worker
+count. Sending into a full channel blocks the input thread. The channel-buffered
+request is not yet accepted: each worker emits `QUEUE/ACCEPTED` immediately after
+`recv`, before resolving or launching the runner. Each worker emits
+`QUEUE/COMPLETED` after runner exit and output forwarding, before picking up its
+next request.
+
+Workers write complete lines under one output lock. At stdin EOF, one stop
+sentinel is queued after all submitted requests and passed from worker to
+worker; channel order guarantees every pending request is picked up before any
+worker stops. Shutdown joins all workers so every submitted run completes.
+Circulating one sentinel also prevents shutdown from filling the one-slot
+channel.
 
 One thread per concurrent run is required rather than chosen: `osproc` exposes
 child stdout as a blocking read on an anonymous pipe, which supports neither

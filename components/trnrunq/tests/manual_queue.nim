@@ -16,7 +16,6 @@ const
   DeckFilename = "test_slow_wo_plot_w_tracking.dck"
   CopyCount = 50
   MaxConcurrent = 5
-  MaxPending = 5
   BackpressureThresholdMs = 100'i64
   RemoveStagedCopies = true
   TrnexePath = r"C:\TRNSYS18\Exe\TrnEXE64.exe"
@@ -88,6 +87,7 @@ proc handleOutput(line: string, statuses: var Table[string, string]) =
 
 proc submitRequests(context: ptr SubmissionContext) {.thread.} =
   ## Writes on a separate thread so queue output is drained while stdin blocks.
+  ## Write/flush timing measures pipe backpressure, not worker pickup acceptance.
   let startedAt = getMonoTime()
   try:
     for index, request in context[].requests:
@@ -156,10 +156,7 @@ proc runQueue(
     process = startProcess(
       executable,
       workingDir = workingDirectory,
-      args = [
-        "--maxConcurrent=" & $MaxConcurrent,
-        "--maxPending=" & $MaxPending,
-      ],
+      args = ["--maxConcurrent=" & $MaxConcurrent],
       options = {poStdErrToStdOut},
     )
 
@@ -240,7 +237,13 @@ proc main(): int =
       stdout,
       fgCyan,
       "Running " & $deckFiles.len & " copies with max concurrency " &
-        $MaxConcurrent & " and max pending " & $MaxPending,
+        $MaxConcurrent & " and a fixed one-slot handoff channel",
+    )
+    styledWriteLine(
+      stdout,
+      fgWhite,
+      "  ACCEPTED marks worker pickup; the channel-buffered request remains " &
+        "unacknowledged until pickup.",
     )
     styledWriteLine(stdout, fgWhite, "  Source:  " & sourceDeck)
     styledWriteLine(stdout, fgWhite, "  Staging: " & stagingDirectory)

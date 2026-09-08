@@ -2,7 +2,7 @@
 ##
 ## Guards process lifetime, starts the worker pool, reads one JSON request per
 ## line from stdin, and shuts the pool down. Child output and queue lifecycle
-## messages share stdout. Stdin EOF drains every accepted request.
+## messages share stdout. Stdin EOF drains every submitted request.
 
 when not defined(windows):
   {.error: "supervisor.nim is Windows-only.".}
@@ -12,18 +12,16 @@ import ./request
 import ./workerpool
 
 
-proc serve*(maxConcurrent: int, maxPending: int = 0) =
-  ## Accepts requests until stdin reaches EOF and waits for every accepted run.
+proc serve*(maxConcurrent: int) =
+  ## Submits requests until stdin reaches EOF and waits for every submitted run.
   if maxConcurrent < 1:
     raise newException(ValueError, "maxConcurrent must be at least 1")
-  if maxPending < 0:
-    raise newException(ValueError, "maxPending must be at least 0")
 
   initJobGuard()
 
   var pool = default(WorkerPool)
   try:
-    pool.start(maxConcurrent, maxPending)
+    pool.start(maxConcurrent)
 
     var line = ""
     while stdin.readLine(line):

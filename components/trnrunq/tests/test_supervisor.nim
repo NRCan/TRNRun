@@ -172,10 +172,6 @@ proc runTests() =
         expect ValueError:
           serve(maxConcurrent = -1)
 
-      test "rejects a negative pending limit before starting":
-        expect ValueError:
-          serve(maxConcurrent = 1, maxPending = -1)
-
       test "accepts incremental input until EOF and drains accepted work":
         let
           firstDeck = createDeck(testDirectory, "incremental-first.dck")

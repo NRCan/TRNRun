@@ -76,7 +76,9 @@ proc runTests() =
           check command.exitCode == 0
           check command.output.contains("Usage:")
           check command.output.contains("--maxConcurrent:N")
-          check command.output.contains("--maxPending:N")
+          check not command.output.toLowerAscii().contains("maxpending")
+          check command.output.contains("fixed one-slot handoff channel")
+          check command.output.contains("when a worker picks up a request")
           check command.output.contains("Exit codes: 0 ok")
 
       test "prints the configured package version":
@@ -93,7 +95,11 @@ proc runTests() =
           (arguments: @["--maxConcurrent"], expected: "invalid integer"),
           (arguments: @["--maxConcurrent:nope"], expected: "invalid integer"),
           (arguments: @["--maxConcurrent:0"], expected: "must be at least 1"),
-          (arguments: @["--maxPending:-1"], expected: "must be at least 0"),
+          (arguments: @["--maxPending"], expected: "Unknown queue option: --maxPending"),
+          (arguments: @["--maxPending:0"], expected: "Unknown queue option: --maxPending"),
+          (arguments: @["--maxPending:12"], expected: "Unknown queue option: --maxPending"),
+          (arguments: @["--maxPending:-1"], expected: "Unknown queue option: --maxPending"),
+          (arguments: @["--maxPending=many"], expected: "Unknown queue option: --maxPending"),
           (arguments: @["unexpected"], expected: "Unexpected positional argument"),
         ]
 

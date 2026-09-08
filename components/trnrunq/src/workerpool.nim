@@ -1,8 +1,8 @@
 ## Runs queued requests on a fixed pool of worker threads.
 ##
 ## Each worker owns one child at a time and forwards its output through a shared,
-## synchronized sink. A positive `maxPending` bounds the pending channel; zero
-## leaves it unbounded. Shutdown drains queued work before joining the workers.
+## synchronized sink. A one-slot channel hands requests to available workers,
+## which acknowledge pickup before launching. Shutdown drains submitted work.
 ##
 ## Pools are single-use because their channel remains open to avoid a Nim 2.2
 ## ORC crash when closing channels that transported moved strings.
@@ -36,6 +36,7 @@ type
     ## Owned by one supervisor thread. Its address must remain stable while
     ## workers are running because each worker receives `ptr WorkerPool`.
     work: Channel[Work]
+
     output: OutputSink
     threads: seq[Thread[ptr WorkerPool]]
     state: PoolState
@@ -52,6 +53,7 @@ proc runWorker(pool: ptr WorkerPool) {.thread.} =
       break
 
     of wkRun:
+      pool[].output.emit(acceptedLine(work.request.runId))
       var exitCode = none(int)
 
       try:
@@ -81,16 +83,11 @@ proc stopWorkers(pool: var WorkerPool) =
   pool.threads.setLen(0)
 
 
-proc start*(pool: var WorkerPool, maxConcurrent: int, maxPending: int = 0) =
-  ## Starts the worker pool.
-  ##
-  ## At most `maxConcurrent` requests run simultaneously. A positive
-  ## `maxPending` allows that many additional requests in the channel.
+proc start*(pool: var WorkerPool, maxConcurrent: int) =
+  ## Starts at most `maxConcurrent` simultaneous runners with a one-slot handoff.
   if maxConcurrent < 1:
     raise newException(ValueError, "maxConcurrent must be at least 1")
 
-  if maxPending < 0:
-    raise newException(ValueError, "maxPending must be at least 0")
 
   if pool.state != psNew:
     raise newException(ValueError, "worker pool is single-use")
@@ -99,8 +96,9 @@ proc start*(pool: var WorkerPool, maxConcurrent: int, maxPending: int = 0) =
   pool.state = psStopped
   pool.output.initOutputSink()
 
+
   try:
-    pool.work.open(maxPending)
+    pool.work.open(1)
 
     {.push warning[ProveInit]: off, warning[Uninit]: off.}
     pool.threads = newSeq[Thread[ptr WorkerPool]](maxConcurrent)
@@ -117,26 +115,22 @@ proc start*(pool: var WorkerPool, maxConcurrent: int, maxPending: int = 0) =
 
   except CatchableError:
     stopWorkers(pool)
+
     pool.output.deinitOutputSink()
     raise
 
 
 proc submit*(pool: var WorkerPool, request: RunRequest) =
-  ## Queues one request and acknowledges it after channel admission.
-  ##
-  ## A bounded channel blocks `send` while full, so `ACCEPTED` is not emitted
-  ## until capacity is available. A worker may begin before the acknowledgment;
-  ## wrappers must register and route the `runId` before submitting.
+  ## Hands off one request, blocking while the channel is full.
+  ## The receiving worker emits `ACCEPTED` before any runner output.
   if pool.state != psRunning:
     raise newException(ValueError, "worker pool is not running")
 
-  let runId = request.runId
   pool.work.send(Work(kind: wkRun, request: request))
-  pool.output.emit(acceptedLine(runId))
 
 
 proc shutdown*(pool: var WorkerPool) =
-  ## Drains accepted work and releases worker resources.
+  ## Drains submitted work and releases worker resources.
   ##
   ## Safe before `start` and after an earlier shutdown. The channel deliberately
   ## remains open because closing it triggers a Nim 2.2 ORC failure.
@@ -146,4 +140,5 @@ proc shutdown*(pool: var WorkerPool) =
   pool.state = psStopped
 
   stopWorkers(pool)
+
   pool.output.deinitOutputSink()

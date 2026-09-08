@@ -14,7 +14,6 @@ DCK_FOLDER = Path(r"examples\dck")
 
 SIM_COUNT = 4
 MAX_CONCURRENT = 4
-MAX_PENDING = 8
 POLL_INTERVAL = 2.0
 CLEANUP_AFTER = True
 
@@ -52,21 +51,32 @@ def terminal_status(simulation: Simulation) -> str | None:
     return status.status if status is not None else None
 
 
-def poll_until_done(simulations: list[Simulation]) -> None:
-    """Print progress until every simulation has a terminal status."""
-    while True:
-        print("-" * 62)
-        for simulation in simulations:
-            snapshot = simulation.snapshot()
-            status = snapshot.status.status if snapshot.status is not None else "PENDING"
-            percent = snapshot.progress.percent if snapshot.progress is not None else 0.0
-            progress_text = f"[{snapshot.id}] {status:<9} progress: {percent:6.1%}  "
-            log_text = f"warnings: {snapshot.warnings}  fatals: {snapshot.fatals}"
-            print(progress_text + log_text)
+def print_progress(simulations: list[Simulation]) -> None:
+    """Print one progress table for every simulation."""
+    print("-" * 62)
+    for simulation in simulations:
+        status = simulation.status.status if simulation.status is not None else "PENDING"
+        percent = simulation.progress.percent if simulation.progress is not None else 0.0
+        progress_text = f"[{simulation.id}] {status:<9} progress: {percent:6.1%}  "
+        log_text = f"warnings: {simulation.warnings}  fatals: {simulation.fatals}"
+        print(progress_text + log_text)
 
-        if all(terminal_status(simulation) is not None for simulation in simulations):
-            return
-        time.sleep(POLL_INTERVAL)
+
+def poll_until_done(manager: SimulationManager, simulations: list[Simulation]) -> None:
+    """Print progress as queue output arrives until every simulation finishes.
+
+    Simulation state only advances while the manager is reading the queue, so
+    the reporting loop is driven by `follow` rather than by sleeping.
+    """
+    last_print = 0.0
+    for _ in manager.follow():
+        now = time.monotonic()
+        if now - last_print < POLL_INTERVAL:
+            continue
+        last_print = now
+        print_progress(simulations)
+
+    print_progress(simulations)
 
 
 def report(simulations: list[Simulation]) -> None:
@@ -83,11 +93,10 @@ def main() -> None:
     try:
         with SimulationManager(
             max_concurrent=MAX_CONCURRENT,
-            max_pending=MAX_PENDING,
             refresh_interval=0,
         ) as manager:
             simulations = [manager.add(deck, CONFIG) for deck in decks]
-            poll_until_done(simulations)
+            poll_until_done(manager, simulations)
 
         report(simulations)
     finally:

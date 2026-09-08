@@ -17,7 +17,7 @@ proc errorLine*(runId, message: string): string =
   })
 
 proc acceptedLine*(runId: string): string =
-  ## Returns the event marking one request as admitted to the worker pool.
+  ## Returns the event marking a request as picked up by a worker.
   result = $(%*{
     "kind": "QUEUE",
     "event": "ACCEPTED",
