@@ -1,17 +1,18 @@
 """Configuration for launching a TRNRun process."""
 
+
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
 from pathlib import Path
 
 # -----------------------------------------------------------------
 # Constants
 # -----------------------------------------------------------------
-# `trnrun.exe` is bundled inside this package under `bin/`.
+# Queue and runner executables are bundled inside this package under `bin/`.
 _PACKAGE_DIR = Path(__file__).resolve().parent
 BUNDLED_TRNRUN_PATH = _PACKAGE_DIR / "bin" / "trnrun.exe"
+BUNDLED_TRNRUNQ_PATH = _PACKAGE_DIR / "bin" / "trnrunq.exe"
 
 DEFAULT_TRNEXE_PATH = Path(r"C:\TRNSYS18\Exe\TrnEXE64.exe")
 
@@ -23,25 +24,28 @@ DEFAULT_TRNEXE_PATH = Path(r"C:\TRNSYS18\Exe\TrnEXE64.exe")
 class SimulationConfig:
     r"""Configuration used to launch TRNRun.
 
-    Each field maps to a `trnrun.exe` command-line flag (noted below as
-    `--flag`). Flags are passed as `--name:value`. These defaults mirror
-    trnrun's own CLI defaults: the detection timeout is 300 seconds, the
+    Except for `trnrun_path`, each field maps to a `trnrun.exe` command-line
+    flag (noted below as `--flag`). Flags are passed as `--name:value`.
+    Relative executable paths are interpreted from Python's working directory.
+    These defaults mirror trnrun's own CLI defaults: the detection timeout is
+    300 seconds, the
     watch/stall timeouts are `0` (unlimited/disabled), progress tracking
     (`watch_tmp`) is off, and `clean_on_success`, `write_events`, and both
     kill-on-* behaviors are disabled.
 
     Attributes
     ----------
-    trnrun_path : Path, default `BUNDLED_TRNRUN_PATH`
+    trnrun_path : str or Path, default `BUNDLED_TRNRUN_PATH`
         Path to the `trnrun.exe` executable to invoke. Defaults to the copy
         bundled with this package.
-    trnexe_path : Path, default `DEFAULT_TRNEXE_PATH`
-    Path to the TRNSYS executable (`TrnEXE64.exe` or `TrnEXE.exe`),
-    passed as `--trnexePath`. trnrun's own fallback is
-    `C:\\TRNSYS18\\Exe\\TrnEXE64.exe`; set this if TRNSYS is installed
+    trnexe_path : str or Path, default `DEFAULT_TRNEXE_PATH`
+        Path to the TRNSYS executable (`TrnEXE64.exe` or `TrnEXE.exe`),
+        passed as `--trnexePath`. trnrun's own fallback is
+        `C:\TRNSYS18\Exe\TrnEXE64.exe`; set this if TRNSYS is installed
         elsewhere.
     gui_visibility : str, default `"hidden"`
-    TRNSYS window behavior, passed as `--guiVisibility`. One of:
+        TRNSYS window behavior, passed as `--guiVisibility` (case-insensitive).
+        One of:
 
         - `keep`/`keepOpen`    - visible, stays open after the run.
         - `auto`/`autoClose`   - visible, closes after the run.
@@ -54,30 +58,32 @@ class SimulationConfig:
         Launch detection determines when startup has completed so the global
         mutex can be released for the next simulation.
     wait_for_lst : bool, default `True`
-    Wait for a specific string to appear in the `*.lst` file during
-    launch detection (`--waitForLst`).
+        Wait for the component-order header in the `*.lst` file during
+        launch detection (`--waitForLst`).
     wait_for_tmp : bool, default `False`
-    Wait for the `*.tmp` file to appear during launch detection
-    (`--waitForTmp`). Requires a Progress Tracker (Type3830) in the deck.
+        Wait for the `*.tmp` file to appear during launch detection
+        (`--waitForTmp`). Requires a Progress Tracker (Type3830) in the deck.
     detect_timeout_ms : int, default `300000`
-        Timeout in milliseconds for the launch-detection stages
-        (`--detectTimeout`). `0` means unlimited. Combined with
-        `kill_on_timeout`, exceeding this yields a `TIMEOUT` status.
-        Detection runs while TRNRun holds the session-wide launch mutex, so
-        this also caps how long one deck can block other runners.
+        Shared timeout in milliseconds for the launch-detection stages
+        (`--detectTimeout`). `0` means unlimited. If `kill_on_timeout` is
+        enabled and TRNSYS is still running, expiration yields `TIMEOUT`;
+        otherwise the runner proceeds to runtime monitoring.
+        Detection holds the session-wide launch mutex. This deadline excludes
+        the subsequent `extra_delay_ms` and is not a total mutex-hold limit.
     extra_delay_ms : int, default `0`
         Additional delay in milliseconds applied after detection passes
         (`--extraDelay`).
     poll_ms : int, default `100`
         Polling interval in milliseconds for the output files and the process
-        (`--pollMs`).
+        (`--pollMs`). The runner clamps this to at least 1 and raises positive
+        watch/stall timeouts shorter than this interval to this interval.
     watch_log : bool, default `True`
-    Stream `*.log` entries as `LOG` events (`--watchLog`).
+        Stream `*.log` entries as `LOG` events (`--watchLog`).
     watch_tmp : bool, default `False`
-    Stream `*.tmp` updates as `CONFIG`/`PROGRESS` events
-    (`--watchTmp`). Requires Type3830. This also gates progress-derived
-    outcomes: without it, `CANCELLED` and `STALLED` cannot be detected
-    and an early exit is reported as `DONE` instead.
+        Stream `*.tmp` updates as `CONFIG`/`PROGRESS` events
+        (`--watchTmp`). Requires Type3830. This also gates progress-derived
+        outcomes: without it, `CANCELLED` and `STALLED` cannot be detected.
+        An early exit without another detected failure is reported as `DONE`.
     watch_timeout_ms : int, default `0`
         Maximum runtime-monitoring duration in milliseconds
         (`--watchTimeout`). `0` means unlimited. Exceeding it corresponds
@@ -88,24 +94,32 @@ class SimulationConfig:
         `0` disables the check. Requires `watch_tmp=True`. A stall yields a
         `STALLED` status / exit code 125.
     clean_on_success : bool, default `False`
-    On a successful run, delete the `*.tmp`, `*.log`, `*.lst`, and
-    `*.PTI` artifacts (`--clean`).
+        On a successful run, delete the `*.tmp`, `*.log`, `*.lst`, and
+        `*.PTI` artifacts (`--clean`).
     kill_on_timeout : bool, default `False`
         Kill the TRNSYS process on a detection or watch timeout
-        (`--killOnTimeout`). If `False`, the runner waits for it to exit.
+        (`--killOnTimeout`). If `False`, detection proceeds into monitoring;
+        after a watch timeout, the runner waits for TRNSYS to exit.
     kill_on_stall : bool, default `False`
-    Kill the TRNSYS process when a stall is detected (`--killOnStall`).
-    If `False`, the runner waits for it to exit.
+        Kill the TRNSYS process when a stall is detected (`--killOnStall`).
+        If `False`, the runner waits for it to exit.
     severity : str, default `"Notice"`
-    Minimum log severity to emit (`--severity`), one of `"Notice"`,
-    `"Warning"`, or `"Fatal"`.
+        Minimum log severity to emit (`--severity`), one of `"Notice"`,
+        `"Warning"`, or `"Fatal"` (case-insensitive).
     write_events : bool, default `False`
-    Write every emitted event to `<deckFile>.jsonl`, replacing any existing
-    file when the run starts (`--writeEvents`).
+        Write every emitted event to `<deckFile>.jsonl`, replacing any existing
+        file when the run starts (`--writeEvents`).
+
+    Notes
+    -----
+    Boolean fields require actual booleans, not strings or integers. The native
+    runner parses other options and clamps negative timeouts and delays to zero.
+    Stall detection is inactive unless `watch_tmp=True`. `validate()` checks
+    executable files; `SimulationManager` calls it before submission.
     """
 
-    trnrun_path: Path = BUNDLED_TRNRUN_PATH
-    trnexe_path: Path = DEFAULT_TRNEXE_PATH
+    trnrun_path: str | Path = BUNDLED_TRNRUN_PATH
+    trnexe_path: str | Path = DEFAULT_TRNEXE_PATH
     gui_visibility: str = "hidden"
     wait_for_gui: bool = True
     wait_for_lst: bool = True
@@ -124,26 +138,36 @@ class SimulationConfig:
     write_events: bool = False
 
     def validate(self) -> None:
-        """Check that both executables exist.
+        """Check both executable files, then store their absolute paths.
 
         Raises
         ------
         FileNotFoundError
             If `trnrun_path` or `trnexe_path` is not a file.
         """
-        if not self.trnrun_path.is_file():
-            raise FileNotFoundError(f"TRNRun executable not found: {self.trnrun_path}")
-        if not self.trnexe_path.is_file():
-            raise FileNotFoundError(f"TrnEXE executable not found: {self.trnexe_path}")
+        runner = Path(self.trnrun_path).absolute()
+        trnexe = Path(self.trnexe_path).absolute()
+        if not runner.is_file():
+            raise FileNotFoundError(f"TRNRun executable not found: {runner}")
+        if not trnexe.is_file():
+            raise FileNotFoundError(f"TrnEXE executable not found: {trnexe}")
+        # The queue resolves relative runner paths beside itself, not from our cwd.
+        self.trnrun_path = runner
+        self.trnexe_path = trnexe
 
     def to_cli_args(self) -> list[str]:
-        """Convert configuration into `trnrun.exe` command-line arguments."""
+        """Return unquoted argv entries; call `validate()` before launching.
 
-        def boolean(value: bool) -> str:
+        Does not mutate the configuration or require installed executables.
+        Boolean values are checked here to avoid silently coercing strings.
+        """
+        def boolean(value: object) -> str:
+            if type(value) is not bool:
+                raise TypeError(f"Expected a boolean, got {value!r}")
             return "true" if value else "false"
 
         return [
-            f"--trnexePath:{self.trnexe_path}",
+            f"--trnexePath:{Path(self.trnexe_path).absolute()}",
             f"--guiVisibility:{self.gui_visibility}",
             f"--waitForGui:{boolean(self.wait_for_gui)}",
             f"--waitForLst:{boolean(self.wait_for_lst)}",

@@ -4,7 +4,9 @@ import ../src/outputsink
 import ../src/trnrun
 
 
-const HeldPipeLine = "inherited stdout remained open"
+const
+  Timestamp = "2026-08-30T12:00:00"
+  HeldPipeLine = "inherited stdout remained open"
 
 
 type CommandResult = object
@@ -19,16 +21,46 @@ proc runnerArguments(): seq[string] =
     for index in 2 .. paramCount():
       result.add(paramStr(index))
 
+proc fakeRunId(): string =
+  for argument in runnerArguments():
+    if argument.startsWith("--runId:"):
+      return argument[8 .. ^1]
+  result = ""
+
 proc runFakeRunner(deckFile: string) =
-  case deckFile.splitFile().name.toLowerAscii()
-  of "forward":
-    stdout.writeLine("stdout line with trailing spaces  ")
-    stdout.flushFile()
-    stderr.writeLine("stderr line")
-    stderr.flushFile()
-    stdout.writeLine("arguments: " & runnerArguments().join(" | "))
+  let
+    mode = deckFile.splitFile().name.toLowerAscii()
+    runId = fakeRunId()
+  case mode
+  of "protocol":
+    stdout.writeLine($(%*{
+      "kind": "STATUS",
+      "timestamp": Timestamp,
+      "status": "RUNNING",
+      "runId": runId,
+    }))
+    stdout.writeLine($(%*{
+      "kind": "FUTURE_EVENT",
+      "runId": runId,
+      "arguments": runnerArguments(),
+    }))
     stdout.flushFile()
     quit(0)
+
+  of "routing":
+    stdout.writeLine("raw stderr or stdout")
+    stdout.writeLine("{not valid JSON}")
+    stdout.writeLine("[]")
+    stdout.writeLine($(%*{"runId": runId}))
+    stdout.writeLine($(%*{"kind": 1, "runId": runId}))
+    stdout.writeLine($(%*{"kind": "STATUS", "runId": 1}))
+    stdout.writeLine($(%*{"kind": "STATUS", "runId": "another-run"}))
+    stdout.flushFile()
+    quit(0)
+  of "fail":
+    stderr.writeLine("native crash")
+    stderr.flushFile()
+    quit(2)
   of "inherited":
     let holder = startProcess(
       getAppFilename(),
@@ -54,7 +86,7 @@ proc invokeRunTrnrun() =
   var output = default(OutputSink)
   output.initOutputSink()
   try:
-    runTrnrun(
+    discard runTrnrun(
       paramStr(2),
       paramStr(3),
       paramStr(4),
@@ -141,26 +173,60 @@ proc runTests() =
   createDir(testDirectory)
   try:
     suite "TRNRun process runner":
-      test "forwards merged child output and arguments unchanged":
+      test "forwards routed protocol objects unchanged including unknown kinds":
         let
-          deckFile = createDeck(testDirectory, "forward.dck")
+          deckFile = createDeck(testDirectory, "protocol.dck")
           command = invokeRun(
             deckFile,
             executable,
             "forwarded-run",
             ["--fake-option", "value with spaces"],
           )
+          lines = command.stdout.nonEmptyLines()
 
         checkpoint("stdout:\n" & command.stdout & "\nstderr:\n" & command.stderr)
         check command.exitCode == 0
         check command.stderr.len == 0
-        check command.stdout.nonEmptyLines() == @[
-          "stdout line with trailing spaces  ",
-          "stderr line",
-          "arguments: --fake-option | value with spaces | --runId:forwarded-run",
-        ]
+        check lines.len == 2
+        if lines.len == 2:
+          check lines[0] == $(%*{
+            "kind": "STATUS",
+            "timestamp": Timestamp,
+            "status": "RUNNING",
+            "runId": "forwarded-run",
+          })
+          check lines[1] == $(%*{
+            "kind": "FUTURE_EVENT",
+            "runId": "forwarded-run",
+            "arguments": @[
+              "--fake-option",
+              "value with spaces",
+              "--runId:forwarded-run",
+            ],
+          })
 
-      test "allows a runner to exit without output":
+
+      test "forwards every merged child line unchanged":
+        let
+          deckFile = createDeck(testDirectory, "routing.dck")
+          command = invokeRun(deckFile, executable, "routing-run")
+          lines = command.stdout.nonEmptyLines()
+          originalLines = [
+            "raw stderr or stdout",
+            "{not valid JSON}",
+            "[]",
+            $(%*{"runId": "routing-run"}),
+            $(%*{"kind": 1, "runId": "routing-run"}),
+            $(%*{"kind": "STATUS", "runId": 1}),
+            $(%*{"kind": "STATUS", "runId": "another-run"}),
+          ]
+
+        checkpoint("stdout:\n" & command.stdout & "\nstderr:\n" & command.stderr)
+        check command.exitCode == 0
+        check command.stderr.len == 0
+        check lines == @originalLines
+
+      test "allows a runner to exit zero without output":
         let
           deckFile = createDeck(testDirectory, "silent.dck")
           command = invokeRun(deckFile, executable, "silent-run")
@@ -170,22 +236,24 @@ proc runTests() =
         check command.stdout.len == 0
         check command.stderr.len == 0
 
-      test "emits STATUS ERROR for validation failures":
+      test "forwards output from a nonzero child crash":
         let
-          validDeck = createDeck(testDirectory, "valid.dck")
-          invalidDeck = createDeck(testDirectory, "invalid.txt")
-          missingDeck = testDirectory / "missing.dck"
-          missingRunner = testDirectory / "missing-runner.exe"
-          failures = [
-            (invokeRun(missingDeck, executable, "missing-deck"), "missing-deck", "Deck file not found:"),
-            (invokeRun(invalidDeck, executable, "invalid-deck"), "invalid-deck", "Expected .dck or .trd"),
-            (invokeRun(validDeck, missingRunner, "missing-runner"), "missing-runner", "TRNRun not found:"),
-          ]
+          deckFile = createDeck(testDirectory, "fail.dck")
+          command = invokeRun(deckFile, executable, "failed-run")
 
-        for (command, runId, expectedMessage) in failures:
-          let event = command.errorEvent()
-          event.checkErrorEvent(runId)
-          check event["message"].getStr().contains(expectedMessage)
+        checkpoint("stdout:\n" & command.stdout & "\nstderr:\n" & command.stderr)
+        check command.exitCode == 0
+        check command.stderr.len == 0
+        check command.stdout.nonEmptyLines() == @["native crash"]
+
+      test "emits STATUS ERROR when runner path validation fails":
+        let
+          deckFile = createDeck(testDirectory, "valid.dck")
+          missingRunner = testDirectory / "missing-runner.exe"
+          event = invokeRun(deckFile, missingRunner, "missing-runner").errorEvent()
+
+        event.checkErrorEvent("missing-runner")
+        check event["message"].getStr().contains("TRNRun not found:")
 
       test "emits STATUS ERROR when the validated runner cannot launch":
         let

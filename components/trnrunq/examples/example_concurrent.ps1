@@ -17,6 +17,8 @@ New-Item -ItemType Directory -Path $RunDirectory | Out-Null
 try {
     Write-Host "Running $RunCount copies with max concurrency $ConcurrencyLimit"
 
+    # The fixed one-slot handoff buffers one unacknowledged request.
+    # QUEUE/ACCEPTED marks worker pickup, not a successful pipe write.
     1..$RunCount | ForEach-Object {
         $RunId = 'example-{0:D2}' -f $_
         $DeckFile = Join-Path $RunDirectory "$RunId.dck"
@@ -33,7 +35,7 @@ try {
                 '--watchTmp=true'
             )
         } | ConvertTo-Json -Compress
-    } | & $QueuePath "--maxConcurrent=$ConcurrencyLimit" "--maxPending=$ConcurrencyLimit"
+    } | & $QueuePath "--maxConcurrent=$ConcurrencyLimit"
 
     if ($LASTEXITCODE) {
         throw "trnrunq failed with exit code $LASTEXITCODE"

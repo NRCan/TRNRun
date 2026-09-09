@@ -1,4 +1,4 @@
-import std/[json, monotimes, os, osproc, streams, strutils, times, unittest]
+import std/[algorithm, json, os, osproc, streams, strutils, unittest]
 
 import ../src/request
 import ../src/workerpool
@@ -22,6 +22,8 @@ proc runFakeRunner(deckFile: string) =
     mode = deckFile.splitFile().name.toLowerAscii()
     runId = fakeRunId()
   case mode
+  of "silent":
+    quit(0)
   of "cancelled":
     let holder = startProcess(
       getAppFilename(),
@@ -42,6 +44,7 @@ proc runFakeRunner(deckFile: string) =
   of "fail":
     stderr.writeLine("fake native crash diagnostic")
     quit(2)
+
   of "malformed":
     stdout.writeLine("{not valid JSON}")
     stdout.writeLine($(%*{
@@ -66,7 +69,9 @@ proc runFakeRunner(deckFile: string) =
     stdout.flushFile()
     if mode == "slow":
       sleep(500)
-    stderr.writeLine("fake runner diagnostic")
+    if mode == "good":
+      stderr.writeLine("fake runner diagnostic")
+      stderr.flushFile()
     stdout.writeLine($(%*{
       "kind": "STATUS",
       "timestamp": Timestamp,
@@ -79,22 +84,13 @@ proc runFakeRunner(deckFile: string) =
     quit(0)
 
 proc runPoolFromArguments() =
-  let
-    maxConcurrent = parseInt(paramStr(2))
-    maxPending = parseInt(paramStr(3))
+  let maxConcurrent = parseInt(paramStr(2))
   var pool = default(WorkerPool)
   try:
-    pool.start(maxConcurrent, maxPending)
-    let submissionStartedAt = getMonoTime()
-    if paramCount() >= 4:
-      for index in 4 .. paramCount():
+    pool.start(maxConcurrent)
+    if paramCount() >= 3:
+      for index in 3 .. paramCount():
         pool.submit(parseRequest(paramStr(index)))
-    if maxPending > 0:
-      stderr.writeLine(
-        "submitMilliseconds=" &
-        $((getMonoTime() - submissionStartedAt).inMilliseconds),
-      )
-      stderr.flushFile()
   finally:
     pool.shutdown()
 
@@ -147,9 +143,8 @@ proc runPoolCommand(
     workingDirectory: string,
     maxConcurrent: int,
     requests: openArray[string],
-    maxPending: int = 0,
 ): CommandResult =
-  var arguments = @["--run-pool", $maxConcurrent, $maxPending]
+  var arguments = @["--run-pool", $maxConcurrent]
   for request in requests:
     arguments.add(request)
   executable.runCommand(arguments, workingDirectory)
@@ -170,12 +165,20 @@ proc messagesOfKind(messages: openArray[JsonNode], kind: string): seq[JsonNode] 
         message["kind"].kind == JString and message["kind"].getStr() == kind:
       result.add(message)
 
-proc acceptedRunIds(messages: openArray[JsonNode]): seq[string] =
+proc queueEvents(
+    messages: openArray[JsonNode],
+    eventName: string,
+): seq[JsonNode] =
   result = @[]
   for message in messages.messagesOfKind("QUEUE"):
     if message.hasKey("event") and message["event"].kind == JString and
-        message["event"].getStr() == "ACCEPTED":
-      result.add(message["runId"].getStr())
+        message["event"].getStr() == eventName:
+      result.add(message)
+
+proc acceptedRunIds(messages: openArray[JsonNode]): seq[string] =
+  result = @[]
+  for message in messages.queueEvents("ACCEPTED"):
+    result.add(message["runId"].getStr())
 
 proc nonEmptyLines(content: string): seq[string] =
   result = @[]
@@ -197,13 +200,13 @@ proc runTests() =
   createDir(testDirectory)
   try:
     suite "worker pool":
-      test "rejects invalid limits before starting":
+      test "rejects invalid concurrency before starting":
         var pool = default(WorkerPool)
 
         expect ValueError:
           pool.start(maxConcurrent = 0)
         expect ValueError:
-          pool.start(maxConcurrent = 1, maxPending = -1)
+          pool.start(maxConcurrent = -1)
 
         pool.shutdown()
 
@@ -243,6 +246,7 @@ proc runTests() =
         check command.exitCode == 0
         check command.stderr.len == 0
         check messages.acceptedRunIds() == @["queued-1", "queued-2", "queued-3"]
+        check messages.queueEvents("COMPLETED").len == 3
         check events.len == 6
         for runId in ["queued-1", "queued-2", "queued-3"]:
           var statuses: seq[string] = @[]
@@ -250,6 +254,19 @@ proc runTests() =
             if event["runId"].getStr() == runId:
               statuses.add(event["status"].getStr())
           check statuses == @["RUNNING", "DONE"]
+
+      test "stops more workers than the one-slot channel can hold":
+        let command = runPoolCommand(
+          executable,
+          testDirectory,
+          3,
+          [],
+        )
+
+        checkpoint("stdout:\n" & command.stdout & "\nstderr:\n" & command.stderr)
+        check command.exitCode == 0
+        check command.stdout.len == 0
+        check command.stderr.len == 0
 
       test "never exceeds maximum concurrency":
         let
@@ -271,25 +288,29 @@ proc runTests() =
         checkpoint("stdout:\n" & command.stdout & "\nstderr:\n" & command.stderr)
         check command.exitCode == 0
         check command.stderr.len == 0
-        check messages.acceptedRunIds() == @["slow-1", "slow-2", "slow-3", "slow-4"]
+        check messages.acceptedRunIds().sorted() ==
+          @["slow-1", "slow-2", "slow-3", "slow-4"]
+        check messages.queueEvents("COMPLETED").len == 4
         check events.len == 8
 
         var
           active = 0
           maxActive = 0
-        for event in events:
-          case event["status"].getStr()
-          of "RUNNING":
+        for event in messages.messagesOfKind("QUEUE"):
+          case event["event"].getStr()
+          of "ACCEPTED":
             inc active
             maxActive = max(maxActive, active)
-          of "DONE":
+          of "COMPLETED":
             dec active
           else:
-            discard
+            check false
+          check active >= 0
+          check active <= 2
         check active == 0
         check maxActive == 2
 
-      test "blocks submission while the pending queue is full":
+      test "does not accept the next request while the worker is busy":
         let
           deckFile = createDeck(testDirectory, "slow.dck")
           command = runPoolCommand(
@@ -301,44 +322,6 @@ proc runTests() =
               requestLine("bounded-2", deckFile, executable),
               requestLine("bounded-3", deckFile, executable),
             ],
-            maxPending = 1,
-          )
-          messages = command.stdout.parseJsonMessages()
-          events = messages.messagesOfKind("STATUS")
-          timingParts = command.stderr.strip().split('=')
-
-        checkpoint("stdout:\n" & command.stdout & "\nstderr:\n" & command.stderr)
-        check command.exitCode == 0
-        check messages.acceptedRunIds() == @["bounded-1", "bounded-2", "bounded-3"]
-        check events.len == 6
-        check timingParts.len == 2
-        if timingParts.len == 2:
-          check timingParts[0] == "submitMilliseconds"
-          check parseInt(timingParts[1]) >= 250
-
-        var
-          firstDoneIndex = -1
-          thirdAcceptedIndex = -1
-        for index, message in messages:
-          if message["runId"].getStr() == "bounded-1" and
-              message["kind"].getStr() == "STATUS" and
-              message["status"].getStr() == "DONE":
-            firstDoneIndex = index
-          elif message["runId"].getStr() == "bounded-3" and
-              message["kind"].getStr() == "QUEUE":
-            thirdAcceptedIndex = index
-        check firstDoneIndex >= 0
-        check thirdAcceptedIndex > firstDoneIndex
-
-      test "accepts duplicate submissions":
-        let
-          deckFile = createDeck(testDirectory, "duplicate.dck")
-          duplicate = requestLine("duplicate", deckFile, executable)
-          command = runPoolCommand(
-            executable,
-            testDirectory,
-            2,
-            [duplicate, duplicate],
           )
           messages = command.stdout.parseJsonMessages()
           events = messages.messagesOfKind("STATUS")
@@ -346,23 +329,17 @@ proc runTests() =
         checkpoint("stdout:\n" & command.stdout & "\nstderr:\n" & command.stderr)
         check command.exitCode == 0
         check command.stderr.len == 0
-        check messages.acceptedRunIds() == @["duplicate", "duplicate"]
-        check events.len == 4
+        check events.len == 6
 
-        var
-          runningCount = 0
-          doneCount = 0
-        for event in events:
-          check event["runId"].getStr() == "duplicate"
-          case event["status"].getStr()
-          of "RUNNING":
-            inc runningCount
-          of "DONE":
-            inc doneCount
-          else:
-            discard
-        check runningCount == 2
-        check doneCount == 2
+        var lifecycle: seq[string] = @[]
+        for event in messages.messagesOfKind("QUEUE"):
+          lifecycle.add(event["runId"].getStr() & ":" & event["event"].getStr())
+        check lifecycle == @[
+          "bounded-1:ACCEPTED", "bounded-1:COMPLETED",
+          "bounded-2:ACCEPTED", "bounded-2:COMPLETED",
+          "bounded-3:ACCEPTED", "bounded-3:COMPLETED",
+        ]
+
 
       test "continues after a runner exits before stdout closes":
         let
@@ -393,6 +370,144 @@ proc runTests() =
         check events[2]["runId"].getStr() == "next"
         check events[2]["status"].getStr() == "DONE"
 
+      test "preserves child output order and completes after output":
+        let deckFile = createDeck(testDirectory, "ordering.dck")
+        var requests: seq[string] = @[]
+        for index in 1 .. 4:
+          requests.add(requestLine("ordering-" & $index, deckFile, executable))
+
+        let
+          command = runPoolCommand(
+            executable,
+            testDirectory,
+            4,
+            requests,
+          )
+          lines = command.stdout.nonEmptyLines()
+          messages = command.stdout.parseJsonMessages()
+          completed = messages.queueEvents("COMPLETED")
+
+        checkpoint("stdout:\n" & command.stdout & "\nstderr:\n" & command.stderr)
+        check command.exitCode == 0
+        check command.stderr.len == 0
+        check messages.len == lines.len
+        check messages.acceptedRunIds().len == requests.len
+        check completed.len == requests.len
+
+        for index in 1 .. 4:
+          let runId = "ordering-" & $index
+          var
+            acceptedIndex = -1
+            completedIndex = -1
+            outputIndices: seq[int] = @[]
+          for messageIndex, message in messages:
+            if message["runId"].getStr() != runId:
+              continue
+            if message["kind"].getStr() == "QUEUE" and
+                message["event"].getStr() == "ACCEPTED":
+              acceptedIndex = messageIndex
+            elif message["kind"].getStr() == "QUEUE" and
+                message["event"].getStr() == "COMPLETED":
+              completedIndex = messageIndex
+            else:
+              outputIndices.add(messageIndex)
+
+          check acceptedIndex >= 0
+          check completedIndex > acceptedIndex
+          check outputIndices.len == 2
+          for outputIndex in outputIndices:
+            check acceptedIndex < outputIndex
+            check outputIndex < completedIndex
+
+      test "accepts before fast runner resolution errors with multiple workers":
+        let
+          deckFile = createDeck(testDirectory, "admission.dck")
+          missingRunner = testDirectory / "missing-runner.exe"
+        var
+          requests: seq[string] = @[]
+          runIds: seq[string] = @[]
+        # Keep batches small: runCommand waits for exit before draining stdout.
+        for index in 1 .. 6:
+          let runId = "admission-" & $index
+          runIds.add(runId)
+          requests.add(requestLine(runId, deckFile, missingRunner))
+
+        let
+          command = runPoolCommand(executable, testDirectory, 4, requests)
+          messages = command.stdout.parseJsonMessages()
+
+        checkpoint("stdout:\n" & command.stdout & "\nstderr:\n" & command.stderr)
+        check command.exitCode == 0
+        check command.stderr.len == 0
+        check messages.len == command.stdout.nonEmptyLines().len
+        check messages.len == requests.len * 3
+        check messages.acceptedRunIds().sorted() == runIds
+
+        for runId in runIds:
+          var runMessages: seq[JsonNode] = @[]
+          for message in messages:
+            if message["runId"].getStr() == runId:
+              runMessages.add(message)
+
+          require runMessages.len == 3
+          require runMessages[0]["kind"].getStr() == "QUEUE"
+          check runMessages[0]["event"].getStr() == "ACCEPTED"
+          require runMessages[1]["kind"].getStr() == "STATUS"
+          check runMessages[1]["status"].getStr() == "ERROR"
+          check runMessages[1]["message"].getStr().contains("TRNRun not found:")
+          require runMessages[2]["kind"].getStr() == "QUEUE"
+          check runMessages[2]["event"].getStr() == "COMPLETED"
+          check runMessages[2]["exitCode"].kind == JNull
+
+      test "reports completion metadata for exit and launch paths":
+        let
+          silentDeck = createDeck(testDirectory, "silent.dck")
+          failingDeck = createDeck(testDirectory, "fail.dck")
+          missingRunner = testDirectory / "missing-runner.exe"
+          command = runPoolCommand(
+            executable,
+            testDirectory,
+            1,
+            [
+              requestLine("silent", silentDeck, executable),
+              requestLine("crash", failingDeck, executable),
+              requestLine("invalid", silentDeck, missingRunner),
+            ],
+          )
+          lines = command.stdout.nonEmptyLines()
+          messages = command.stdout.parseJsonMessages()
+          completed = messages.queueEvents("COMPLETED")
+
+        checkpoint("stdout:\n" & command.stdout & "\nstderr:\n" & command.stderr)
+        check command.exitCode == 0
+        check command.stderr.len == 0
+        check command.stdout.contains("fake native crash diagnostic")
+        check messages.len + 1 == lines.len
+        check completed.len == 3
+
+        for event in completed:
+          case event["runId"].getStr()
+          of "silent":
+            check event["exitCode"].kind == JInt
+            check event["exitCode"].getInt() == 0
+          of "crash":
+            check event["exitCode"].kind == JInt
+            check event["exitCode"].getInt() == 2
+          of "invalid":
+            check event["exitCode"].kind == JNull
+          else:
+            check false
+
+        for event in completed:
+          let runId = event["runId"].getStr()
+          var completedIndex = -1
+          for index, message in messages:
+            if message == event:
+              completedIndex = index
+            elif message["runId"].getStr() == runId:
+              check completedIndex < 0
+
+
       test "forwards merged and malformed child output unchanged":
         let
           goodDeck = createDeck(testDirectory, "good.dck")
@@ -415,11 +530,13 @@ proc runTests() =
         checkpoint("stdout:\n" & command.stdout & "\nstderr:\n" & command.stderr)
         check command.exitCode == 0
         check command.stderr.len == 0
-        check outputLines.len == 9
+        check outputLines.len == 12
+        check messages.len == 9
+        check messages.acceptedRunIds() == @["good", "failed", "malformed"]
+        check messages.queueEvents("COMPLETED").len == 3
         check outputLines.contains("fake runner diagnostic")
         check outputLines.contains("fake native crash diagnostic")
         check outputLines.contains("{not valid JSON}")
-        check messages.acceptedRunIds() == @["good", "failed", "malformed"]
         check events.len == 3
         check events[0]["runId"].getStr() == "good"
         check events[1]["runId"].getStr() == "good"

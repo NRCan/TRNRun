@@ -1,23 +1,26 @@
-"""Typed events emitted by TRNRun on stdout, and their JSONL parsers.
+"""Typed runner and queue events emitted on stdout, and their parsers.
 
 TRNRun writes one JSON object per line. ``parse_event`` turns a single
-line into a typed event; ``stream_events`` does the same for an entire
-stream of lines.
+line into a typed event, which is also how a ``--writeEvents`` ``.jsonl``
+file is read back. Queue lifecycle objects are one more ``kind`` in
+``TrnRunEvent`` and go through the same parser. ``parse_stream_line``
+decodes the merged queue stdout stream, where runner and queue events
+arrive interleaved and tagged with a ``runId``.
 """
 
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Final, cast
+from typing import Final
 
 
 # -----------------------------------------------------------------
 # Exceptions
 # -----------------------------------------------------------------
 class EventParseError(ValueError):
-    """Raised when a JSON line cannot be parsed into a TRNRun event."""
+    """Raised when a runner or queue event cannot be parsed."""
 
 
 # -----------------------------------------------------------------
@@ -33,10 +36,13 @@ class StatusEvent:
         State reported by TRNRun.
     timestamp : str
         Timestamp attached to the event by TRNRun.
+    message : str
+        Optional outcome or failure detail reported by TRNRun.
     """
 
     status: str
     timestamp: str
+    message: str = ""
 
 
 @dataclass(frozen=True)
@@ -66,7 +72,7 @@ class ProgressEvent:
 
 @dataclass(frozen=True)
 class ConfigEvent:
-    """A CONFIG event reporting the run's sweep parameters.
+    """A CONFIG event reporting simulation time bounds and step.
 
     Attributes
     ----------
@@ -124,7 +130,7 @@ class LogEvent:
     Attributes
     ----------
     severity : str
-        Severity tag, e.g. ``"notice"``, ``"warning"`` or ``"fatal"``.
+        Severity tag: ``"Notice"``, ``"Warning"`` or ``"Fatal"``.
     timestamp : str
         Timestamp attached to the event by TRNRun.
     time : float or None
@@ -151,23 +157,39 @@ class LogEvent:
     information: str | None = None
 
 
-type TrnRunEvent = StatusEvent | ProgressEvent | ConfigEvent | SettingEvent | LogEvent
+@dataclass(frozen=True)
+class QueueEvent:
+    """Queue admission or completion after all child output.
+
+    ``exit_code`` is None for acceptance, or when runner resolution or
+    launch failed before completion.
+    """
+
+    event: str
+    run_id: str
+    timestamp: str
+    exit_code: int | None = None
+
+
+type TrnRunEvent = StatusEvent | ProgressEvent | ConfigEvent | SettingEvent | LogEvent | QueueEvent
+
+TERMINAL_STATUSES: Final[frozenset[str]] = frozenset(
+    {"DONE", "ERROR", "CANCELLED", "TIMEOUT", "STALLED"},
+)
+
+
+def is_terminal_status(status: str) -> bool:
+    """Return whether a status is an exact canonical terminal value."""
+    return status in TERMINAL_STATUSES
 
 
 # -----------------------------------------------------------------
 # Validation Helpers
 # -----------------------------------------------------------------
-def _required(data: dict[str, object], key: str) -> object:
-    """Return a required field, raising ``EventParseError`` if missing."""
-    try:
-        return data[key]
-    except KeyError as e:
-        raise EventParseError(f"missing required field '{key}'") from e
-
 
 def _require_str(data: dict[str, object], key: str) -> str:
     """Return a required string field."""
-    value = _required(data, key)
+    value = data.get(key)
 
     if not isinstance(value, str):
         raise EventParseError(f"field '{key}' must be a string")
@@ -177,7 +199,7 @@ def _require_str(data: dict[str, object], key: str) -> str:
 
 def _require_bool(data: dict[str, object], key: str) -> bool:
     """Return a required boolean field."""
-    value = _required(data, key)
+    value = data.get(key)
 
     if not isinstance(value, bool):
         raise EventParseError(f"field '{key}' must be a boolean")
@@ -186,8 +208,8 @@ def _require_bool(data: dict[str, object], key: str) -> bool:
 
 
 def _require_float(data: dict[str, object], key: str) -> float:
-    """Return a required numeric field as a float, rejecting booleans."""
-    value = _required(data, key)
+    """Return a required finite number as a float, rejecting booleans."""
+    value = data.get(key)
 
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise EventParseError(f"field '{key}' must be a number")
@@ -197,7 +219,7 @@ def _require_float(data: dict[str, object], key: str) -> float:
 
 def _require_int(data: dict[str, object], key: str) -> int:
     """Return a required integer field, rejecting booleans."""
-    value = _required(data, key)
+    value = data.get(key)
 
     if isinstance(value, bool) or not isinstance(value, int):
         raise EventParseError(f"field '{key}' must be an integer")
@@ -215,13 +237,9 @@ def _optional_float(data: dict[str, object], key: str) -> float | None:
     return None if data.get(key) is None else _require_float(data, key)
 
 
-def _optional_int(data: dict[str, object], key: str, *aliases: str) -> int | None:
-    """Return the first present optional integer field, treating null as absent."""
-    for candidate in (key, *aliases):
-        if candidate in data:
-            return None if data[candidate] is None else _require_int(data, candidate)
-
-    return None
+def _optional_int(data: dict[str, object], key: str) -> int | None:
+    """Return an optional integer field, treating JSON null as absent."""
+    return None if data.get(key) is None else _require_int(data, key)
 
 
 # -----------------------------------------------------------------
@@ -232,6 +250,7 @@ def _parse_status(data: dict[str, object]) -> StatusEvent:
     return StatusEvent(
         status=_require_str(data, "status"),
         timestamp=_require_str(data, "timestamp"),
+        message=_optional_str(data, "message") or "",
     )
 
 
@@ -286,11 +305,21 @@ def _parse_log(data: dict[str, object]) -> LogEvent:
         severity=_require_str(data, "severity"),
         timestamp=_require_str(data, "timestamp"),
         time=_optional_float(data, "time"),
-        unit_id=_optional_int(data, "unitID", "unitId"),
-        type_id=_optional_int(data, "typeID", "typeId"),
+        unit_id=_optional_int(data, "unitID"),
+        type_id=_optional_int(data, "typeID"),
         message_code=_optional_int(data, "messageCode"),
         message=_optional_str(data, "message"),
         information=_optional_str(data, "information"),
+    )
+
+
+def _parse_queue(data: dict[str, object]) -> QueueEvent:
+    """Parse a QUEUE event."""
+    return QueueEvent(
+        event=_require_str(data, "event"),
+        run_id=_require_str(data, "runId"),
+        timestamp=_require_str(data, "timestamp"),
+        exit_code=_optional_int(data, "exitCode"),
     )
 
 
@@ -301,6 +330,7 @@ _PARSERS: Final[dict[str, Callable[[dict[str, object]], TrnRunEvent]]] = {
     "CONFIG": _parse_config,
     "SETTING": _parse_setting,
     "LOG": _parse_log,
+    "QUEUE": _parse_queue,
 }
 
 
@@ -322,15 +352,54 @@ def parse_event(line: str) -> TrnRunEvent:
 
     """
     try:
-        value = cast("object", json.loads(line))
-    except json.JSONDecodeError as e:
+        data: dict[str, object] = json.loads(line)
+    except (ValueError, RecursionError) as e:
         raise EventParseError(f"invalid JSON: {e}") from e
 
-    if not isinstance(value, dict):
+    if type(data) is not dict:
         raise EventParseError("event must be a JSON object")
 
-    data = cast("dict[str, object]", value)
+    return parse_event_data(data)
 
+
+def parse_stream_line(line: str) -> tuple[str, TrnRunEvent] | None:
+    """Decode one queue stdout line into its run id and typed event.
+
+    Parameters
+    ----------
+    line : str
+        A single line of queue stdout, carrying either a queue lifecycle
+        object or one runner event tagged with its ``runId``.
+
+    Returns
+    -------
+    tuple of (str, TrnRunEvent), or None
+        The run id and its typed event, or None for a line that carries no
+        routable event, including blank lines and non-JSON diagnostics from
+        the runner's merged stdout/stderr.
+
+    Raises
+    ------
+    EventParseError
+        If the line holds a routable event whose payload is malformed.
+    """
+    try:
+        data: dict[str, object] = json.loads(line)
+    except (ValueError, RecursionError):
+        return None
+
+    if type(data) is not dict:
+        return None
+    run_id = data.get("runId")
+    kind = data.get("kind")
+    if not isinstance(run_id, str) or not isinstance(kind, str):
+        return None
+
+    return run_id, parse_event_data(data)
+
+
+def parse_event_data(data: dict[str, object]) -> TrnRunEvent:
+    """Parse an already decoded event object."""
     kind = _require_str(data, "kind").upper()
 
     try:
@@ -339,36 +408,3 @@ def parse_event(line: str) -> TrnRunEvent:
         raise EventParseError(f"unknown event kind '{kind}'") from e
 
     return parser(data)
-
-
-def stream_events(
-    lines: Iterable[str],
-    *,
-    skip_invalid: bool = False,
-) -> Iterator[TrnRunEvent]:
-    """Yield parsed events from a JSONL stream, skipping blank lines.
-
-    Parameters
-    ----------
-    lines : Iterable[str]
-        Lines of TRNRun stdout, one JSON object per line.
-    skip_invalid : bool, optional
-        If true, silently drop lines that fail to parse instead of
-        raising. Defaults to False.
-
-    Yields
-    ------
-    TrnRunEvent
-        One typed event per successfully parsed line.
-    """
-    for raw_line in lines:
-        line = raw_line.strip()
-
-        if not line:
-            continue
-
-        try:
-            yield parse_event(line)
-        except EventParseError:
-            if not skip_invalid:
-                raise
