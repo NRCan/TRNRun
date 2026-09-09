@@ -11,13 +11,12 @@ from trnrun import SimulationConfig, SimulationManager
 # Configuration
 # -----------------------------------------------------------------------------
 TRNEXE_PATH = Path(r"C:\TRNSYS18\Exe\TrnEXE64.exe")
-MASTER_DCK = Path(r"examples\tpf\example_wo_plot_w_tracking.dck")
-DCK_FOLDER = Path(r"examples\dck")
+MASTER_DCK = Path(r"examples\dck\example_wo_plot_w_tracking.dck")
+DCK_FOLDER = Path(r"examples\runs")
 
 SIM_COUNT = 10
 MAX_CONCURRENT = 5
-REFRESH_INTERVAL = 1
-CLEANUP_AFTER = True
+REFRESH_INTERVAL = 0.1
 
 CONFIG = SimulationConfig(trnexe_path=TRNEXE_PATH, watch_tmp=True)
 
@@ -37,17 +36,6 @@ def copy_dck(src: Path | str, dst_dir: Path | str, n: int) -> list[Path]:
         _ = shutil.copyfile(src, dst)
         dst_files.append(dst)
     return dst_files
-
-
-def cleanup_folder(folder: Path | str) -> None:
-    """Remove every file and subdirectory inside ``folder`` (folder is kept)."""
-    folder = Path(folder)
-    for item in folder.iterdir():
-        if item.is_dir():
-            shutil.rmtree(item)
-        else:
-            item.unlink()
-
 
 # -----------------------------------------------------------------------------
 # Run
@@ -71,10 +59,6 @@ def main() -> None:
     """Create, submit, and optionally clean up example decks."""
     dck_files = copy_dck(MASTER_DCK, DCK_FOLDER, n=SIM_COUNT)
     _ = run_simulations(dck_files)
-
-    if CLEANUP_AFTER:
-        cleanup_folder(DCK_FOLDER)
-
 
 if __name__ == "__main__":
     main()

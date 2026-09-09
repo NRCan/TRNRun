@@ -7,7 +7,8 @@ while a call into the manager is reading that stream: `add` reads until its own
 request is picked up, and `wait` and `follow` read until the accepted runs
 finish. Long pauses between calls can fill the stdout pipe and stall the queue.
 Use this manager from one thread; it has no background reader or synchronization.
-The queue is assumed to stay alive until shutdown; crash recovery is not supported.
+Premature queue EOF raises an error; no recovery or simulation outcomes are
+synthesized.
 Display errors propagate to the caller. Use each manager for one context only;
 repeated shutdown and operations after shutdown are not supported.
 """
@@ -17,6 +18,7 @@ from __future__ import annotations
 import logging
 import os
 from collections.abc import Iterator
+from dataclasses import replace
 from pathlib import Path
 from types import TracebackType
 from typing import Final, Self
@@ -49,6 +51,7 @@ class SimulationManager:
         self._simulations: list[Simulation] = []
         self._active: dict[str, Simulation] = {}
         self._next_id: int = 1
+        self._queue_eof: bool = False
 
         self._process: QueueProcess = QueueProcess(trnrunq_path, max_concurrent)
 
@@ -59,9 +62,10 @@ class SimulationManager:
 
     def add(self, deck_file: str | Path, config: SimulationConfig) -> Simulation:
         """Submit one simulation, blocking until a worker picks it up before launch."""
-        deck_path = Path(deck_file)
+        deck_path = Path(deck_file).absolute()
         if not deck_path.is_file():
             raise FileNotFoundError(f"Deck file not found: {deck_path}")
+        config = replace(config)
         config.validate()
 
         simulation = Simulation(deck_path, config, self._next_id)
@@ -77,16 +81,16 @@ class SimulationManager:
         self._active[str(simulation.id)] = simulation
 
         while not simulation.is_accepted:
-            if self._read_next_update() is None:
-                raise RuntimeError(f"TRNRun queue closed before accepting simulation {simulation.id}")
+            _ = self._read_next_update()
         return simulation
 
     def follow(self) -> Iterator[Simulation]:
-        """Yield each simulation as queue output updates it, until every run finishes.
+        """Yield updated simulations until no runs remain.
 
         Each simulation is yielded after the event that changed it has been
         applied, which makes this the point to render or record progress.
         Updates already consumed by other manager calls are not replayed.
+        Raises `RuntimeError` if queue stdout closes with outstanding runs.
         """
         while self._active:
             simulation = self._read_next_update()
@@ -94,13 +98,28 @@ class SimulationManager:
                 return
             yield simulation
 
-    def wait(self) -> None:
-        """Read queue output until all simulations finish or the queue exits.
+    def wait(self, simulation: Simulation | None = None) -> None:
+        """Read queue output until one simulation or all simulations finish.
 
-        This blocks without a timeout. Inspect the simulations for outcomes.
+        With no argument, wait for every accepted run. Otherwise, return when
+        the selected simulation receives queue completion, processing other
+        runs' events along the way. An already-finished simulation returns
+        immediately. The simulation must belong to this manager, or a
+        `ValueError` is raised.
+
+        This blocks without a timeout and raises `RuntimeError` on premature
+        queue EOF. Inspect the simulations for runner-reported outcomes.
+        Leaving the manager context still waits for all remaining runs.
         """
+        if simulation is not None:
+            if not any(simulation is owned for owned in self._simulations):
+                raise ValueError("Simulation does not belong to this manager")
+            if simulation.is_finished:
+                return
+
         for _ in self.follow():
-            pass
+            if simulation is not None and simulation.is_finished:
+                return
 
     @property
     def succeeded(self) -> list[Simulation]:
@@ -113,11 +132,19 @@ class SimulationManager:
         return [simulation for simulation in self._simulations if simulation.is_finished and not simulation.succeeded]
 
     def shutdown(self) -> None:
-        """Close queue input and drain accepted simulations; call only once."""
+        """Drain and reap the queue, reporting EOF or exit failures; call only once."""
         self._process.close()
-        while self._read_next_update() is not None:
-            pass
-        _ = self._process.wait()
+        exit_code = 0
+        try:
+            while not self._queue_eof and self._read_next_update() is not None:
+                pass
+        finally:
+            # Only wait after EOF: waiting with undrained stdout can deadlock.
+            if self._queue_eof:
+                exit_code = self._process.wait()
+        # Preserve an already reported premature-EOF error during context cleanup.
+        if exit_code and not self._active:
+            raise RuntimeError(f"TRNRun queue exited with code {exit_code}; see queue stderr for details")
 
     def __enter__(self) -> Self:
         """Enter the manager context."""
@@ -133,10 +160,15 @@ class SimulationManager:
         self.shutdown()
 
     def _read_next_update(self) -> Simulation | None:
-        """Read and apply the next routable update, or return None at EOF."""
+        """Read and apply an update; EOF is normal only with no outstanding runs."""
         while True:
             line = self._process.read_line()
             if line is None:
+                self._queue_eof = True
+                if self._active:
+                    raise RuntimeError(
+                        f"TRNRun queue closed before accepting or completing run IDs: {', '.join(self._active)}",
+                    )
                 return None
 
             try:

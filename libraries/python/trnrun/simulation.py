@@ -36,16 +36,18 @@ class Simulation:
         sim_id: int,
         max_log_events: int = DEFAULT_MAX_LOG_EVENTS,
     ) -> None:
-        """Initialize a pending simulation."""
+        """Initialize a pending simulation.
+
+        `max_log_events` bounds retained history, not counters; 0 retains no logs.
+        """
         self.id: int = sim_id
         self.deck_path: Path = Path(deck_path)
         self.config: SimulationConfig = config
 
         self._accepted: bool = False
-        self._finished: bool = False
         self._completion_event: QueueEvent | None = None
-        self._status: StatusEvent | None = None
-        self._progress: ProgressEvent | None = None
+        self._status_event: StatusEvent | None = None
+        self._progress_event: ProgressEvent | None = None
         self._config_event: ConfigEvent | None = None
         self._setting_event: SettingEvent | None = None
         self._logs: deque[LogEvent] = deque(maxlen=max_log_events)
@@ -58,18 +60,18 @@ class Simulation:
         runner state; the manager routes them to ``mark_accepted`` and
         ``mark_completed`` instead.
         """
-        if self._finished:
+        if self.is_finished:
             return
 
         match event:
             case StatusEvent():
-                self._status = event
+                self._status_event = event
             case ConfigEvent():
                 self._config_event = event
             case SettingEvent():
                 self._setting_event = event
             case ProgressEvent():
-                self._progress = event
+                self._progress_event = event
             case LogEvent():
                 self._logs.append(event)
                 self._severity_counts[event.severity.lower()] += 1
@@ -86,10 +88,9 @@ class Simulation:
         Completion does not determine the outcome: success still requires
         the runner's own terminal ``STATUS/DONE`` event.
         """
-        if self._finished:
+        if self.is_finished:
             return
         self._completion_event = event
-        self._finished = True
 
     @property
     def completion_event(self) -> QueueEvent | None:
@@ -103,12 +104,12 @@ class Simulation:
     @property
     def status(self) -> StatusEvent | None:
         """Return the latest status event."""
-        return self._status
+        return self._status_event
 
     @property
     def progress(self) -> ProgressEvent | None:
         """Return the latest progress event."""
-        return self._progress
+        return self._progress_event
 
     @property
     def config_event(self) -> ConfigEvent | None:
@@ -122,13 +123,13 @@ class Simulation:
 
     @property
     def logs(self) -> list[LogEvent]:
-        """Return retained log events."""
+        """Return a snapshot of retained log events, oldest first."""
         return list(self._logs)
 
     @property
     def is_running(self) -> bool:
         """Return whether the simulation is waiting or running."""
-        return not self._finished
+        return not self.is_finished
 
     @property
     def is_accepted(self) -> bool:
@@ -138,38 +139,34 @@ class Simulation:
     @property
     def is_finished(self) -> bool:
         """Return whether the queue reported completion for this run."""
-        return self._finished
+        return self._completion_event is not None
 
     @property
     def has_terminal_status(self) -> bool:
         """Return whether the runner reported a canonical terminal status."""
-        return self._status is not None and is_terminal_status(self._status.status)
+        return self._status_event is not None and is_terminal_status(self._status_event.status)
 
     @property
     def succeeded(self) -> bool:
         """Return whether a completed run has the terminal status `DONE`."""
-        return self._finished and self._status is not None and self._status.status == "DONE"
+        return self.is_finished and self._status_event is not None and self._status_event.status == "DONE"
 
     @property
     def log_count(self) -> int:
-        """Return the total number of log events."""
-        return sum(self._severity_counts.values())
+        """Return the total received log count, including evicted entries."""
+        return self._severity_counts.total()
 
     @property
     def notices(self) -> int:
         """Return the notice count."""
-        return self._count_severity("notice")
+        return self._severity_counts["notice"]
 
     @property
     def warnings(self) -> int:
         """Return the warning count."""
-        return self._count_severity("warn")
+        return self._severity_counts["warning"]
 
     @property
     def fatals(self) -> int:
         """Return the fatal count."""
-        return self._count_severity("fatal")
-
-    def _count_severity(self, prefix: str) -> int:
-        """Count matching severities."""
-        return sum(count for severity, count in self._severity_counts.items() if severity.startswith(prefix))
+        return self._severity_counts["fatal"]

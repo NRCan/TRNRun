@@ -105,10 +105,14 @@ state is unchanged by duplicate completion or subsequent runner events.
 null exit code means the runner could not be launched. No completion event means
 the run has not been marked finished.
 
-The manager assumes `trnrunq` stays alive until normal shutdown. Queue-crash
-recovery is not supported: EOF stops reading, but does not finalize outstanding
-simulations or update their display entries. Queue exit codes are not interpreted.
-The former `queue_error` property has been removed.
+If queue stdout closes with submissions still awaiting acceptance or completion,
+`add()`, `follow()`, `wait()`, or `shutdown()` raises `RuntimeError` listing the
+outstanding run IDs. Shutdown still reaps the queue, including when premature EOF
+was already reported by another manager call. If all completion events were
+received, a nonzero queue exit code is reported at shutdown (including context
+exit). Queue errors do not fabricate simulation outcomes: unfinished runs retain
+their last events and remain unfinished, rather than appearing in `failed`.
+Queue-crash recovery and automatic retries are not supported.
 
 ```python
 with SimulationManager(max_concurrent=4) as manager:
@@ -144,12 +148,12 @@ SimulationManager(
 | Member | Description |
 | --- | --- |
 | `add(deck_file, config)` | Submit a deck, block until worker pickup before launch, and return its `Simulation`. |
-| `wait()` | Block while reading queue output until all simulations finish or the queue exits. Returns `None`; has no timeout. |
-| `follow()` | Iterate simulations as queue output updates them, ending when every accepted run has finished. |
+| `wait(simulation=None)` | Block until the selected simulation finishes, or all simulations when omitted; raise on premature queue EOF. Returns `None`; has no timeout. |
+| `follow()` | Iterate simulations as queue output updates them, ending when every accepted run has finished; raise on premature queue EOF. |
 | `simulations` | All queue-accepted simulations in acceptance order. |
 | `succeeded` | Simulations whose terminal status is `DONE`. |
 | `failed` | Finished simulations that did not succeed, whether they reported a terminal status or were cut off. |
-| `shutdown()` | Close queue input and drain accepted work. Call only once. |
+| `shutdown()` | Close queue input, drain output, and reap the queue; report premature EOF or a nonzero queue exit code. Call only once. |
 
 Use each `SimulationManager` in a single `with` block. Leaving the context closes
 queue input, drains stdout to EOF, and waits for the queue process to exit.
@@ -157,6 +161,24 @@ Do not call `shutdown()` inside that block or reuse the manager afterward;
 repeated shutdown and operations after shutdown are not guarded or supported.
 Simulation results remain readable after context exit. Without a `with` block,
 the caller must call `shutdown()` exactly once.
+
+Pass a simulation returned by this manager's `add()` to wait for only that run:
+
+```python
+with SimulationManager(max_concurrent=2) as manager:
+    first = manager.add(decks[0], config)
+    second = manager.add(decks[1], config)
+    manager.wait(first)
+    print(f"first succeeded: {first.succeeded}")
+    manager.wait()  # Finish any remaining runs.
+```
+
+`wait(simulation)` continues applying events for every run while waiting, but
+returns as soon as the selected run receives `QUEUE/COMPLETED`, not merely a
+terminal runner status. An already-finished simulation returns immediately;
+a simulation not owned by this manager raises `ValueError`. Other runs may
+still be active afterward: keep consuming events with `wait()` or `follow()`.
+Leaving the manager context still drains and waits for all remaining runs.
 
 `wait()` no longer accepts `timeout` or returns a boolean. Remove the timeout
 argument from existing calls and inspect `succeeded` and `failed` after waiting. Runner timeouts remain configurable through `SimulationConfig`;

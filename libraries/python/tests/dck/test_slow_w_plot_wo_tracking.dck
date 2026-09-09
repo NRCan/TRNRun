@@ -1,4 +1,5 @@
 VERSION 18
+
 CONSTANTS 3
 START=0
 STOP=10000
@@ -18,7 +19,6 @@ EQSOLVER 0				! EQUATION SOLVER statement
 *$USER_CONSTANTS
 
 *$USER_CONSTANTS_END
-
 
 EQUATIONS 4
 Width = 5
@@ -57,10 +57,30 @@ INPUTS 7
 *** INITIAL INPUT VALUES
 20.0 0.008 50.0 1000.0 1.0 0 0.0
 
-UNIT 6  TYPE 3830	 Type3830
-PARAMETERS 2
-31		! 1 Logical unit
-1		! 2 Printing interval
-ASSIGN "***.tmp" 31
+UNIT 6 TYPE 65	 Type65d
+PARAMETERS 12
+2		! 1 Nb. of left-axis variables
+2		! 2 Nb. of right-axis variables
+0.0		! 3 Left axis minimum
+1000.0		! 4 Left axis maximum
+0.0		! 5 Right axis minimum
+1000.0		! 6 Right axis maximum
+1		! 7 Number of plots per simulation
+12		! 8 X-axis gridpoints
+0		! 9 Shut off Online w/o removing
+-1		! 10 Logical unit for output file
+0		! 11 Output file units
+0		! 12 Output file delimiter
+INPUTS 4
+0,0		! [unconnected] Left axis variable-1
+0,0		! [unconnected] Left axis variable-2
+0,0		! [unconnected] Right axis variable-1
+0,0		! [unconnected] Right axis variable-2
+*** INITIAL INPUT VALUES
+label label label label
+LABELS  3
+"Temperature [C]"
+"Heat Transfer Rate [kJ/h] "
+"Graph 1"
 
 END

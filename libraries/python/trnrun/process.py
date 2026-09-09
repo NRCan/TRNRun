@@ -30,7 +30,7 @@ class QueueProcess:
     executable : str or Path
         Path to the queue executable to spawn.
     max_concurrent : int
-        Maximum simultaneous runners, passed as `--maxConcurrent`.
+        Positive integer limiting simultaneous runners (`--maxConcurrent`).
     """
 
     def __init__(self, executable: str | Path, max_concurrent: int) -> None:
@@ -38,7 +38,7 @@ class QueueProcess:
         if max_concurrent < 1:
             raise ValueError("max_concurrent must be at least 1")
 
-        executable = Path(executable)
+        executable = Path(executable).absolute()
         if not executable.is_file():
             raise FileNotFoundError(f"TRNRun queue executable not found: {executable}")
 
@@ -52,7 +52,6 @@ class QueueProcess:
             text=True,
             encoding="utf-8",
             errors="replace",
-            bufsize=1,
             creationflags=CREATE_NO_WINDOW,
         )
         _ = assign_to_job(self._process)
@@ -60,8 +59,8 @@ class QueueProcess:
         self._stdout: IO[str] = self._require_stream(self._process.stdout, "stdout")
 
     def send(self, request: dict[str, object]) -> None:
-        """Write one request as a single JSON line."""
-        _ = self._stdin.write(json.dumps(request, separators=(",", ":")) + "\n")
+        """Encode a request as strict JSON, then write and flush one line."""
+        _ = self._stdin.write(json.dumps(request, separators=(",", ":"), allow_nan=False) + "\n")
         self._stdin.flush()
 
     def read_line(self) -> str | None:
@@ -70,12 +69,16 @@ class QueueProcess:
 
     def close(self) -> None:
         """Close queue input, ending submission and starting its drain."""
-        with contextlib.suppress(BrokenPipeError, OSError, ValueError):
+        with contextlib.suppress(OSError):
             self._stdin.close()
 
     def wait(self) -> int:
-        """Wait for the queue process to exit and return its exit code."""
-        return self._process.wait()
+        """Wait for exit and close the pipes; return the queue's exit code.
+
+        Call `close()` and drain `read_line()` to EOF first to avoid deadlock.
+        """
+        with self._process:
+            return self._process.wait()
 
     @staticmethod
     def _require_stream(stream: IO[str] | None, name: str) -> IO[str]:

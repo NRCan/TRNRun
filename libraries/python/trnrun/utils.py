@@ -1,5 +1,7 @@
 """Small utility helpers."""
 
+from rich.segment import Segment
+
 
 def format_hhmmss(seconds: float | None) -> str:
     """Convert seconds to HH:MM:SS string. Returns '--:--:--' if None."""
@@ -12,9 +14,14 @@ def format_hhmmss(seconds: float | None) -> str:
 
 
 def truncate_left(text: str, width: int) -> str:
-    """Left-truncate text with an ellipsis to fit a fixed width."""
-    if width <= 1:
-        return "…"
-    if len(text) <= width:
-        return f"{text:<{width}}"
-    return f"…{text[-(width - 1) :]:<{width - 1}}"
+    """Pad or left-truncate to width terminal cells; return empty for width <= 0.
+
+    Rich replaces a partially cut wide character with a space.
+    """
+    if width <= 0:
+        return ""
+    segment = Segment(text)
+    length = segment.cell_length
+    if length <= width:
+        return text + " " * (width - length)
+    return "…" + segment.split_cells(length - width + 1)[1].text

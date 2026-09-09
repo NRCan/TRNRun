@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Final, Literal, cast
+from typing import Final
 
 
 # -----------------------------------------------------------------
@@ -72,7 +72,7 @@ class ProgressEvent:
 
 @dataclass(frozen=True)
 class ConfigEvent:
-    """A CONFIG event reporting the run's sweep parameters.
+    """A CONFIG event reporting simulation time bounds and step.
 
     Attributes
     ----------
@@ -130,7 +130,7 @@ class LogEvent:
     Attributes
     ----------
     severity : str
-        Severity tag, e.g. ``"notice"``, ``"warning"`` or ``"fatal"``.
+        Severity tag: ``"Notice"``, ``"Warning"`` or ``"Fatal"``.
     timestamp : str
         Timestamp attached to the event by TRNRun.
     time : float or None
@@ -186,17 +186,10 @@ def is_terminal_status(status: str) -> bool:
 # -----------------------------------------------------------------
 # Validation Helpers
 # -----------------------------------------------------------------
-def _required(data: dict[str, object], key: str) -> object:
-    """Return a required field, raising ``EventParseError`` if missing."""
-    try:
-        return data[key]
-    except KeyError as e:
-        raise EventParseError(f"missing required field '{key}'") from e
-
 
 def _require_str(data: dict[str, object], key: str) -> str:
     """Return a required string field."""
-    value = _required(data, key)
+    value = data.get(key)
 
     if not isinstance(value, str):
         raise EventParseError(f"field '{key}' must be a string")
@@ -206,7 +199,7 @@ def _require_str(data: dict[str, object], key: str) -> str:
 
 def _require_bool(data: dict[str, object], key: str) -> bool:
     """Return a required boolean field."""
-    value = _required(data, key)
+    value = data.get(key)
 
     if not isinstance(value, bool):
         raise EventParseError(f"field '{key}' must be a boolean")
@@ -215,8 +208,8 @@ def _require_bool(data: dict[str, object], key: str) -> bool:
 
 
 def _require_float(data: dict[str, object], key: str) -> float:
-    """Return a required numeric field as a float, rejecting booleans."""
-    value = _required(data, key)
+    """Return a required finite number as a float, rejecting booleans."""
+    value = data.get(key)
 
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise EventParseError(f"field '{key}' must be a number")
@@ -226,7 +219,7 @@ def _require_float(data: dict[str, object], key: str) -> float:
 
 def _require_int(data: dict[str, object], key: str) -> int:
     """Return a required integer field, rejecting booleans."""
-    value = _required(data, key)
+    value = data.get(key)
 
     if isinstance(value, bool) or not isinstance(value, int):
         raise EventParseError(f"field '{key}' must be an integer")
@@ -359,14 +352,12 @@ def parse_event(line: str) -> TrnRunEvent:
 
     """
     try:
-        value = cast("object", json.loads(line))
-    except json.JSONDecodeError as e:
+        data: dict[str, object] = json.loads(line)
+    except (ValueError, RecursionError) as e:
         raise EventParseError(f"invalid JSON: {e}") from e
 
-    if not isinstance(value, dict):
+    if type(data) is not dict:
         raise EventParseError("event must be a JSON object")
-
-    data = cast("dict[str, object]", value)
 
     return parse_event_data(data)
 
@@ -384,27 +375,21 @@ def parse_stream_line(line: str) -> tuple[str, TrnRunEvent] | None:
     -------
     tuple of (str, TrnRunEvent), or None
         The run id and its typed event, or None for a line that carries no
-        routable event: blank lines and the non-JSON diagnostics a runner may
-        write straight to its own stdout.
+        routable event, including blank lines and non-JSON diagnostics from
+        the runner's merged stdout/stderr.
 
     Raises
     ------
     EventParseError
         If the line holds a routable event whose payload is malformed.
     """
-    stripped = line.strip()
-    if not stripped:
-        return None
-
     try:
-        value = cast("object", json.loads(stripped))
-    except json.JSONDecodeError:
+        data: dict[str, object] = json.loads(line)
+    except (ValueError, RecursionError):
         return None
 
-    if not isinstance(value, dict):
+    if type(data) is not dict:
         return None
-
-    data = cast("dict[str, object]", value)
     run_id = data.get("runId")
     kind = data.get("kind")
     if not isinstance(run_id, str) or not isinstance(kind, str):

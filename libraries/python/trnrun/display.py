@@ -159,7 +159,7 @@ class Display:
 
         text = Text()
         text.append(f"[{sim.id}] ")
-        text.append(f"{path:<{PATH_WIDTH}} │ ")
+        text.append(f"{path} │ ")
         text.append("Status: ")
         text.append(f"{status:<10}", style=status_style)
         text.append(" │ ")
