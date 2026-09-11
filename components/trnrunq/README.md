@@ -61,12 +61,12 @@ count, concurrency limit, or delayed submission interval.
 Write one JSON object per line to queue stdin:
 
 ```json
-{"runId":"building-a","deckFile":"C:\\models\\building-a.dck","runnerPath":"C:\\bin\\trnrun.exe","runnerArgs":["--guiVisibility:auto","--watchTmp:true"]}
+{"runID":"building-a","deckFile":"C:\\models\\building-a.dck","runnerPath":"C:\\bin\\trnrun.exe","runnerArgs":["--guiVisibility:auto","--watchTmp:true"]}
 ```
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `runId` | string | yes | Caller-generated routing identifier passed to `trnrun`; must be unique. |
+| `runID` | string | yes | Caller-generated routing identifier passed to `trnrun`; must be unique. |
 | `deckFile` | string | yes | `.dck` or `.trd` file to run. |
 | `runnerPath` | string | yes | Runner executable for this request. |
 | `runnerArgs` | array of strings | no | Additional runner arguments. |
@@ -89,7 +89,7 @@ object. Immediately after a worker receives a request from the handoff channel,
 the worker writes and flushes an acknowledgment:
 
 ```json
-{"kind":"QUEUE","timestamp":"2026-06-19T19:37:15","event":"ACCEPTED","runId":"building-a"}
+{"kind":"QUEUE","timestamp":"2026-06-19T19:37:15","event":"ACCEPTED","runID":"building-a"}
 ```
 
 The acknowledgment means a worker has picked up the parsed request, not merely
@@ -101,10 +101,10 @@ deck validation has succeeded.
 
 Every merged child stdout/stderr line is forwarded unchanged. `runnerPath` must
 therefore reference a compatible `trnrun` executable that emits the documented
-JSONL protocol and attaches the requested `runId`. For example:
+JSONL protocol and attaches the requested `runID`. For example:
 
 ```json
-{"kind":"STATUS","timestamp":"2026-06-19T19:37:15","status":"RUNNING","message":"","seq":4,"runId":"building-a"}
+{"kind":"STATUS","timestamp":"2026-06-19T19:37:15","status":"RUNNING","message":"","seq":4,"runID":"building-a"}
 ```
 
 `trnrunq` does not parse or reinterpret child output. This keeps the queue a thin
@@ -115,7 +115,7 @@ receives exactly one completion event (also emitted if resolution or launch
 fails):
 
 ```json
-{"kind":"QUEUE","event":"COMPLETED","timestamp":"2026-06-19T19:37:17","runId":"building-a","exitCode":0}
+{"kind":"QUEUE","event":"COMPLETED","timestamp":"2026-06-19T19:37:17","runID":"building-a","exitCode":0}
 ```
 
 `exitCode` is an integer when a child was launched and JSON `null` when runner
@@ -128,7 +128,7 @@ policy.
 Output from different runs may be interleaved, but complete lines are never
 mixed together and lines from one run retain their order. If validation or launch
 fails, the queue emits a terminal `STATUS/ERROR` followed by `QUEUE/COMPLETED`.
-The queue does not track identifiers; wrappers must provide a unique `runId` for
+The queue does not track identifiers; wrappers must provide a unique `runID` for
 each request so interleaved events remain unambiguous.
 
 There is no queue stderr protocol. Command-line and fatal process diagnostics may
@@ -140,8 +140,8 @@ state.
 A wrapper should:
 
 1. Start one dedicated queue-stdout reader before submitting work.
-2. Generate a unique `runId`, register it before writing the request, route all
-   events by `runId`, and resolve submission waiters from `QUEUE/ACCEPTED`.
+2. Generate a unique `runID`, register it before writing the request, route all
+   events by `runID`, and resolve submission waiters from `QUEUE/ACCEPTED`.
 3. Generate and write requests incrementally rather than retaining the complete
    workload.
 4. Await `QUEUE/ACCEPTED` for pickup-based submission backpressure, rather than

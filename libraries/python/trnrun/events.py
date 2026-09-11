@@ -5,7 +5,7 @@ line into a typed event, which is also how a ``--writeEvents`` ``.jsonl``
 file is read back. Queue lifecycle objects are one more ``kind`` in
 ``TrnRunEvent`` and go through the same parser. ``parse_stream_line``
 decodes the merged queue stdout stream, where runner and queue events
-arrive interleaved and tagged with a ``runId``.
+arrive interleaved and tagged with a ``runID``.
 """
 
 from __future__ import annotations
@@ -317,7 +317,7 @@ def _parse_queue(data: dict[str, object]) -> QueueEvent:
     """Parse a QUEUE event."""
     return QueueEvent(
         event=_require_str(data, "event"),
-        run_id=_require_str(data, "runId"),
+        run_id=_require_str(data, "runID"),
         timestamp=_require_str(data, "timestamp"),
         exit_code=_optional_int(data, "exitCode"),
     )
@@ -369,7 +369,7 @@ def parse_stream_line(line: str) -> tuple[str, TrnRunEvent] | None:
     ----------
     line : str
         A single line of queue stdout, carrying either a queue lifecycle
-        object or one runner event tagged with its ``runId``.
+        object or one runner event tagged with its ``runID``.
 
     Returns
     -------
@@ -390,7 +390,7 @@ def parse_stream_line(line: str) -> tuple[str, TrnRunEvent] | None:
 
     if type(data) is not dict:
         return None
-    run_id = data.get("runId")
+    run_id = data.get("runID")
     kind = data.get("kind")
     if not isinstance(run_id, str) or not isinstance(kind, str):
         return None

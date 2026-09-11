@@ -78,10 +78,10 @@ proc handleOutput(line: string, statuses: var Table[string, string]) =
       return
 
     let
-      runId = event{"runId"}.getStr()
+      runID = event{"runID"}.getStr()
       status = event{"status"}.getStr()
-    if runId.len > 0 and status in TerminalStatuses:
-      statuses[runId] = status
+    if runID.len > 0 and status in TerminalStatuses:
+      statuses[runID] = status
   except JsonParsingError:
     discard
 
@@ -164,7 +164,7 @@ proc runQueue(
     for deckFile in deckFiles:
       submission.requests.add(
         $(%*{
-          "runId": deckFile.splitFile().name,
+          "runID": deckFile.splitFile().name,
           "deckFile": deckFile,
           "runnerPath": runnerPath,
           "runnerArgs": RunnerArgs,
@@ -262,12 +262,12 @@ proc main(): int =
     var failureCount = 0
     echo ""
     for deckFile in deckFiles:
-      let runId = deckFile.splitFile().name
-      let status = statuses.getOrDefault(runId, "MISSING")
+      let runID = deckFile.splitFile().name
+      let status = statuses.getOrDefault(runID, "MISSING")
       if status == "DONE":
-        styledWriteLine(stdout, fgGreen, "PASS - " & runId & ": " & status)
+        styledWriteLine(stdout, fgGreen, "PASS - " & runID & ": " & status)
       else:
-        styledWriteLine(stdout, fgRed, "FAIL - " & runId & ": " & status)
+        styledWriteLine(stdout, fgRed, "FAIL - " & runID & ": " & status)
         inc failureCount
 
     if queueExitCode != 0:

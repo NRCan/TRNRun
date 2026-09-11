@@ -6,20 +6,20 @@ import ../src/request
 suite "queue request parsing":
   test "parses a complete request":
     let request = parseRequest($(%*{
-      "runId": "run-1",
+      "runID": "run-1",
       "deckFile": "model.dck",
       "runnerPath": "trnrun.exe",
       "runnerArgs": ["--watchTmp:true", "--clean:true"],
     }))
 
-    check request.runId == "run-1"
+    check request.runID == "run-1"
     check request.deckFile == "model.dck"
     check request.runnerPath == "trnrun.exe"
     check request.runnerArgs == @["--watchTmp:true", "--clean:true"]
 
   test "defaults runner arguments to empty":
     let request = parseRequest($(%*{
-      "runId": "run-1",
+      "runID": "run-1",
       "deckFile": "model.dck",
       "runnerPath": "trnrun.exe",
     }))
@@ -35,10 +35,10 @@ suite "queue request parsing":
   test "requires string request fields and a non-empty run identifier":
     for line in [
       "{}",
-      $(%*{"runId": 1, "deckFile": "model.dck", "runnerPath": "trnrun.exe"}),
-      $(%*{"runId": "run-1", "deckFile": 1, "runnerPath": "trnrun.exe"}),
-      $(%*{"runId": "run-1", "deckFile": "model.dck", "runnerPath": 1}),
-      $(%*{"runId": "", "deckFile": "model.dck", "runnerPath": "trnrun.exe"}),
+      $(%*{"runID": 1, "deckFile": "model.dck", "runnerPath": "trnrun.exe"}),
+      $(%*{"runID": "run-1", "deckFile": 1, "runnerPath": "trnrun.exe"}),
+      $(%*{"runID": "run-1", "deckFile": "model.dck", "runnerPath": 1}),
+      $(%*{"runID": "", "deckFile": "model.dck", "runnerPath": "trnrun.exe"}),
     ]:
       expect ValueError:
         discard parseRequest(line)
@@ -46,14 +46,14 @@ suite "queue request parsing":
   test "requires runner arguments to be strings":
     expect ValueError:
       discard parseRequest($(%*{
-        "runId": "run-1",
+        "runID": "run-1",
         "deckFile": "model.dck",
         "runnerPath": "trnrun.exe",
         "runnerArgs": "--watchTmp:true",
       }))
     expect ValueError:
       discard parseRequest($(%*{
-        "runId": "run-1",
+        "runID": "run-1",
         "deckFile": "model.dck",
         "runnerPath": "trnrun.exe",
         "runnerArgs": ["--watchTmp:true", 1],

@@ -10,23 +10,23 @@ suite "queue status formatting":
     check event.kind == JObject
     check event["kind"].getStr() == "QUEUE"
     check event["event"].getStr() == "ACCEPTED"
-    check event["runId"].getStr() == "accepted-run"
+    check event["runID"].getStr() == "accepted-run"
     check event["timestamp"].getStr().len == 19
     discard event["timestamp"].getStr().parse("yyyy-MM-dd'T'HH:mm:ss")
 
 
   test "formats a runner-compatible terminal error event":
     let
-      runId = "failed-run"
+      runID = "failed-run"
       message = "the runner could not start"
-      event = parseJson(errorLine(runId, message))
+      event = parseJson(errorLine(runID, message))
 
     check event.kind == JObject
     check event["kind"].getStr() == "STATUS"
     check event["status"].getStr() == "ERROR"
     check event["message"].getStr() == message
     check event["seq"].getInt() == 1
-    check event["runId"].getStr() == runId
+    check event["runID"].getStr() == runID
     check event["timestamp"].getStr().len == 19
     discard event["timestamp"].getStr().parse("yyyy-MM-dd'T'HH:mm:ss")
 
@@ -38,7 +38,7 @@ suite "queue status formatting":
 
     check exited["kind"].getStr() == "QUEUE"
     check exited["event"].getStr() == "COMPLETED"
-    check exited["runId"].getStr() == "exited"
+    check exited["runID"].getStr() == "exited"
     check exited["exitCode"].kind == JInt
     check exited["exitCode"].getInt() == 2
     check exited["timestamp"].getStr().len == 19
@@ -46,6 +46,6 @@ suite "queue status formatting":
 
     check notLaunched["kind"].getStr() == "QUEUE"
     check notLaunched["event"].getStr() == "COMPLETED"
-    check notLaunched["runId"].getStr() == "not-launched"
+    check notLaunched["runID"].getStr() == "not-launched"
     check notLaunched["exitCode"].kind == JNull
     check notLaunched.len == 5

@@ -21,27 +21,27 @@ proc runnerArguments(): seq[string] =
     for index in 2 .. paramCount():
       result.add(paramStr(index))
 
-proc fakeRunId(): string =
+proc fakeRunID(): string =
   for argument in runnerArguments():
-    if argument.startsWith("--runId:"):
+    if argument.startsWith("--runID:"):
       return argument[8 .. ^1]
   result = ""
 
 proc runFakeRunner(deckFile: string) =
   let
     mode = deckFile.splitFile().name.toLowerAscii()
-    runId = fakeRunId()
+    runID = fakeRunID()
   case mode
   of "protocol":
     stdout.writeLine($(%*{
       "kind": "STATUS",
       "timestamp": Timestamp,
       "status": "RUNNING",
-      "runId": runId,
+      "runID": runID,
     }))
     stdout.writeLine($(%*{
       "kind": "FUTURE_EVENT",
-      "runId": runId,
+      "runID": runID,
       "arguments": runnerArguments(),
     }))
     stdout.flushFile()
@@ -51,10 +51,10 @@ proc runFakeRunner(deckFile: string) =
     stdout.writeLine("raw stderr or stdout")
     stdout.writeLine("{not valid JSON}")
     stdout.writeLine("[]")
-    stdout.writeLine($(%*{"runId": runId}))
-    stdout.writeLine($(%*{"kind": 1, "runId": runId}))
-    stdout.writeLine($(%*{"kind": "STATUS", "runId": 1}))
-    stdout.writeLine($(%*{"kind": "STATUS", "runId": "another-run"}))
+    stdout.writeLine($(%*{"runID": runID}))
+    stdout.writeLine($(%*{"kind": 1, "runID": runID}))
+    stdout.writeLine($(%*{"kind": "STATUS", "runID": 1}))
+    stdout.writeLine($(%*{"kind": "STATUS", "runID": "another-run"}))
     stdout.flushFile()
     quit(0)
   of "fail":
@@ -126,11 +126,11 @@ proc runCommand(arguments: openArray[string]): CommandResult =
 proc invokeRun(
     deckFile: string,
     runnerPath: string,
-    runId: string,
+    runID: string,
     runnerArgs: openArray[string] = [],
 ): CommandResult =
   result = runCommand(
-    @["--invoke-runtrnrun", deckFile, runnerPath, runId] & @runnerArgs,
+    @["--invoke-runtrnrun", deckFile, runnerPath, runID] & @runnerArgs,
   )
 
 proc nonEmptyLines(content: string): seq[string] =
@@ -149,11 +149,11 @@ proc errorEvent(command: CommandResult): JsonNode =
     return newJNull()
   result = parseJson(lines[0])
 
-proc checkErrorEvent(event: JsonNode, runId: string) =
+proc checkErrorEvent(event: JsonNode, runID: string) =
   check event.kind == JObject
   check event["kind"].getStr() == "STATUS"
   check event["status"].getStr() == "ERROR"
-  check event["runId"].getStr() == runId
+  check event["runID"].getStr() == runID
   check event["seq"].getInt() == 1
   check event["timestamp"].getStr().len == 19
   check event["message"].getStr().len > 0
@@ -193,15 +193,15 @@ proc runTests() =
             "kind": "STATUS",
             "timestamp": Timestamp,
             "status": "RUNNING",
-            "runId": "forwarded-run",
+            "runID": "forwarded-run",
           })
           check lines[1] == $(%*{
             "kind": "FUTURE_EVENT",
-            "runId": "forwarded-run",
+            "runID": "forwarded-run",
             "arguments": @[
               "--fake-option",
               "value with spaces",
-              "--runId:forwarded-run",
+              "--runID:forwarded-run",
             ],
           })
 
@@ -215,10 +215,10 @@ proc runTests() =
             "raw stderr or stdout",
             "{not valid JSON}",
             "[]",
-            $(%*{"runId": "routing-run"}),
-            $(%*{"kind": 1, "runId": "routing-run"}),
-            $(%*{"kind": "STATUS", "runId": 1}),
-            $(%*{"kind": "STATUS", "runId": "another-run"}),
+            $(%*{"runID": "routing-run"}),
+            $(%*{"kind": 1, "runID": "routing-run"}),
+            $(%*{"kind": "STATUS", "runID": 1}),
+            $(%*{"kind": "STATUS", "runID": "another-run"}),
           ]
 
         checkpoint("stdout:\n" & command.stdout & "\nstderr:\n" & command.stderr)

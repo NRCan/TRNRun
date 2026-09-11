@@ -47,6 +47,7 @@ packages = ["trnrun"]
 artifacts = [
     "trnrun/bin/trnrun.exe",
     "trnrun/bin/trnrunq.exe",
+    "trnrun/bin/runtime-manifest.json",
 ]
 
 [tool.basedpyright]

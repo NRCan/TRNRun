@@ -142,7 +142,7 @@ A `Simulation` holds the state and results of one submitted run.
 
 | Member | Description |
 | --- | --- |
-| `id` | Identifier assigned by the manager and used as the queue `runId`. |
+| `id` | Identifier assigned by the manager and used as the queue `runID`. |
 | `deck_path` | Absolute submitted deck path. |
 | `config` | Per-run copy of the submitted configuration. |
 | `status` | Latest status event, with an optional outcome or failure message. |

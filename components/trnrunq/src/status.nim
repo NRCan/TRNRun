@@ -5,7 +5,7 @@
 
 import std/[json, options, times]
 
-proc errorLine*(runId, message: string): string =
+proc errorLine*(runID, message: string): string =
   ## Returns a runner-compatible terminal error event.
   result = $(%*{
     "kind": "STATUS",
@@ -13,24 +13,24 @@ proc errorLine*(runId, message: string): string =
     "status": "ERROR",
     "message": message,
     "seq": 1,
-    "runId": runId,
+    "runID": runID,
   })
 
-proc acceptedLine*(runId: string): string =
+proc acceptedLine*(runID: string): string =
   ## Returns the event marking a request as picked up by a worker.
   result = $(%*{
     "kind": "QUEUE",
     "event": "ACCEPTED",
     "timestamp": now().format("yyyy-MM-dd'T'HH:mm:ss"),
-    "runId": runId,
+    "runID": runID,
   })
 
-proc completedLine*(runId: string, exitCode: Option[int]): string =
+proc completedLine*(runID: string, exitCode: Option[int]): string =
   ## Returns the event marking an accepted request as fully complete.
   result = $(%*{
     "kind": "QUEUE",
     "event": "COMPLETED",
     "timestamp": now().format("yyyy-MM-dd'T'HH:mm:ss"),
-    "runId": runId,
+    "runID": runID,
     "exitCode": (if exitCode.isSome: %exitCode.get() else: newJNull()),
   })

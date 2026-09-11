@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "terminalStatuses": ["DONE", "ERROR", "CANCELLED", "TIMEOUT", "STALLED"],
+  "nonterminalStatuses": ["PENDING", "RUNNING", "done", "", "UNKNOWN"],
+  "initialState": {
+    "accepted": false,
+    "finished": false,
+    "running": true,
+    "has_terminal_status": false,
+    "succeeded": false,
+    "status": null,
+    "progress": null,
+    "config_event": null,
+    "setting_event": null,
+    "completion_event": null,
+    "logs": [],
+    "log_count": 0,
+    "notices": 0,
+    "warnings": 0,
+    "fatals": 0
+  },
+  "completionRules": {
+    "finishedOnlyOnQueueCompleted": true,
+    "terminalStatusAloneFinishes": false,
+    "successStatus": "DONE",
+    "requiresCompletionForSuccess": true,
+    "completionExitCodeDeterminesSuccess": false,
+    "postCompletionRunnerEventsIgnored": true
+  },
+  "logStress": {
+    "count": 5003,
+    "capacity": 5000,
+    "severityCycle": ["Notice", "Warning", "Fatal"],
+    "expectedRetained": 5000,
+    "expectedFirstMessageCode": 3,
+    "expectedLastMessageCode": 5002,
+    "expectedCounts": {"Notice": 1668, "Warning": 1668, "Fatal": 1667}
+  }
+}

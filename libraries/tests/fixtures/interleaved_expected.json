@@ -1,0 +1,115 @@
+{
+  "schemaVersion": 1,
+  "acceptanceOrder": [
+    1,
+    2
+  ],
+  "followUpdateIds": [
+    1,
+    1,
+    1,
+    2,
+    1,
+    1,
+    2,
+    1
+  ],
+  "runs": {
+    "1": {
+      "id": 1,
+      "accepted": true,
+      "finished": true,
+      "running": false,
+      "has_terminal_status": true,
+      "succeeded": true,
+      "status": {
+        "status": "DONE",
+        "timestamp": "s1-done",
+        "message": "",
+        "run_id": "1"
+      },
+      "progress": {
+        "time": 8760.0,
+        "percent": 1.0,
+        "elapsed": 4000.0,
+        "eta": 0.0,
+        "timestamp": "p1-final",
+        "run_id": "1"
+      },
+      "config_event": {
+        "start": 0.0,
+        "stop": 8760.0,
+        "step": 1.0,
+        "timestamp": "cfg1",
+        "run_id": "1"
+      },
+      "setting_event": {
+        "timestamp": "set1",
+        "trnexe_path": "C:\\TRNSYS18\\Exe\\TrnEXE64.exe",
+        "gui_visibility": "hidden",
+        "wait_for_gui": true,
+        "wait_for_lst": true,
+        "wait_for_tmp": false,
+        "detect_timeout_ms": 300000,
+        "extra_delay_ms": 0,
+        "watch_log": true,
+        "watch_tmp": false,
+        "watch_timeout_ms": 0,
+        "stall_timeout_ms": 0,
+        "poll_ms": 100,
+        "clean_on_success": false,
+        "kill_on_timeout": false,
+        "kill_on_stall": false,
+        "severity": "Notice",
+        "write_events": false,
+        "run_id": "1"
+      },
+      "completion_event": {
+        "event": "COMPLETED",
+        "run_id": "1",
+        "timestamp": "c1",
+        "exit_code": 0
+      },
+      "logs": [],
+      "log_count": 0,
+      "notices": 0,
+      "warnings": 0,
+      "fatals": 0
+    },
+    "2": {
+      "id": 2,
+      "accepted": true,
+      "finished": true,
+      "running": false,
+      "has_terminal_status": false,
+      "succeeded": false,
+      "status": null,
+      "progress": null,
+      "config_event": null,
+      "setting_event": null,
+      "completion_event": {
+        "event": "COMPLETED",
+        "run_id": "2",
+        "timestamp": "c2-launch-failed",
+        "exit_code": null
+      },
+      "logs": [
+        {
+          "severity": "Warning",
+          "timestamp": "l2",
+          "time": null,
+          "unit_id": null,
+          "type_id": null,
+          "message_code": null,
+          "message": "launch warning",
+          "information": null,
+          "run_id": "2"
+        }
+      ],
+      "log_count": 1,
+      "notices": 0,
+      "warnings": 1,
+      "fatals": 0
+    }
+  }
+}

@@ -85,8 +85,8 @@ proc writeLine(writer: JsonlWriter, line: string) =
     except IOError:
       discard
 
-proc stdoutEventSink*(writer: JsonlWriter = nil, runId: string = ""): EventSink =
-  ## Returns a sink that numbers events from 1, optionally attaches `runId`,
+proc stdoutEventSink*(writer: JsonlWriter = nil, runID: string = ""): EventSink =
+  ## Returns a sink that numbers events from 1, optionally attaches `runID`,
   ## writes and immediately flushes each JSON line to stdout, and optionally
   ## mirrors the same line to `writer`. Each returned sink owns an independent
   ## sequence starting at 1.
@@ -99,8 +99,8 @@ proc stdoutEventSink*(writer: JsonlWriter = nil, runId: string = ""): EventSink 
 
     let node = event.toJson()
     node["seq"] = %sequence
-    if runId.len > 0:
-      node["runId"] = %runId
+    if runID.len > 0:
+      node["runID"] = %runID
     let line = $node
 
     if stdoutUsable:

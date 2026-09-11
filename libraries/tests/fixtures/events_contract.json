@@ -1,0 +1,336 @@
+{
+  "schemaVersion": 1,
+  "valid": [
+    {
+      "name": "status-with-message-and-extra-metadata",
+      "wire": {
+        "kind": "status",
+        "seq": 1,
+        "status": "RUNNING",
+        "timestamp": "2026-01-02T03:04:05.006Z",
+        "message": "started",
+        "runID": "17"
+      },
+      "normalized": {
+        "status": "RUNNING",
+        "timestamp": "2026-01-02T03:04:05.006Z",
+        "message": "started",
+        "run_id": "17"
+      }
+    },
+    {
+      "name": "status-missing-message",
+      "wire": {
+        "kind": "STATUS",
+        "status": "DONE",
+        "timestamp": "status-missing",
+        "runID": "17"
+      },
+      "normalized": {
+        "status": "DONE",
+        "timestamp": "status-missing",
+        "message": "",
+        "run_id": "17"
+      }
+    },
+    {
+      "name": "status-null-message",
+      "wire": {
+        "kind": "STATUS",
+        "status": "ERROR",
+        "timestamp": "status-null",
+        "message": null,
+        "runID": "17"
+      },
+      "normalized": {
+        "status": "ERROR",
+        "timestamp": "status-null",
+        "message": "",
+        "run_id": "17"
+      }
+    },
+    {
+      "name": "progress",
+      "wire": {
+        "kind": "PROGRESS",
+        "seq": 2,
+        "time": 4380,
+        "percent": 0.5,
+        "elapsed": 1250,
+        "eta": 1300.25,
+        "timestamp": "progress",
+        "runID": "17"
+      },
+      "normalized": {
+        "time": 4380.0,
+        "percent": 0.5,
+        "elapsed": 1250.0,
+        "eta": 1300.25,
+        "timestamp": "progress",
+        "run_id": "17"
+      }
+    },
+    {
+      "name": "config",
+      "wire": {
+        "kind": "CONFIG",
+        "start": 0,
+        "stop": 8760,
+        "step": 0.25,
+        "timestamp": "config",
+        "runID": "17"
+      },
+      "normalized": {
+        "start": 0.0,
+        "stop": 8760.0,
+        "step": 0.25,
+        "timestamp": "config",
+        "run_id": "17"
+      }
+    },
+    {
+      "name": "setting",
+      "wire": {
+        "kind": "SETTING",
+        "seq": 3,
+        "timestamp": "setting",
+        "trnexePath": "C:\\TRNSYS18\\Exe\\TrnEXE64.exe",
+        "guiVisibility": "hidden",
+        "waitForGui": true,
+        "waitForLst": true,
+        "waitForTmp": false,
+        "detectTimeoutMs": 300000,
+        "extraDelayMs": 0,
+        "watchLog": true,
+        "watchTmp": false,
+        "watchTimeoutMs": 0,
+        "stallTimeoutMs": 0,
+        "pollMs": 100,
+        "cleanOnSuccess": false,
+        "killOnTimeout": false,
+        "killOnStall": false,
+        "severity": "Notice",
+        "writeEvents": false,
+        "runID": "17"
+      },
+      "normalized": {
+        "timestamp": "setting",
+        "trnexe_path": "C:\\TRNSYS18\\Exe\\TrnEXE64.exe",
+        "gui_visibility": "hidden",
+        "wait_for_gui": true,
+        "wait_for_lst": true,
+        "wait_for_tmp": false,
+        "detect_timeout_ms": 300000,
+        "extra_delay_ms": 0,
+        "watch_log": true,
+        "watch_tmp": false,
+        "watch_timeout_ms": 0,
+        "stall_timeout_ms": 0,
+        "poll_ms": 100,
+        "clean_on_success": false,
+        "kill_on_timeout": false,
+        "kill_on_stall": false,
+        "severity": "Notice",
+        "write_events": false,
+        "run_id": "17"
+      }
+    },
+    {
+      "name": "log-full",
+      "wire": {
+        "kind": "LOG",
+        "seq": 4,
+        "severity": "Warning",
+        "timestamp": "log-full",
+        "time": 12,
+        "unitID": 7,
+        "typeID": 3830,
+        "messageCode": 42,
+        "message": "débit élevé",
+        "information": "ΔT = 2 K",
+        "runID": "17"
+      },
+      "normalized": {
+        "severity": "Warning",
+        "timestamp": "log-full",
+        "time": 12.0,
+        "unit_id": 7,
+        "type_id": 3830,
+        "message_code": 42,
+        "message": "débit élevé",
+        "information": "ΔT = 2 K",
+        "run_id": "17"
+      }
+    },
+    {
+      "name": "log-optional-fields-absent",
+      "wire": {
+        "kind": "LOG",
+        "severity": "Notice",
+        "timestamp": "log-absent",
+        "runID": "17"
+      },
+      "normalized": {
+        "severity": "Notice",
+        "timestamp": "log-absent",
+        "time": null,
+        "unit_id": null,
+        "type_id": null,
+        "message_code": null,
+        "message": null,
+        "information": null,
+        "run_id": "17"
+      }
+    },
+    {
+      "name": "log-optional-fields-null",
+      "wire": {
+        "kind": "LOG",
+        "severity": "Fatal",
+        "timestamp": "log-null",
+        "time": null,
+        "unitID": null,
+        "typeID": null,
+        "messageCode": null,
+        "message": null,
+        "information": null,
+        "runID": "17"
+      },
+      "normalized": {
+        "severity": "Fatal",
+        "timestamp": "log-null",
+        "time": null,
+        "unit_id": null,
+        "type_id": null,
+        "message_code": null,
+        "message": null,
+        "information": null,
+        "run_id": "17"
+      }
+    },
+    {
+      "name": "queue-accepted-missing-exit-code",
+      "wire": {
+        "kind": "QUEUE",
+        "event": "ACCEPTED",
+        "runID": "17",
+        "timestamp": "accepted"
+      },
+      "normalized": {
+        "event": "ACCEPTED",
+        "run_id": "17",
+        "timestamp": "accepted",
+        "exit_code": null
+      }
+    },
+    {
+      "name": "queue-completed-exit-code",
+      "wire": {
+        "kind": "QUEUE",
+        "event": "COMPLETED",
+        "runID": "17",
+        "timestamp": "completed",
+        "exitCode": 124
+      },
+      "normalized": {
+        "event": "COMPLETED",
+        "run_id": "17",
+        "timestamp": "completed",
+        "exit_code": 124
+      }
+    },
+    {
+      "name": "queue-completed-null-exit-code",
+      "wire": {
+        "kind": "QUEUE",
+        "event": "COMPLETED",
+        "runID": "18",
+        "timestamp": "launch-failed",
+        "exitCode": null
+      },
+      "normalized": {
+        "event": "COMPLETED",
+        "run_id": "18",
+        "timestamp": "launch-failed",
+        "exit_code": null
+      }
+    }
+  ],
+  "parseErrors": [
+    {
+      "name": "non-json",
+      "line": "native diagnostic",
+      "messageContains": "invalid JSON"
+    },
+    {
+      "name": "json-array",
+      "line": "[]",
+      "messageContains": "event must be a JSON object"
+    },
+    {
+      "name": "unknown-kind",
+      "line": "{\"kind\":\"mystery\"}",
+      "messageContains": "unknown event kind 'MYSTERY'"
+    },
+    {
+      "name": "missing-kind",
+      "line": "{}",
+      "messageContains": "field 'kind' must be a string"
+    },
+    {
+      "name": "status-missing-timestamp",
+      "line": "{\"kind\":\"STATUS\",\"status\":\"DONE\",\"runID\":\"17\"}",
+      "messageContains": "field 'timestamp' must be a string"
+    },
+    {
+      "name": "status-missing-run-id",
+      "line": "{\"kind\":\"STATUS\",\"status\":\"DONE\",\"timestamp\":\"missing-run-id\"}",
+      "messageContains": "field 'runID' must be a string"
+    },
+    {
+      "name": "progress-boolean-number",
+      "line": "{\"kind\":\"PROGRESS\",\"time\":true,\"percent\":0,\"elapsed\":0,\"eta\":0,\"timestamp\":\"bad\",\"runID\":\"17\"}",
+      "messageContains": "field 'time' must be a number"
+    },
+    {
+      "name": "config-string-number",
+      "line": "{\"kind\":\"CONFIG\",\"start\":0,\"stop\":1,\"step\":\"1\",\"timestamp\":\"bad\",\"runID\":\"17\"}",
+      "messageContains": "field 'step' must be a number"
+    },
+    {
+      "name": "setting-numeric-boolean",
+      "line": "{\"kind\":\"SETTING\",\"timestamp\":\"bad\",\"trnexePath\":\"x\",\"guiVisibility\":\"hidden\",\"waitForGui\":1,\"runID\":\"17\"}",
+      "messageContains": "field 'waitForGui' must be a boolean"
+    },
+    {
+      "name": "log-nonintegral-id",
+      "line": "{\"kind\":\"LOG\",\"severity\":\"Notice\",\"timestamp\":\"bad\",\"unitID\":1.5,\"runID\":\"17\"}",
+      "messageContains": "field 'unitID' must be an integer"
+    },
+    {
+      "name": "queue-boolean-exit-code",
+      "line": "{\"kind\":\"QUEUE\",\"event\":\"COMPLETED\",\"runID\":\"1\",\"timestamp\":\"bad\",\"exitCode\":false}",
+      "messageContains": "field 'exitCode' must be an integer"
+    }
+  ],
+  "unroutableStreamLines": [
+    "",
+    "runner stderr diagnostic",
+    "[]",
+    "{\"kind\":\"STATUS\",\"status\":\"DONE\",\"timestamp\":\"no-run-id\"}",
+    "{\"runID\":7,\"kind\":\"STATUS\",\"status\":\"DONE\",\"timestamp\":\"numeric-run-id\"}",
+    "{\"runID\":\"7\",\"kind\":7}"
+  ],
+  "routableStreamErrors": [
+    {
+      "name": "unknown-kind",
+      "line": "{\"runID\":\"7\",\"kind\":\"UNKNOWN\"}",
+      "messageContains": "unknown event kind 'UNKNOWN'"
+    },
+    {
+      "name": "malformed-known-kind",
+      "line": "{\"runID\":\"7\",\"kind\":\"LOG\",\"severity\":\"Notice\"}",
+      "messageContains": "field 'timestamp' must be a string"
+    }
+  ]
+}

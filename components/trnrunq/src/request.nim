@@ -8,7 +8,7 @@ import std/json
 
 type RunRequest* = object
   ## One simulation request accepted from queue stdin.
-  runId*: string ## Opaque identifier `trnrun` attaches to every event it emits.
+  runID*: string ## Opaque identifier `trnrun` attaches to every event it emits.
   deckFile*: string ## `.dck` or `.trd` deck to simulate.
   runnerPath*: string ## Runner executable used for this request.
   runnerArgs*: seq[string] ## Extra arguments forwarded to the runner.
@@ -26,7 +26,7 @@ proc requireString(node: JsonNode, key: string): string =
 proc parseRequest*(line: string): RunRequest =
   ## Parses one stdin line into a request.
   ##
-  ## Validates shape only: field presence, JSON types, and a non-empty `runId`.
+  ## Validates shape only: field presence, JSON types, and a non-empty `runID`.
   ## Paths are resolved and checked later, on the worker thread that runs the
   ## request, so a queue accepting a request is not a claim that it can run.
   ## Raises `ValueError` for any malformed line.
@@ -35,11 +35,11 @@ proc parseRequest*(line: string): RunRequest =
   if node.kind != JObject:
     raise newException(ValueError, "Request must be a JSON object")
 
-  result.runId = node.requireString("runId")
+  result.runID = node.requireString("runID")
   result.deckFile = node.requireString("deckFile")
   result.runnerPath = node.requireString("runnerPath")
-  if result.runId.len == 0:
-    raise newException(ValueError, "'runId' must not be empty")
+  if result.runID.len == 0:
+    raise newException(ValueError, "'runID' must not be empty")
 
   if node.hasKey("runnerArgs"):
     if node["runnerArgs"].kind != JArray:

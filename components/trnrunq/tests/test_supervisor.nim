@@ -8,18 +8,18 @@ const
   HeldPipeLine = "inherited stdout remained open"
 
 
-proc fakeRunId(): string =
+proc fakeRunID(): string =
   result = ""
   if paramCount() >= 2:
     for index in 2 .. paramCount():
       let argument = paramStr(index)
-      if argument.startsWith("--runId:"):
+      if argument.startsWith("--runID:"):
         return argument[8 .. ^1]
 
 proc runFakeRunner(deckFile: string) =
   let
     mode = deckFile.splitFile().name.toLowerAscii()
-    runId = fakeRunId()
+    runID = fakeRunID()
   if mode == "cancelled":
     let holder = startProcess(
       getAppFilename(),
@@ -33,7 +33,7 @@ proc runFakeRunner(deckFile: string) =
       "status": "CANCELLED",
       "message": "",
       "seq": 1,
-      "runId": runId,
+      "runID": runID,
     }))
     stdout.flushFile()
     quit(130)
@@ -44,7 +44,7 @@ proc runFakeRunner(deckFile: string) =
     "status": "RUNNING",
     "message": "",
     "seq": 1,
-    "runId": runId,
+    "runID": runID,
   }))
   stdout.flushFile()
   if mode == "slow":
@@ -55,7 +55,7 @@ proc runFakeRunner(deckFile: string) =
     "status": "DONE",
     "message": "",
     "seq": 2,
-    "runId": runId,
+    "runID": runID,
   }))
   stdout.flushFile()
   quit(0)
@@ -123,14 +123,14 @@ proc messagesOfKind(messages: openArray[JsonNode], kind: string): seq[JsonNode] 
         message["kind"].kind == JString and message["kind"].getStr() == kind:
       result.add(message)
 
-proc acceptedRunIds(messages: openArray[JsonNode]): seq[string] =
+proc acceptedRunIDs(messages: openArray[JsonNode]): seq[string] =
   result = @[]
   for message in messages.messagesOfKind("QUEUE"):
     if message.hasKey("event") and message["event"].kind == JString and
         message["event"].getStr() == "ACCEPTED":
-      result.add(message["runId"].getStr())
+      result.add(message["runID"].getStr())
 
-proc readStatusEvent(stream: Stream, runId: string, observed: var seq[string]): JsonNode =
+proc readStatusEvent(stream: Stream, runID: string, observed: var seq[string]): JsonNode =
   var line = ""
   while stream.readLine(line):
     observed.add(line)
@@ -138,16 +138,16 @@ proc readStatusEvent(stream: Stream, runId: string, observed: var seq[string]): 
       let event = parseJson(line)
       if event.kind == JObject and event.hasKey("kind") and
           event["kind"].kind == JString and event["kind"].getStr() == "STATUS" and
-          event.hasKey("runId") and event["runId"].kind == JString and
-          event["runId"].getStr() == runId:
+          event.hasKey("runID") and event["runID"].kind == JString and
+          event["runID"].getStr() == runID:
         return event
     except JsonParsingError:
       discard
-  raise newException(IOError, "Queue stdout closed before run '" & runId & "' emitted a status event")
+  raise newException(IOError, "Queue stdout closed before run '" & runID & "' emitted a status event")
 
-proc requestLine(runId, deckFile, runnerPath: string): string =
+proc requestLine(runID, deckFile, runnerPath: string): string =
   $(%*{
-    "runId": runId,
+    "runID": runID,
     "deckFile": deckFile,
     "runnerPath": runnerPath,
   })
@@ -210,8 +210,8 @@ proc runTests() =
           var doneRuns: seq[string] = @[]
           for event in events:
             if event["status"].getStr() == "DONE":
-              doneRuns.add(event["runId"].getStr())
-          check messages.acceptedRunIds() == @["incremental-first", "incremental-second"]
+              doneRuns.add(event["runID"].getStr())
+          check messages.acceptedRunIDs() == @["incremental-first", "incremental-second"]
           check doneRuns.contains("incremental-first")
           check doneRuns.contains("incremental-second")
         finally:
@@ -238,9 +238,9 @@ proc runTests() =
         check command.exitCode != 0
         check command.stderr.len > 0
         check not command.stdout.contains(HeldPipeLine)
-        check messages.acceptedRunIds() == @["accepted-before-error"]
+        check messages.acceptedRunIDs() == @["accepted-before-error"]
         check events.len == 1
-        check events[0]["runId"].getStr() == "accepted-before-error"
+        check events[0]["runID"].getStr() == "accepted-before-error"
         check events[0]["status"].getStr() == "CANCELLED"
   finally:
     if dirExists(testDirectory):
