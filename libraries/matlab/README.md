@@ -374,21 +374,15 @@ added to the installed path.
 repository `justfile` stages the license, README and native executables into it
 first, so `just matlab` is the command that produces a complete archive.
 
-**Recipients only need the generated `dist/TRNRun.mltbx`.** They do not
-need the project or the packaging tools. R2021a remains the provisional
-runtime target; building on a newer release does not verify older-release
-compatibility.
+**Recipients only need the generated `dist/TRNRun.mltbx`.** They do not need the
+packaging tools. R2021a remains the provisional runtime target; building on a
+newer release does not verify older-release compatibility.
 
 Build the native executables, then copy `trnrun.exe` and `trnrunq.exe` into
 `toolbox/bin` before packaging. They are build artifacts and are not committed.
-TRNSYS and Type3830 are not bundled. Keep the version in the project's Package
-Toolbox task synchronized with `toolbox/+trnrun/version.m` when preparing a
-release.
+TRNSYS and Type3830 are not bundled. `buildfile.m` reads the packaged version
+from `toolbox/+trnrun/version.m`, so that file is the only place to change it
+when preparing a release.
 
-From `libraries/matlab` in MATLAB R2025a or newer, `buildtool verify` performs
-the whole sequence: option check, packaging, and archive validation.
-
-`runUnitTests` and `runTransportTests` remain available for running the suites
-directly; transport tests require their fake queue to be built first. Verify
-installation and a real TRNSYS run on R2021a before claiming compatibility with
-that release.
+There is currently no automated test suite. Verify installation and a real
+TRNSYS run on R2021a before claiming compatibility with that release.
