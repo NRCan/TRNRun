@@ -13,8 +13,8 @@ function simulations = run_deck_folder(deck_folder)
     [~, order] = sort(lower(string({files.name})));
     files = files(order);
 
-    config = trnrun.SimulationConfig(watch_tmp=false);
-    manager = trnrun.SimulationManager(max_concurrent=4);
+    config = trnrun.SimulationConfig(watch_tmp=true);
+    manager = trnrun.SimulationManager(maxConcurrent=2, refreshInterval=0.1);
     cleanup = onCleanup(@() delete(manager));
 
     for index = 1:numel(files)

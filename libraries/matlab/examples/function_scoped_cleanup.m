@@ -4,7 +4,7 @@ function simulation = function_scoped_cleanup(deck_path)
     library_path = fileparts(fileparts(mfilename("fullpath")));
     addpath(library_path)
 
-    manager = trnrun.SimulationManager(max_concurrent=1);
+    manager = trnrun.SimulationManager(maxConcurrent=1);
 
     % Function scope guarantees this guard runs on return, error, or Ctrl+C.
     % delete() is a destructive fallback for unfinished owned work, whereas

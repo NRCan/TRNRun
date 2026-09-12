@@ -6,7 +6,7 @@ function [simulations, succeeded, failed] = inspect_results(deck_paths)
 
     deck_paths = reshape(string(deck_paths), 1, []);
     config = trnrun.SimulationConfig(watch_tmp=false);
-    manager = trnrun.SimulationManager(max_concurrent=4);
+    manager = trnrun.SimulationManager(maxConcurrent=4);
     cleanup = onCleanup(@() delete(manager));
 
     for deck_path = deck_paths

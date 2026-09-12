@@ -36,7 +36,7 @@ classdef ScriptedQueueProcess < handle
             obj.sent{end + 1} = request;
         end
 
-        function line = read_line(obj)
+        function line = readLine(obj)
             if obj.next_line_ > numel(obj.lines)
                 line = [];
                 return
@@ -54,7 +54,7 @@ classdef ScriptedQueueProcess < handle
             value = obj.exit_code;
         end
 
-        function force_cleanup(obj)
+        function forceCleanup(obj)
             obj.forced = true;
             obj.closed = true;
         end

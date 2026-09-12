@@ -1,418 +1,356 @@
 classdef QueueProcess < handle
-    %QUEUEPROCESS Own one trnrunq process and its redirected UTF-8 streams.
+    %QUEUEPROCESS Own one Windows queue process and its UTF-8 pipes.
+    %   Q = trnrun.internal.QueueProcess(EXECUTABLE, MAXCONCURRENT) starts
+    %   trnrunq with redirected input and output.
+    %
+    %   Q.send(REQUEST) writes one JSON request per line. Q.readLine(TIMEOUT)
+    %   returns stdout as character vectors, or numeric [] at EOF. TIMEOUT
+    %   limits the wait for a stdout line in seconds (default Inf), not
+    %   simulation progress. Expiry terminates the queue and raises
+    %   trnrun:QueueReadTimeout.
+    %   Output is drained cooperatively while these methods wait; stderr
+    %   history retains 200 lines of at most 1000 UTF-16 code units each.
+    %   Truncated suffixes are not counted in stderr_dropped.
+    %   SEND and WAIT have no timeout.
+    %
+    %   Q.close() ends submission without cancelling queued runs. Q.wait()
+    %   drains output, waits for exit, and releases handles. Q.forceCleanup()
+    %   or delete(Q) terminates only the queue, not its descendants.
+    %   A failed or interrupted pump terminates the transport rather than
+    %   attempting to resume a partially consumed read.
 
     properties (Access = private)
-        process_ = []
-        stdin_ = []
-        stdout_ = []
-        stderr_ = []
-        stdout_task_ = []
-        stderr_task_ = []
-        job_ = []
-        input_closed_ = false
-        stdout_eof_ = false
-        stderr_eof_ = false
-        disposed_ = false
-        pending_stdout_ = {}
-        pending_stdout_head_ = 1
-        stderr_tail_ = {}
-        stderr_chars_ = 0
-        stderr_dropped_ = 0
-        transport_error_ = []
+        process = []
+
+        stdin = []
+        stdout = []
+        stderr = []
+        stdoutTask = []
+        stderrTask = []
+
+        inputClosed (1,1) logical = false
+        stdoutEof (1,1) logical = false
+        stderrEof (1,1) logical = false
+        disposed (1,1) logical = false
+        pumping (1,1) logical = false
+
+        processId double {mustBeScalarOrEmpty} = []
+        exitCode double {mustBeScalarOrEmpty} = []
+        pendingStdout (:,1) string = strings(0, 1)
+        pendingStdoutHead (1,1) double = 1
+        stderrTail (1,:) string = strings(1, 0)
+
+        stderrDropped (1,1) double = 0
     end
 
     properties (Constant, Access = private)
         MaxStderrLines = 200
-        MaxStderrChars = 65536
+        MaxStderrLineChars = 1000
+        MaxLinesPerPump = 1000
         PollSeconds = 0.01
     end
 
     methods
-        function obj = QueueProcess(executable, max_concurrent)
+        function obj = QueueProcess(executable, maxConcurrent)
+            %QUEUEPROCESS Start a Windows queue with redirected pipes.
+            %   MAXCONCURRENT limits simultaneous runs.
+
+            arguments
+                executable (1,1) string {mustBeFile}
+                maxConcurrent (1,1) double {mustBeInteger, mustBePositive}
+            end
+
             if ~ispc
                 error('trnrun:UnsupportedPlatform', ...
                     'The MATLAB client supports Windows only.');
             end
 
-            executable = trnrun.internal.absolutePath(executable, 'trnrunq_path');
-            max_concurrent = trnrun.internal.requireFiniteInteger( ...
-                max_concurrent, 'max_concurrent', 1);
-            if ~isfile(executable)
-                error('trnrun:QueueNotFound', ...
-                    'TRNRun queue executable not found: %s', executable);
-            end
-
-            assembly_path = fullfile(trnrun.internal.libraryRoot(), ...
-                'bin', 'win64', 'TrnRun.Interop.dll');
-            if ~isfile(assembly_path)
-                error('trnrun:JobProtectionUnavailable', ...
-                    ['Windows Job Object helper not found: %s. Build or install ' ...
-                     'the complete MATLAB package before starting simulations.'], ...
-                    assembly_path);
-            end
-
-            try
-                NET.addAssembly(assembly_path);
-                obj.job_ = TrnRun.Interop.KillOnCloseJob();
-            catch exception
-                wrapped = MException('trnrun:JobProtectionUnavailable', ...
-                    'Could not initialize Windows Job Object protection: %s', ...
-                    exception.message);
-                throwAsCaller(wrapped);
-            end
+            [~, info] = fileattrib(executable);
+            executable = info.Name;
 
             psi = System.Diagnostics.ProcessStartInfo();
             psi.FileName = executable;
-            psi.Arguments = sprintf('--maxConcurrent:%d', max_concurrent);
+            psi.Arguments = sprintf('--maxConcurrent:%.0f', maxConcurrent);
             psi.WorkingDirectory = fileparts(executable);
             psi.UseShellExecute = false;
             psi.CreateNoWindow = true;
             psi.RedirectStandardInput = true;
             psi.RedirectStandardOutput = true;
             psi.RedirectStandardError = true;
-            utf8 = System.Text.UTF8Encoding(false, false);
-            psi.StandardOutputEncoding = utf8;
-            psi.StandardErrorEncoding = utf8;
-            psi.StandardInputEncoding = System.Text.UTF8Encoding(false, true);
+            decoder = System.Text.UTF8Encoding(false, false);
+            psi.StandardOutputEncoding = decoder;
+            psi.StandardErrorEncoding = decoder;
 
-            process = System.Diagnostics.Process();
-            process.StartInfo = psi;
-            try
-                if ~process.Start()
-                    error('trnrun:QueueStartFailed', ...
-                        'System.Diagnostics.Process.Start returned false.');
-                end
-                obj.process_ = process;
-                obj.job_.Assign(process);
-                obj.stdin_ = process.StandardInput;
-                obj.stdout_ = process.StandardOutput;
-                obj.stderr_ = process.StandardError;
-                obj.stdin_.AutoFlush = true;
-                obj.stdout_task_ = obj.stdout_.ReadLineAsync();
-                obj.stderr_task_ = obj.stderr_.ReadLineAsync();
-            catch exception
-                obj.process_ = process;
-                obj.force_cleanup();
-                wrapped = MException('trnrun:QueueStartFailed', ...
-                    'Could not start and protect the TRNRun queue: %s', ...
-                    exception.message);
-                throwAsCaller(wrapped);
-            end
+            % Failed construction invokes delete to clean up a started process.
+            obj.process = System.Diagnostics.Process();
+            obj.process.StartInfo = psi;
+            obj.process.Start();
+            obj.processId = double(obj.process.Id);
+
+            % StandardInputEncoding is unavailable on .NET Framework.
+            obj.stdin = System.IO.StreamWriter( ...
+                obj.process.StandardInput.BaseStream, ...
+                System.Text.UTF8Encoding(false, true));
+            obj.stdin.AutoFlush = true;
+            obj.stdout = obj.process.StandardOutput;
+            obj.stderr = obj.process.StandardError;
+            obj.stdoutTask = obj.stdout.ReadLineAsync();
+            obj.stderrTask = obj.stderr.ReadLineAsync();
         end
 
         function send(obj, request)
-            %SEND Validate, encode, write, and flush one strict JSON request.
-            obj.require_open_input();
-            validate_request(request);
-            reject_nonfinite(request, 'request');
-            try
-                line = jsonencode(request);
-            catch exception
-                wrapped = MException('trnrun:RequestEncodingFailed', ...
-                    'Could not encode queue request: %s', exception.message);
-                throwAsCaller(wrapped);
+            %SEND Write a JSON request while draining output.
+            %   The queue validates request fields.
+
+            arguments
+                obj (1,1) trnrun.internal.QueueProcess
+                request (1,1) struct
             end
 
+            if obj.inputClosed
+                error('trnrun:QueueInputClosed', ...
+                    'The queue is no longer accepting submissions.');
+            end
+
+            line = jsonencode(request);
             try
-                write_task = obj.stdin_.WriteLineAsync(line);
-                while ~write_task.IsCompleted
-                    obj.pump_tasks();
-                    obj.throw_transport_error();
-                    pause(obj.PollSeconds);
+                task = obj.stdin.WriteLineAsync(line);
+                while ~task.IsCompleted
+                    obj.pumpOrPause();
                 end
-                check_task(write_task, 'queue stdin write');
-                obj.stdin_.Flush();
-                write_task.Dispose();
+                checkTask(task, "stdin write");
             catch exception
-                wrapped = MException('trnrun:QueueWriteFailed', ...
-                    'Could not write a request to the TRNRun queue: %s', ...
-                    exception.message);
-                throwAsCaller(wrapped);
+                obj.forceCleanup();
+                rethrow(exception);
             end
         end
 
-        function line = read_line(obj)
-            %READ_LINE Block while fairly draining both output streams.
-            while true
-                if obj.pending_stdout_head_ <= numel(obj.pending_stdout_)
-                    line = obj.pending_stdout_{obj.pending_stdout_head_};
-                    obj.pending_stdout_head_ = obj.pending_stdout_head_ + 1;
-                    if obj.pending_stdout_head_ > 256 && ...
-                            obj.pending_stdout_head_ > numel(obj.pending_stdout_) / 2
-                        obj.pending_stdout_ = obj.pending_stdout_(obj.pending_stdout_head_:end);
-                        obj.pending_stdout_head_ = 1;
-                    end
-                    return
-                end
+        function line = readLine(obj, timeout)
+            %READLINE Return stdout as char or [] at EOF.
+            %   The optional timeout limits the wait in seconds.
 
-                obj.pump_tasks();
-                obj.throw_transport_error();
-                if obj.stdout_eof_
+            arguments
+                obj (1,1) trnrun.internal.QueueProcess
+                timeout (1,1) double {mustBePositive} = Inf
+            end
+
+            started = tic;
+            while obj.pendingStdoutHead > numel(obj.pendingStdout)
+                if obj.stdoutEof
                     line = [];
                     return
                 end
-                pause(obj.PollSeconds);
+                if toc(started) >= timeout
+                    obj.forceCleanup();
+                    error('trnrun:QueueReadTimeout', ...
+                        'No stdout line became available within %g seconds.', timeout);
+                end
+                obj.pumpOrPause();
+            end
+
+            line = char(obj.pendingStdout(obj.pendingStdoutHead));
+            obj.pendingStdoutHead = obj.pendingStdoutHead + 1;
+            if obj.pendingStdoutHead > 256 && ...
+                    obj.pendingStdoutHead > numel(obj.pendingStdout) / 2
+                obj.pendingStdout(1:obj.pendingStdoutHead - 1) = [];
+                obj.pendingStdoutHead = 1;
             end
         end
 
         function close(obj)
-            %CLOSE Close queue stdin once, ending submission without cancellation.
-            if obj.disposed_ || obj.input_closed_
+            %CLOSE End submission without cancelling runs.
+            %   Repeated calls are harmless.
+
+            if obj.inputClosed
                 return
             end
-            obj.input_closed_ = true;
+
+            obj.inputClosed = true;
             try
-                obj.stdin_.Close();
+                obj.stdin.Close();
             catch
-                % Closing an already-broken input pipe is harmless here.
+                % A broken input pipe is already effectively closed.
             end
         end
 
-        function exit_code = wait(obj)
-            %WAIT Drain both streams, reap the queue, and release handles.
-            if obj.disposed_
-                exit_code = [];
-                return
-            end
-            obj.close();
+        function exitCode = wait(obj)
+            %WAIT Close input, drain output, and reap the queue.
+            %   Return the cached exit code.
 
-            while ~(obj.stdout_eof_ && obj.stderr_eof_)
-                obj.pump_tasks();
-                obj.throw_transport_error();
-                pause(obj.PollSeconds);
+            if ~obj.disposed
+                obj.close();
+                while ~(obj.stdoutEof && obj.stderrEof)
+                    obj.pumpOrPause();
+                end
+                while ~obj.process.WaitForExit(0)
+                    pause(obj.PollSeconds);
+                end
+                obj.exitCode = double(obj.process.ExitCode);
+                obj.release();
             end
-
-            obj.process_.WaitForExit();
-            exit_code = double(obj.process_.ExitCode);
-            obj.dispose_handles(false);
+            exitCode = obj.exitCode;
         end
 
         function value = diagnostics(obj)
-            %DIAGNOSTICS Return bounded transport diagnostics by value.
-            pid = [];
-            exit_code = [];
-            if ~isempty(obj.process_)
-                try
-                    pid = double(obj.process_.Id);
-                    if obj.process_.HasExited
-                        exit_code = double(obj.process_.ExitCode);
-                    end
-                catch
-                end
+            %DIAGNOSTICS Return cached process identity, exit state, and bounded stderr.
+
+            exitCode = obj.exitCode;
+            if isempty(exitCode) && ~obj.disposed && obj.process.HasExited
+                exitCode = double(obj.process.ExitCode);
             end
             value = struct( ...
-                'pid', pid, ...
-                'exit_code', exit_code, ...
-                'stderr', {obj.stderr_tail_}, ...
-                'stderr_dropped', obj.stderr_dropped_);
+                'pid', obj.processId, ...
+                'exit_code', exitCode, ...
+                'stderr', {cellstr(obj.stderrTail)}, ...
+                'stderr_dropped', obj.stderrDropped);
         end
 
-        function force_cleanup(obj)
-            %FORCE_CLEANUP Terminate only this transport's queue and descendants.
-            if obj.disposed_
+        function forceCleanup(obj)
+            %FORCECLEANUP Terminate the queue, tolerating partial initialization.
+
+            if obj.disposed
                 return
             end
-            obj.close();
+
             try
-                if ~isempty(obj.job_)
-                    obj.job_.Terminate(uint32(1));
-                end
+                % ponytail: queue only; restore Job Object ownership for descendant cleanup.
+                obj.process.Kill();
             catch
-                try
-                    if ~isempty(obj.process_) && ~obj.process_.HasExited
-                        obj.process_.Kill();
-                    end
-                catch
-                end
             end
             try
-                if ~isempty(obj.process_)
-                    obj.process_.WaitForExit(2000);
+                if obj.process.WaitForExit(2000)
+                    obj.exitCode = double(obj.process.ExitCode);
                 end
             catch
             end
-            obj.dispose_handles(true);
+            obj.release();
         end
 
         function delete(obj)
-            try
-                obj.force_cleanup();
-            catch
-                % MATLAB destructors must not replace an active user exception.
-            end
+            %DELETE Release this transport and terminate the queue.
+
+            obj.forceCleanup();
         end
     end
 
     methods (Access = private)
-        function require_open_input(obj)
-            if obj.disposed_ || obj.input_closed_
-                error('trnrun:QueueInputClosed', ...
-                    'The TRNRun queue is no longer accepting submissions.');
+        function pumpOrPause(obj)
+            %PUMPORPAUSE Drain a bounded batch and yield, sleeping only when idle.
+
+            if obj.pump()
+                pause(0);
+            else
+                pause(obj.PollSeconds);
             end
         end
 
-        function pump_tasks(obj)
-            % Always service stdout and stderr once per pass to prevent starvation.
-            if ~obj.stdout_eof_ && ~isempty(obj.stdout_task_) && obj.stdout_task_.IsCompleted
-                task = obj.stdout_task_;
-                try
-                    check_task(task, 'queue stdout read');
-                    value = task.Result;
-                    if is_dotnet_null(value)
-                        obj.stdout_eof_ = true;
-                        obj.stdout_task_ = [];
-                    else
-                        line = char(value);
-                        obj.stdout_task_ = obj.stdout_.ReadLineAsync();
-                        obj.pending_stdout_{end + 1} = line;
-                    end
-                    task.Dispose();
-                catch exception
-                    obj.transport_error_ = MException('trnrun:QueueReadFailed', ...
-                        'Queue stdout read failed: %s', exception.message);
-                    obj.stdout_eof_ = true;
-                    obj.stdout_task_ = [];
+        function progressed = pump(obj)
+            %PUMP Service both streams fairly and abort if a batch does not complete.
+
+            % onCleanup also handles Ctrl+C, which does not enter catch blocks.
+            guard = onCleanup(@() obj.abortIncompletePump()); %#ok<NASGU>
+            obj.pumping = true;
+            progressed = false;
+            for pass = 1:obj.MaxLinesPerPump
+                stdoutReady = obj.pumpStream("stdout");
+                stderrReady = obj.pumpStream("stderr");
+                if ~(stdoutReady || stderrReady)
+                    break
                 end
+                progressed = true;
             end
+            obj.pumping = false;
+        end
 
-            if ~obj.stderr_eof_ && ~isempty(obj.stderr_task_) && obj.stderr_task_.IsCompleted
-                task = obj.stderr_task_;
-                try
-                    check_task(task, 'queue stderr read');
-                    value = task.Result;
-                    if is_dotnet_null(value)
-                        obj.stderr_eof_ = true;
-                        obj.stderr_task_ = [];
-                    else
-                        line = char(value);
-                        obj.stderr_task_ = obj.stderr_.ReadLineAsync();
-                        obj.append_stderr(line);
-                    end
-                    task.Dispose();
-                catch exception
-                    obj.transport_error_ = MException('trnrun:QueueReadFailed', ...
-                        'Queue stderr read failed: %s', exception.message);
-                    obj.stderr_eof_ = true;
-                    obj.stderr_task_ = [];
-                end
+        function abortIncompletePump(obj)
+            %ABORTINCOMPLETEPUMP Prevent reuse of partially consumed stream tasks.
+
+            if obj.pumping
+                obj.forceCleanup();
             end
         end
 
-        function append_stderr(obj, line)
-            obj.stderr_tail_{end + 1} = line;
-            obj.stderr_chars_ = obj.stderr_chars_ + numel(line) + 1;
-            while numel(obj.stderr_tail_) > obj.MaxStderrLines || ...
-                    obj.stderr_chars_ > obj.MaxStderrChars
-                removed = obj.stderr_tail_{1};
-                obj.stderr_tail_(1) = [];
-                obj.stderr_chars_ = obj.stderr_chars_ - numel(removed) - 1;
-                obj.stderr_dropped_ = obj.stderr_dropped_ + 1;
-            end
-        end
+        function got = pumpStream(obj, name)
+            %PUMPSTREAM Consume one completed stdout or stderr read and schedule the next.
 
-        function throw_transport_error(obj)
-            if ~isempty(obj.transport_error_)
-                throwAsCaller(obj.transport_error_);
-            end
-        end
-
-        function dispose_handles(obj, force)
-            if obj.disposed_
+            taskName = name + "Task";
+            task = obj.(taskName);
+            % EOF and release both clear the task.
+            got = ~isempty(task) && task.IsCompleted;
+            if ~got
                 return
             end
-            obj.disposed_ = true;
 
-            streams = {obj.stdin_, obj.stdout_, obj.stderr_};
-            for index = 1:numel(streams)
+            checkTask(task, name + " read");
+            value = task.Result;
+            % A null Task<string> result maps to numeric []; '' is a line.
+            if isnumeric(value) && isempty(value)
+                obj.(name + "Eof") = true;
+                obj.(taskName) = [];
+                return
+            end
+
+            if name == "stdout"
+                obj.pendingStdout(end + 1, 1) = string(char(value));
+            else
+                obj.appendStderr(char(value));
+            end
+            stream = obj.(name);
+            obj.(taskName) = stream.ReadLineAsync();
+        end
+
+        function appendStderr(obj, line)
+            %APPENDSTDERR Retain recent stderr, truncating overlong lines.
+
+            % ponytail: only history is bounded; use chunked reads to bound peak memory.
+            count = min(numel(line), obj.MaxStderrLineChars);
+            % Do not leave half a UTF-16 surrogate pair at the truncation boundary.
+            if count < numel(line) && count > 0 && ...
+                    line(count) >= char(55296) && line(count) <= char(56319)
+                count = count - 1;
+            end
+            obj.stderrTail(end + 1) = string(line(1:count));
+            if numel(obj.stderrTail) > obj.MaxStderrLines
+                obj.stderrTail(1) = [];
+                obj.stderrDropped = obj.stderrDropped + 1;
+            end
+        end
+
+        function release(obj)
+            %RELEASE Dispose streams and process handles.
+
+            if obj.disposed
+                return
+            end
+
+            obj.disposed = true;
+            obj.inputClosed = true;
+            obj.stdoutEof = true;
+            obj.stderrEof = true;
+            obj.pumping = false;
+            obj.stdoutTask = [];
+            obj.stderrTask = [];
+
+            handles = {obj.stdin, obj.stdout, obj.stderr, obj.process};
+            for index = 1:numel(handles)
                 try
-                    if ~isempty(streams{index})
-                        streams{index}.Dispose();
+                    if ~isempty(handles{index})
+                        handles{index}.Dispose();
                     end
                 catch
+                    % Cleanup must tolerate partially initialized handles.
                 end
-            end
-            try
-                if ~isempty(obj.process_)
-                    obj.process_.Dispose();
-                end
-            catch
-            end
-            try
-                if ~isempty(obj.job_)
-                    if force
-                        try
-                            obj.job_.Terminate(uint32(1));
-                        catch
-                        end
-                    end
-                    obj.job_.Dispose();
-                end
-            catch
             end
         end
     end
 end
 
-function result = is_dotnet_null(value)
-% MATLAB maps a generic Task<string> null result to [] rather than System.String.
-result = isempty(value) && ~ischar(value) && ~isstring(value) && ...
-    ~isa(value, 'System.String');
-end
+function checkTask(task, operation)
+    %CHECKTASK Report failure of a completed pipe operation.
 
-function check_task(task, operation)
-if task.IsCanceled
-    error('trnrun:QueueTaskCanceled', '%s was canceled.', operation);
-end
-if task.IsFaulted
-    cause = task.Exception.GetBaseException();
-    error('trnrun:QueueTaskFaulted', '%s failed: %s', operation, char(cause.Message));
-end
-end
-
-function validate_request(request)
-if ~isstruct(request) || ~isscalar(request)
-    error('trnrun:InvalidRequest', 'Queue request must be a scalar struct.');
-end
-required = {'runID', 'deckFile', 'runnerPath', 'runnerArgs'};
-for index = 1:numel(required)
-    if ~isfield(request, required{index})
-        error('trnrun:InvalidRequest', ...
-            'Queue request is missing field ''%s''.', required{index});
+    if task.IsFaulted
+        cause = task.Exception.GetBaseException();
+        error('trnrun:QueuePipeFailed', ...
+            'Queue %s failed: %s', operation, char(cause.Message));
     end
-end
-if ~is_text(request.runID) || isempty(char(request.runID))
-    error('trnrun:InvalidRequest', 'runID must be a nonempty string.');
-end
-if ~is_text(request.deckFile) || ~is_text(request.runnerPath)
-    error('trnrun:InvalidRequest', ...
-        'deckFile and runnerPath must be strings.');
-end
-if ~iscell(request.runnerArgs) || ...
-        ~all(cellfun(@is_text, request.runnerArgs))
-    error('trnrun:InvalidRequest', ...
-        'runnerArgs must be a cell array containing only strings.');
-end
-end
-
-function result = is_text(value)
-result = (ischar(value) && isrow(value)) || ...
-    (isstring(value) && isscalar(value) && ~ismissing(value));
-end
-
-function reject_nonfinite(value, location)
-if isnumeric(value)
-    if any(~isfinite(value(:)))
-        error('trnrun:NonFiniteRequest', ...
-            'Queue %s contains NaN or Inf.', location);
-    end
-elseif isstruct(value)
-    names = fieldnames(value);
-    for index = 1:numel(names)
-        reject_nonfinite(value.(names{index}), [location '.' names{index}]);
-    end
-elseif iscell(value)
-    for index = 1:numel(value)
-        reject_nonfinite(value{index}, sprintf('%s{%d}', location, index));
-    end
-end
 end

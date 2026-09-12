@@ -4,25 +4,20 @@ classdef TestEventParsing < matlab.unittest.TestCase
             contract = load_contract('events_contract.json');
             for index = 1:numel(contract.valid)
                 test = item_at(contract.valid, index);
-                [~, actual] = trnrun.internal.parseStreamLine(jsonencode(test.wire), "event");
+                [~, actual] = trnrun.internal.parseStreamLine(jsonencode(test.wire));
                 actual = rmfield(actual, 'kind');
                 testCase.verifyEqual(actual, test.normalized, ...
                     sprintf('fixture case %s', test.name));
             end
         end
 
-        function rejectsMalformedSingleEvents(testCase)
-            contract = load_contract('events_contract.json');
-            for index = 1:numel(contract.parseErrors)
-                test = item_at(contract.parseErrors, index);
-                try
-                    trnrun.internal.parseStreamLine(test.line, "event");
-                    testCase.assertFail(sprintf('Expected parse failure for %s.', test.name));
-                catch exception
-                    testCase.verifyEqual(exception.identifier, 'trnrun:EventParseError');
-                    testCase.verifyTrue(contains(exception.message, test.messageContains), ...
-                        sprintf('fixture case %s', test.name));
-                end
+        function ignoresNonTextInput(testCase)
+            inputs = {[], 42, struct('runID', '1', 'kind', 'STATUS'), ...
+                string(missing), ["one", "two"]};
+            for index = 1:numel(inputs)
+                [run_id, event] = trnrun.internal.parseStreamLine(inputs{index});
+                testCase.verifyEmpty(run_id);
+                testCase.verifyEmpty(event);
             end
         end
 
@@ -61,7 +56,7 @@ classdef TestEventParsing < matlab.unittest.TestCase
         function acceptsIntegralJsonDoublesForIntegerFields(testCase)
             data = struct('kind', 'QUEUE', 'event', 'COMPLETED', ...
                 'runID', '1', 'timestamp', 't', 'exitCode', 2.0);
-            [~, event] = trnrun.internal.parseStreamLine(jsonencode(data), "event");
+            [~, event] = trnrun.internal.parseStreamLine(jsonencode(data));
             testCase.verifyEqual(event.exit_code, 2);
         end
     end

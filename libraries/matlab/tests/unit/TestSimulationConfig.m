@@ -20,10 +20,9 @@ classdef TestSimulationConfig < matlab.unittest.TestCase
             end
 
             expected = cellstr(contract.defaultCliArgs);
-            absolute_trnexe = trnrun.internal.absolutePath( ...
-                config.trnexe_path, 'trnexe_path');
+
             expected = cellfun(@(value) strrep(value, ...
-                '{absolute_trnexe_path}', char(absolute_trnexe)), ...
+                '{absolute_trnexe_path}', char(config.trnexe_path)), ...
                 expected, 'UniformOutput', false);
             args = config.to_cli_args();
             testCase.verifyClass(args, 'cell');
@@ -75,9 +74,38 @@ classdef TestSimulationConfig < matlab.unittest.TestCase
             config = trnrun.SimulationConfig( ...
                 'trnrun_path', 'trnrun.exe', ...
                 'trnexe_path', 'TrnEXE64.exe');
+            args = config.to_cli_args();
+            testCase.verifyEqual(args{1}, '--trnexePath:TrnEXE64.exe');
             config = config.validate();
             testCase.verifyEqual(config.trnrun_path, string(files.runner));
             testCase.verifyEqual(config.trnexe_path, string(files.trnexe));
+            cd(original);
+            args = config.to_cli_args();
+            testCase.verifyEqual(args{1}, ['--trnexePath:' files.trnexe]);
+        end
+
+        function bundledRunnerPathDoesNotDependOnWorkingDirectory(testCase)
+            files = testsupport.TemporaryFiles();
+            cleanup = onCleanup(@() delete(files)); %#ok<NASGU>
+            original = pwd;
+            restore = onCleanup(@() cd(original)); %#ok<NASGU>
+            cd(files.root);
+
+            config = trnrun.SimulationConfig();
+            root = fileparts(fileparts(which('trnrun.SimulationConfig')));
+            testCase.verifyEqual(config.trnrun_path, ...
+                string(fullfile(root, 'bin', 'win64', 'trnrun.exe')));
+        end
+
+        function validateRejectsDirectories(testCase)
+            files = testsupport.TemporaryFiles();
+            cleanup = onCleanup(@() delete(files)); %#ok<NASGU>
+            config = files.config();
+            config.trnrun_path = string(files.root);
+            verifyRejects(testCase, @() config.validate());
+            config = files.config();
+            config.trnexe_path = string(files.root);
+            verifyRejects(testCase, @() config.validate());
         end
 
         function constructorAcceptsNameValueSyntax(testCase)
@@ -178,10 +206,10 @@ classdef TestSimulationConfig < matlab.unittest.TestCase
             cleanup = onCleanup(@() delete(files)); %#ok<NASGU>
             config = files.config();
             config.trnrun_path = fullfile(files.root, 'missing-runner.exe');
-            testCase.verifyError(@() config.validate(), 'trnrun:RunnerNotFound');
+            verifyRejects(testCase, @() config.validate());
             config = files.config();
             config.trnexe_path = fullfile(files.root, 'missing-trnexe.exe');
-            testCase.verifyError(@() config.validate(), 'trnrun:TrnexeNotFound');
+            verifyRejects(testCase, @() config.validate());
         end
 
         function assignmentsUseValueSemantics(testCase)

@@ -80,6 +80,88 @@ classdef TestSimulationManager < matlab.unittest.TestCase
             testCase.verifyTrue(recorder.last.isFinished);
         end
 
+        function blankAndNativeOutputDoNotEndTheStream(testCase)
+            files = testsupport.TemporaryFiles();
+            transport = testsupport.ScriptedQueueProcess({ ...
+                '', 'native startup output', ...
+                queue_line('ACCEPTED', '1', []), ...
+                "", 'native runner output', ...
+                status_line('1', 'DONE'), ...
+                queue_line('COMPLETED', '1', 0), ...
+                '', 'native shutdown output', []});
+            manager = make_manager(transport);
+            cleanup = onCleanup(@() cleanup_all(manager, files)); %#ok<NASGU>
+            simulation = manager.add(files.deck, files.config());
+            recorder = testsupport.CallbackRecorder();
+            manager.follow(@(updated) recorder.invoke(updated));
+            manager.shutdown();
+
+            testCase.verifyTrue(simulation.succeeded);
+            testCase.verifyEqual(recorder.count, 2);
+            testCase.verifyEqual(manager.sessionDiagnostics, [ ...
+                "unroutable queue output: ", ...
+                "unroutable queue output: native startup output", ...
+                "unroutable queue output: ", ...
+                "unroutable queue output: native runner output", ...
+                "unroutable queue output: ", ...
+                "unroutable queue output: native shutdown output"]);
+            testCase.verifyTrue(transport.waited);
+        end
+
+        function completionBeforeAcceptanceRaisesProtocolError(testCase)
+            files = testsupport.TemporaryFiles();
+            transport = testsupport.ScriptedQueueProcess({ ...
+                queue_line('COMPLETED', '1', 1), ...
+                queue_line('ACCEPTED', '1', []), []});
+            manager = make_manager(transport);
+            cleanup = onCleanup(@() cleanup_all(manager, files)); %#ok<NASGU>
+
+            testCase.verifyError(@() manager.add(files.deck, files.config()), ...
+                'trnrun:QueueProtocolError');
+            testCase.verifyEmpty(manager.simulations);
+            manager.shutdown();
+
+            testCase.verifyEmpty(manager.simulations);
+            testCase.verifyEmpty(manager.succeeded);
+            testCase.verifyEmpty(manager.failed);
+            testCase.verifyTrue(transport.waited);
+        end
+
+        function duplicateAcceptanceAndPostCompletionUpdatesAreIgnored(testCase)
+            files = testsupport.TemporaryFiles();
+            transport = testsupport.ScriptedQueueProcess({ ...
+                queue_line('ACCEPTED', '1', []), ...
+                queue_line('ACCEPTED', '2', []), ...
+                queue_line('ACCEPTED', '1', []), ...
+                status_line('1', 'DONE'), ...
+                queue_line('COMPLETED', '1', 0), ...
+                queue_line('ACCEPTED', '1', []), ...
+                status_line('1', 'ERROR'), ...
+                queue_line('COMPLETED', '1', 1), ...
+                status_line('2', 'DONE'), ...
+                queue_line('COMPLETED', '2', 0), ...
+                status_line('2', 'ERROR'), ...
+                queue_line('COMPLETED', '2', 1), []});
+            manager = make_manager(transport);
+            cleanup = onCleanup(@() cleanup_all(manager, files)); %#ok<NASGU>
+            first = manager.add(files.deck, files.config());
+            second = manager.add(files.deck, files.config());
+            recorder = testsupport.CallbackRecorder();
+            manager.follow(@(updated) recorder.invoke(updated));
+            manager.shutdown();
+
+            testCase.verifyEqual(recorder.count, 4);
+            testCase.verifyEqual(recorder.last, second);
+            testCase.verifyTrue(first.succeeded);
+            testCase.verifyTrue(second.succeeded);
+            testCase.verifyEqual(first.status.status, "DONE");
+            testCase.verifyEqual(second.status.status, "DONE");
+            testCase.verifyEqual(first.completionEvent.exitCode, 0);
+            testCase.verifyEqual(second.completionEvent.exitCode, 0);
+            testCase.verifyEqual(numel(manager.simulations), 2);
+            testCase.verifyEqual(numel(manager.sessionDiagnostics), 6);
+        end
+
         function rejectsCallbackReentrancyButRemainsDrainable(testCase)
             files = testsupport.TemporaryFiles();
             transport = testsupport.ScriptedQueueProcess({ ...
@@ -154,6 +236,67 @@ classdef TestSimulationManager < matlab.unittest.TestCase
                 'trnrun:QueueExitFailure');
         end
 
+        function noncanonicalRunIdsAreIgnored(testCase)
+            files = testsupport.TemporaryFiles();
+            noncanonical = {'01', '+1', '1.0', '1e0', ' 1', '1 '};
+            lines = {queue_line('ACCEPTED', '1', [])};
+            for index = 1:numel(noncanonical)
+                lines = [lines, {status_line(noncanonical{index}, 'FAILED'), ...
+                    queue_line('COMPLETED', noncanonical{index}, 1)}]; %#ok<AGROW>
+            end
+            lines = [lines, {status_line('1', 'DONE'), ...
+                queue_line('COMPLETED', '1', 0), []}];
+            transport = testsupport.ScriptedQueueProcess(lines);
+            manager = make_manager(transport);
+            cleanup = onCleanup(@() cleanup_all(manager, files)); %#ok<NASGU>
+            simulation = manager.add(files.deck, files.config());
+            recorder = testsupport.CallbackRecorder();
+            manager.follow(@(updated) recorder.invoke(updated));
+            manager.shutdown();
+
+            testCase.verifyTrue(simulation.succeeded);
+            testCase.verifyEqual(recorder.count, 2);
+        end
+
+        function failedSendDoesNotReuseRunId(testCase)
+            files = testsupport.TemporaryFiles();
+            transport = testsupport.ScriptedQueueProcess({ ...
+                queue_line('ACCEPTED', '1', []), ...
+                status_line('1', 'FAILED'), ...
+                queue_line('COMPLETED', '1', 1), ...
+                queue_line('ACCEPTED', '2', []), ...
+                status_line('2', 'DONE'), ...
+                queue_line('COMPLETED', '2', 0), []});
+            manager = make_manager(transport);
+            cleanup = onCleanup(@() cleanup_all(manager, files)); %#ok<NASGU>
+            transport.before_send = @(request) error( ...
+                'testsupport:SendFailure', 'Failed send for run %s.', request.runID);
+            testCase.verifyError(@() manager.add(files.deck, files.config()), ...
+                'testsupport:SendFailure');
+            testCase.verifyEmpty(manager.simulations);
+
+            transport.before_send = [];
+            simulation = manager.add(files.deck, files.config());
+            manager.wait();
+            manager.shutdown();
+
+            testCase.verifyEqual(transport.sent{1}.runID, '2');
+            testCase.verifyEqual(simulation.id, 2);
+            testCase.verifyEqual(numel(manager.simulations), 1);
+            testCase.verifyTrue(simulation.succeeded);
+        end
+
+        function emptySessionDiagnosticsIsStringArray(testCase)
+            files = testsupport.TemporaryFiles();
+            transport = testsupport.ScriptedQueueProcess();
+            manager = make_manager(transport);
+            cleanup = onCleanup(@() cleanup_all(manager, files)); %#ok<NASGU>
+
+            testCase.verifyClass(manager.sessionDiagnostics, 'string');
+            testCase.verifyEmpty(manager.sessionDiagnostics);
+            manager.shutdown();
+        end
+
         function malformedAndUnknownLinesAreBoundedDiagnostics(testCase)
             files = testsupport.TemporaryFiles();
             lines = {'native output'};
@@ -168,15 +311,16 @@ classdef TestSimulationManager < matlab.unittest.TestCase
             manager.add(files.deck, files.config());
             manager.wait();
             manager.shutdown();
-            testCase.verifyEqual(numel(manager.session_diagnostics), 200);
+            testCase.verifyClass(manager.sessionDiagnostics, 'string');
+            testCase.verifyEqual(numel(manager.sessionDiagnostics), 200);
         end
     end
 end
 
 function manager = make_manager(transport)
 manager = trnrun.SimulationManager( ...
-    'max_concurrent', 2, ...
-    'refresh_interval', 0, ...
+    'maxConcurrent', 2, ...
+    'refreshInterval', 0, ...
     'transport', transport);
 end
 

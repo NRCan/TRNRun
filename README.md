@@ -80,7 +80,7 @@ function simulation = run_deck(deck_path)
     addpath("C:\path\to\TRNRun\libraries\matlab")
 
     config = trnrun.SimulationConfig(watch_tmp=false);
-    manager = trnrun.SimulationManager(max_concurrent=1);
+    manager = trnrun.SimulationManager(maxConcurrent=1);
     cleanup = onCleanup(@() delete(manager));
 
     simulation = manager.add(deck_path, config);

@@ -4,8 +4,8 @@ function simulation = run_one_deck(deck_path)
     library_path = fileparts(fileparts(mfilename("fullpath")));
     addpath(library_path)
 
-    config = trnrun.SimulationConfig(watch_tmp=false);
-    manager = trnrun.SimulationManager(max_concurrent=1);
+    config = trnrun.SimulationConfig(watch_tmp=true);
+    manager = trnrun.SimulationManager(maxConcurrent=1);
     cleanup = onCleanup(@() delete(manager));
 
     simulation = manager.add(deck_path, config);

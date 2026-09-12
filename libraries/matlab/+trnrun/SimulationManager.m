@@ -5,22 +5,19 @@ classdef SimulationManager < handle
         simulations
         succeeded
         failed
-        session_diagnostics
+        sessionDiagnostics
     end
 
     properties (Access = private)
-        transport_
-        display_
-        accepted_ = {}
-        owned_ = {}
-        active_
-        next_id_ = 1
-        queue_eof_ = false
-        shutdown_started_ = false
-        shutdown_complete_ = false
-        busy_ = false
-        in_callback_ = false
-        diagnostics_ = {}
+        transport
+        display
+        sims = trnrun.Simulation.empty(1, 0)
+        nextId (1,1) double = 1
+        queueEof (1,1) logical = false
+        shutdownStarted (1,1) logical = false
+        shutdownComplete (1,1) logical = false
+        busy (1,1) logical = false
+        diagnostics (1,:) string = strings(1, 0)
     end
 
     properties (Constant, Access = private)
@@ -28,209 +25,219 @@ classdef SimulationManager < handle
     end
 
     methods
-        function obj = SimulationManager(varargin)
-            options = struct( ...
-                'max_concurrent', default_concurrency(), ...
-                'refresh_interval', 1.0, ...
-                'trnrunq_path', fullfile(trnrun.internal.libraryRoot(), ...
-                    'bin', 'win64', 'trnrunq.exe'), ...
-                'transport', []);
+        function obj = SimulationManager(options)
+            %SIMULATIONMANAGER Create a manager backed by one TRNRun queue process.
+            %   OBJ = trnrun.SimulationManager() starts the queue with default
+            %   settings. Supply name-value arguments to customize its behavior:
+            %
+            %   maxConcurrent - Positive integer limit on concurrent runs.
+            %       Defaults to NUMBER_OF_PROCESSORS minus one, with a minimum
+            %       of one; missing or invalid processor counts use one.
+            %   refreshInterval - Real, finite display refresh interval in
+            %       seconds (default 1). Values at or below zero disable output.
+            %   trnrunqPath - Path to the queue executable. Defaults to
+            %       bin/win64/trnrunq.exe beneath the trnrun package directory.
+            %
+            %   Use add to submit runs, wait to process updates until completion,
+            %   or follow to receive callbacks as updates are applied. Call
+            %   shutdown to close queue input, drain output, and wait for exit.
+            %   Deleting the manager performs best-effort cleanup instead.
+            %
+            %   Example:
+            %       manager = trnrun.SimulationManager( ...
+            %           maxConcurrent=4, refreshInterval=0.5);
+            %       simulation = manager.add(deckFile, config);
+            %       manager.wait(simulation);
+            %       manager.shutdown();
 
-            if mod(numel(varargin), 2) ~= 0
-                error('trnrun:InvalidNameValue', ...
-                    'SimulationManager options must be supplied as name-value pairs.');
-            end
-            names = fieldnames(options);
-            for index = 1:2:numel(varargin)
-                name = varargin{index};
-                if isstring(name) && isscalar(name) && ~ismissing(name)
-                    name = char(name);
-                end
-                if ~ischar(name) || ~isrow(name) || ~ismember(name, names)
-                    error('trnrun:UnknownOption', ...
-                        'Unknown SimulationManager option: %s', char(string(name)));
-                end
-                options.(name) = varargin{index + 1};
+            arguments
+                options.maxConcurrent (1,1) double ...
+                    {mustBeInteger, mustBePositive, mustBeFinite} = defaultConcurrency()
+                options.refreshInterval (1,1) double ...
+                    {mustBeReal, mustBeFinite} = 1.0
+                options.trnrunqPath (1,1) string = fullfile( ...
+                    fileparts(fileparts(mfilename('fullpath'))), ...
+                    'bin', 'win64', 'trnrunq.exe')
             end
 
-            options.max_concurrent = trnrun.internal.requireFiniteInteger( ...
-                options.max_concurrent, 'max_concurrent', 1);
-            options.refresh_interval = trnrun.internal.requireFiniteScalar( ...
-                options.refresh_interval, 'refresh_interval');
-
-            obj.active_ = containers.Map('KeyType', 'char', 'ValueType', 'any');
-            obj.display_ = trnrun.internal.Display(options.refresh_interval);
-            if isempty(options.transport)
-                obj.transport_ = trnrun.internal.QueueProcess( ...
-                    options.trnrunq_path, options.max_concurrent);
-            else
-                obj.transport_ = options.transport;
-            end
+            obj.display = trnrun.internal.Display(options.refreshInterval);
+            obj.transport = trnrun.internal.QueueProcess( ...
+                options.trnrunqPath, options.maxConcurrent);
         end
 
-        function simulation = add(obj, deck_file, config)
+        function simulation = add(obj, deckFile, config)
             %ADD Submit one run and return only after QUEUE/ACCEPTED.
-            obj.require_submission_open();
-            guard = obj.enter_operation('add'); %#ok<NASGU>
 
-            if ~isa(config, 'trnrun.SimulationConfig') || ~isscalar(config)
-                error('trnrun:InvalidConfig', ...
-                    'config must be a scalar trnrun.SimulationConfig value.');
+            arguments
+                obj (1,1) trnrun.SimulationManager
+                deckFile (1,1) string {mustBeFile}
+                config (1,1) trnrun.SimulationConfig
             end
-            deck_path = trnrun.internal.absolutePath(deck_file, 'deck_file');
-            if ~isfile(deck_path)
-                error('trnrun:DeckNotFound', 'Deck file not found: %s', deck_path);
-            end
+
+            guard = obj.enterOperation('add'); %#ok<NASGU>
+            obj.requireOpen();
             config = config.validate();
 
-            sim_id = obj.next_id_;
-            obj.next_id_ = obj.next_id_ + 1;
-            run_id = sprintf('%.0f', sim_id);
-            if isKey(obj.active_, run_id)
-                error('trnrun:DuplicateRunId', ...
-                    'Duplicate run ID in this queue session: %s', run_id);
+            [found, info] = fileattrib(deckFile);
+            if ~found
+                error('trnrun:DeckNotFound', ...
+                    'Cannot resolve deck file: %s', deckFile);
             end
 
-            simulation = trnrun.Simulation(deck_path, config, sim_id);
-            obj.active_(run_id) = simulation;
-            obj.owned_{end + 1} = simulation;
+            runId = obj.nextId;
+            obj.nextId = obj.nextId + 1;
+            simulation = trnrun.Simulation(info.Name, config, runId);
 
             request = struct( ...
-                'runID', run_id, ...
-                'deckFile', deck_path, ...
+                'runID', sprintf('%d', runId), ...
+                'deckFile', info.Name, ...
                 'runnerPath', char(config.trnrun_path), ...
                 'runnerArgs', {config.to_cli_args()});
+
+            obj.sims(end + 1) = simulation;
             try
-                obj.transport_.send(request);
+                obj.transport.send(request);
             catch exception
-                if isKey(obj.active_, run_id)
-                    remove(obj.active_, run_id);
-                end
-                obj.owned_(cellfun(@(item) item == simulation, obj.owned_)) = [];
+                % A failed write may have reached the queue; never reuse its ID.
+                obj.sims(end) = [];
                 rethrow(exception);
             end
 
             while ~simulation.isAccepted
-                obj.read_next_update();
+                obj.readNextUpdate();
                 if simulation.isFinished && ~simulation.isAccepted
                     error('trnrun:QueueProtocolError', ...
-                        'Run ID %s completed before it was accepted.', run_id);
+                        'Run ID %d completed before it was accepted.', runId);
                 end
             end
         end
 
         function wait(obj, simulation)
             %WAIT Wait for one owned simulation, or all simulations when omitted.
-            if nargin >= 2
-                obj.require_owned(simulation);
-                if simulation.isFinished
-                    return
-                end
-            else
-                simulation = [];
+
+            arguments
+                obj (1,1) trnrun.SimulationManager
+                simulation trnrun.Simulation {mustBeScalarOrEmpty} = ...
+                    trnrun.Simulation.empty(1, 0)
             end
 
-            obj.require_pump_available();
-            guard = obj.enter_operation('wait'); %#ok<NASGU>
-            while obj.active_.Count > 0
-                obj.read_next_update();
-                if ~isempty(simulation) && simulation.isFinished
-                    return
+            guard = obj.enterOperation('wait'); %#ok<NASGU>
+            if isempty(simulation)
+                pending = obj.sims(~[obj.sims.isFinished]);
+            else
+                if ~any(obj.sims == simulation)
+                    error('trnrun:ForeignSimulation', ...
+                        'Simulation does not belong to this manager.');
                 end
+                pending = simulation(~simulation.isFinished);
+            end
+
+            if isempty(pending)
+                return
+            end
+            obj.requireOpen();
+
+            while ~isempty(pending)
+                obj.readNextUpdate();
+                pending = pending(~[pending.isFinished]);
             end
         end
 
         function follow(obj, callback)
             %FOLLOW Invoke callback after every newly applied update until completion.
-            if ~isa(callback, 'function_handle') || ~isscalar(callback)
-                error('trnrun:InvalidCallback', ...
-                    'follow requires a scalar function handle callback.');
-            end
-            obj.require_pump_available();
-            guard = obj.enter_operation('follow'); %#ok<NASGU>
 
-            while obj.active_.Count > 0
-                simulation = obj.read_next_update();
-                if isempty(simulation)
-                    return
-                end
-                obj.in_callback_ = true;
-                callback_guard = onCleanup(@() obj.leave_callback()); %#ok<NASGU>
+            arguments
+                obj (1,1) trnrun.SimulationManager
+                callback (1,1) function_handle
+            end
+
+            guard = obj.enterOperation('follow'); %#ok<NASGU>
+            pending = obj.sims(~[obj.sims.isFinished]);
+            if isempty(pending)
+                return
+            end
+            obj.requireOpen();
+
+            while ~isempty(pending)
+                simulation = obj.readNextUpdate();
                 callback(simulation);
-                clear callback_guard
+                pending = pending(~[pending.isFinished]);
             end
         end
 
         function shutdown(obj)
-            %SHUTDOWN Close input, drain output, reap the queue; idempotent on success.
-            if obj.shutdown_complete_
+            %SHUTDOWN Close input, drain output, and reap the queue.
+
+            if obj.shutdownComplete
                 return
             end
-            if obj.in_callback_
-                error('trnrun:ReentrantOperation', ...
-                    'Manager operations are not allowed from a follow callback.');
-            end
-            guard = obj.enter_operation('shutdown'); %#ok<NASGU>
-            obj.shutdown_started_ = true;
-            obj.transport_.close();
+            guard = obj.enterOperation('shutdown'); %#ok<NASGU>
+            obj.shutdownStarted = true;
+            obj.transport.close();
 
+            % Reap even when draining fails, without hiding the original error.
             failure = [];
-            exit_code = [];
+            exitCode = [];
             try
-                while ~obj.queue_eof_
-                    obj.read_next_update();
+                while ~obj.queueEof
+                    obj.readNextUpdate();
                 end
             catch exception
                 failure = exception;
             end
 
             try
-                exit_code = obj.transport_.wait();
+                exitCode = obj.transport.wait();
             catch exception
                 if isempty(failure)
-                    failure = exception;
-                else
-                    obj.add_diagnostic(['queue reap failed: ' exception.message]);
+                    rethrow(exception);
                 end
-            end
-
-            if isempty(failure) && ~isempty(exit_code) && exit_code ~= 0
-                failure = MException('trnrun:QueueExitFailure', ...
-                    'TRNRun queue exited with code %d.%s', ...
-                    exit_code, obj.transport_diagnostic_suffix());
+                obj.addDiagnostic("queue reap failed: " + exception.message);
             end
 
             if ~isempty(failure)
                 throwAsCaller(failure);
             end
-            obj.shutdown_complete_ = true;
+            if ~isempty(exitCode) && exitCode ~= 0
+                error('trnrun:QueueExitFailure', ...
+                    'TRNRun queue exited with code %d.%s', ...
+                    exitCode, obj.transportDiagnosticSuffix());
+            end
+            obj.shutdownComplete = true;
         end
 
         function value = get.simulations(obj)
-            value = simulation_array(obj.accepted_);
+            %GET.SIMULATIONS Return simulations accepted by the queue.
+
+            value = obj.sims([obj.sims.isAccepted]);
         end
 
         function value = get.succeeded(obj)
-            selected = obj.accepted_(cellfun(@(simulation) simulation.succeeded, obj.accepted_));
-            value = simulation_array(selected);
+            %GET.SUCCEEDED Return accepted simulations that succeeded.
+
+            accepted = obj.simulations;
+            value = accepted([accepted.succeeded]);
         end
 
         function value = get.failed(obj)
-            selected = obj.accepted_(cellfun( ...
-                @(simulation) simulation.isFinished && ~simulation.succeeded, ...
-                obj.accepted_));
-            value = simulation_array(selected);
+            %GET.FAILED Return accepted simulations that finished without success.
+
+            accepted = obj.simulations;
+            value = accepted([accepted.isFinished] & ~[accepted.succeeded]);
         end
 
-        function value = get.session_diagnostics(obj)
-            value = obj.diagnostics_;
+        function value = get.sessionDiagnostics(obj)
+            %GET.SESSIONDIAGNOSTICS Return retained queue and protocol diagnostics.
+
+            value = obj.diagnostics;
         end
 
         function delete(obj)
-            %DELETE Non-throwing cleanup; unfinished owned work may be terminated.
+            %DELETE Clean up the queue without throwing during destruction.
+
             try
-                if ~isempty(obj.transport_) && ~obj.shutdown_complete_
-                    obj.transport_.force_cleanup();
+                if ~isempty(obj.transport) && ~obj.shutdownComplete
+                    obj.transport.forceCleanup();
                 end
             catch
             end
@@ -238,164 +245,151 @@ classdef SimulationManager < handle
     end
 
     methods (Access = private)
-        function simulation = read_next_update(obj)
-            % Read until one routable state update or stdout EOF.
+        function simulation = readNextUpdate(obj)
+            %READNEXTUPDATE Apply the next valid update, or return empty at EOF.
+
             while true
-                line = obj.transport_.read_line();
+                line = obj.transport.readLine();
+
+                % Numeric [] is EOF; an empty character vector is a blank line.
                 if isnumeric(line) && isempty(line)
-                    obj.queue_eof_ = true;
-                    if obj.active_.Count > 0
-                        ids = obj.active_.keys;
+                    obj.queueEof = true;
+                    unfinished = obj.sims(~[obj.sims.isFinished]);
+                    if ~isempty(unfinished)
                         error('trnrun:PrematureQueueEOF', ...
                             ['TRNRun queue closed before accepting or completing ' ...
                              'run IDs: %s.%s'], ...
-                            strjoin(ids, ', '), obj.transport_diagnostic_suffix());
+                            strjoin(string([unfinished.id]), ', '), ...
+                            obj.transportDiagnosticSuffix());
                     end
                     simulation = [];
                     return
                 end
 
                 try
-                    [run_id, event] = trnrun.internal.parseStreamLine(line);
+                    [runId, event] = trnrun.internal.parseStreamLine(line);
                 catch exception
-                    if strcmp(exception.identifier, 'trnrun:EventParseError')
-                        obj.add_diagnostic(['dropped malformed queue line: ' char(line)]);
-                        continue
+                    if ~strcmp(exception.identifier, 'trnrun:EventParseError')
+                        rethrow(exception);
                     end
-                    rethrow(exception)
-                end
-
-                if isempty(run_id)
-                    obj.add_diagnostic(['unroutable queue output: ' char(line)]);
-                    continue
-                end
-                if ~isKey(obj.active_, run_id)
-                    obj.add_diagnostic(['unknown run ID ' run_id ': ' char(line)]);
+                    obj.addDiagnostic("dropped malformed queue line: " + line);
                     continue
                 end
 
-                simulation = obj.active_(run_id);
-                if strcmp(event.kind, 'QUEUE')
-                    if strcmp(event.event, 'ACCEPTED')
-                        if simulation.isAccepted
-                            obj.add_diagnostic(['duplicate acceptance for run ID ' run_id]);
-                            continue
+                if isempty(runId)
+                    obj.addDiagnostic("unroutable queue output: " + line);
+                    continue
+                end
+
+                % Match wire IDs exactly: "01" and "1.0" are not run "1".
+                index = find(string([obj.sims.id]) == string(runId), 1);
+                if isempty(index)
+                    obj.addDiagnostic("unroutable queue output: " + line);
+                    continue
+                end
+
+                simulation = obj.sims(index);
+                if simulation.isFinished
+                    obj.addDiagnostic("update after completion: " + line);
+                    continue
+                end
+
+                switch event.kind
+                    case 'QUEUE'
+                        switch event.event
+                            case 'ACCEPTED'
+                                if simulation.isAccepted
+                                    obj.addDiagnostic( ...
+                                        "duplicate acceptance for run ID " + runId);
+                                    continue
+                                end
+                                simulation.markAccepted();
+                                obj.display.simulationStarted(simulation);
+
+                            case 'COMPLETED'
+                                simulation.markCompleted(event);
+                                obj.display.simulationFinished(simulation);
+
+                            otherwise
+                                obj.addDiagnostic("unknown queue event: " + line);
+                                continue
                         end
-                        simulation.markAccepted();
-                        obj.accepted_{end + 1} = simulation;
-                        obj.display_.simulation_started(simulation);
-                    elseif strcmp(event.event, 'COMPLETED')
-                        remove(obj.active_, run_id);
-                        simulation.markCompleted(event);
-                        obj.display_.simulation_finished(simulation);
-                    else
-                        obj.add_diagnostic(['unknown queue event for run ID ' run_id ': ' event.event]);
-                        continue
-                    end
-                else
-                    simulation.applyEvent(event);
-                    obj.display_.refresh();
+
+                    otherwise
+                        simulation.applyEvent(event);
+                        obj.display.refresh();
                 end
                 return
             end
         end
 
-        function require_submission_open(obj)
-            if obj.shutdown_started_ || obj.shutdown_complete_
-                error('trnrun:ManagerShutdown', ...
-                    'Cannot submit simulations after manager shutdown has started.');
-            end
-            obj.require_pump_available();
-        end
+        function requireOpen(obj)
+            %REQUIREOPEN Reject operations after shutdown has started.
 
-        function require_pump_available(obj)
-            if obj.shutdown_started_ && ~obj.shutdown_complete_
+            if obj.shutdownStarted
                 error('trnrun:ManagerShutdown', ...
-                    'The manager is shutting down and cannot start another operation.');
-            end
-            if obj.shutdown_complete_ && obj.active_.Count > 0
-                error('trnrun:ManagerShutdown', ...
-                    'The manager is closed with unfinished simulations.');
+                    'Cannot start an operation after manager shutdown has started.');
             end
         end
 
-        function require_owned(obj, simulation)
-            if ~isa(simulation, 'trnrun.Simulation') || ~isscalar(simulation) || ...
-                    ~any(cellfun(@(item) item == simulation, obj.owned_))
-                error('trnrun:ForeignSimulation', ...
-                    'Simulation does not belong to this manager.');
-            end
-        end
+        function guard = enterOperation(obj, operation)
+            %ENTEROPERATION Reject reentrancy and return a cleanup guard.
+            %   Transport waits can invoke graphics callbacks; follow callbacks
+            %   must also remain inside the same reentrancy guard.
 
-        function guard = enter_operation(obj, operation)
-            if obj.busy_ || obj.in_callback_
+            if obj.busy
                 error('trnrun:ReentrantOperation', ...
-                    'Cannot call %s while another manager operation or callback is active.', ...
+                    'Cannot call %s while another manager operation is active.', ...
                     operation);
             end
-            obj.busy_ = true;
-            guard = onCleanup(@() obj.leave_operation());
+            obj.busy = true;
+            guard = onCleanup(@() obj.leaveOperation());
         end
 
-        function leave_operation(obj)
-            obj.busy_ = false;
+        function leaveOperation(obj)
+            %LEAVEOPERATION Clear the active-operation flag.
+
+            obj.busy = false;
         end
 
-        function leave_callback(obj)
-            obj.in_callback_ = false;
-        end
+        function addDiagnostic(obj, text)
+            %ADDDIAGNOSTIC Append a session diagnostic and discard excess old entries.
 
-        function add_diagnostic(obj, text)
-            obj.diagnostics_{end + 1} = text;
-            if numel(obj.diagnostics_) > obj.MaxSessionDiagnostics
-                obj.diagnostics_(1) = [];
+            obj.diagnostics(end + 1) = text;
+            if numel(obj.diagnostics) > obj.MaxSessionDiagnostics
+                obj.diagnostics(1) = [];
             end
         end
 
-        function suffix = transport_diagnostic_suffix(obj)
-            suffix = '';
+        function suffix = transportDiagnosticSuffix(obj)
+            %TRANSPORTDIAGNOSTICSUFFIX Format available queue stderr for an error.
+
+            suffix = "";
             try
-                details = obj.transport_.diagnostics();
-                parts = {};
-                if ~isempty(details.pid)
-                    parts{end + 1} = sprintf('queue PID %d', details.pid); %#ok<AGROW>
-                end
-                if ~isempty(details.exit_code)
-                    parts{end + 1} = sprintf('exit code %d', details.exit_code); %#ok<AGROW>
-                end
+                details = obj.transport.diagnostics();
                 if details.stderr_dropped > 0
-                    parts{end + 1} = sprintf('%d older stderr lines dropped', ...
-                        details.stderr_dropped); %#ok<AGROW>
+                    suffix = string(sprintf( ...
+                        ' (%d older stderr lines dropped)', ...
+                        details.stderr_dropped));
                 end
                 if ~isempty(details.stderr)
-                    parts{end + 1} = ['stderr: ' strjoin(details.stderr, ' | ')]; %#ok<AGROW>
-                end
-                if ~isempty(parts)
-                    suffix = [' Diagnostics: ' strjoin(parts, '; ')];
+                    suffix = suffix + " Queue stderr: " + ...
+                        strjoin(string(details.stderr), ' | ');
                 end
             catch
+                % Optional diagnostics must not mask the original queue error.
             end
         end
     end
 end
 
-function value = simulation_array(items)
-if isempty(items)
-    value = trnrun.Simulation.empty(1, 0);
-else
-    value = [items{:}];
-end
-end
+function value = defaultConcurrency()
+    %DEFAULTCONCURRENCY Reserve one logical processor, allowing at least one run.
+    %   Windows reports logical processors independently of MATLAB's thread limit.
 
-function value = default_concurrency()
-count = 1;
-try
-    count = feature('numcores');
-catch
-    environment_count = str2double(getenv('NUMBER_OF_PROCESSORS'));
-    if isfinite(environment_count) && environment_count >= 1
-        count = environment_count;
+    count = str2double(getenv('NUMBER_OF_PROCESSORS'));
+    if ~isfinite(count) || count < 1
+        count = 1;
     end
-end
-value = max(fix(double(count)) - 1, 1);
+    value = max(fix(count) - 1, 1);
 end

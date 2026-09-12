@@ -45,6 +45,18 @@ proc queueMain() =
 
     accepted(runID)
 
+    if deck.contains("long-stderr"):
+      stderr.writeLine(repeat("a", 1001))
+      stderr.writeLine(repeat("b", 999) & "😀suffix")
+      stderr.writeLine(repeat("c", 998) & "😀suffix")
+      stderr.writeLine("")
+      stderr.writeLine("after truncation")
+      stderr.flushFile()
+
+    if deck.contains("blank"):
+      stdout.writeLine("")
+      stdout.flushFile()
+
     if deck.contains("tree"):
       let child = startProcess(
         getAppFilename(),

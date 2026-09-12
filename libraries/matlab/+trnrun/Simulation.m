@@ -1,5 +1,5 @@
 classdef Simulation < handle
-    %SIMULATION Event state for one queued simulation.
+    %SIMULATION Track event state for one queued simulation.
     %   The manager folds queue output into this object as it pumps the
     %   queue; handle semantics let callers observe updates live.
     %
@@ -42,20 +42,10 @@ classdef Simulation < handle
         function obj = Simulation(deckPath, config, simId)
             %SIMULATION Create event state for one queued simulation.
             %   OBJ = trnrun.Simulation(DECKPATH, CONFIG, SIMID) creates a
-            %   handle object that retains runner events and queue state.
-            %
-            %   Inputs:
-            %     DECKPATH - Scalar string containing the simulation deck path.
-            %     CONFIG  - Scalar trnrun.SimulationConfig for the run.
-            %     SIMID   - Scalar double identifying the queued simulation.
-            %
-            %   Output:
-            %     OBJ - Simulation handle with no recorded events. The run
-            %           remains unfinished until markCompleted is called.
-            %
-            %   Queue completion and runner status are tracked separately.
-            %   A run succeeds only after queue completion with a latest
-            %   runner status of DONE.
+            %   handle object with no recorded events. DECKPATH is the deck
+            %   path, CONFIG is a trnrun.SimulationConfig value, and SIMID is
+            %   the numeric queue identifier. The run remains unfinished until
+            %   markCompleted is called.
 
             obj.id = simId;
             obj.deckPath = deckPath;
@@ -99,55 +89,63 @@ classdef Simulation < handle
 
         function value = get.isRunning(obj)
             %GET.ISRUNNING Return true until queue completion, including pending runs.
+
             value = ~obj.isFinished;
         end
 
         function value = get.isFinished(obj)
             %GET.ISFINISHED Return true when a queue completion event is recorded.
+
             value = ~isempty(obj.completionEvent);
         end
 
         function value = get.hasTerminalStatus(obj)
             %GET.HASTERMINALSTATUS Return true when the latest runner status is terminal.
+
             value = ~isempty(obj.status) && ...
                 ismember(string(obj.status.status), obj.TerminalStatuses);
         end
 
         function value = get.succeeded(obj)
             %GET.SUCCEEDED Return true after queue completion with runner status DONE.
+
             value = obj.isFinished && ~isempty(obj.status) && ...
                 string(obj.status.status) == "DONE";
         end
 
         function value = get.logCount(obj)
             %GET.LOGCOUNT Return the total number of recorded log events.
+
             value = numel(obj.logs);
         end
 
         function value = get.notices(obj)
             %GET.NOTICES Return the number of notice log events.
+
             value = obj.countSeverity("notice");
         end
 
         function value = get.warnings(obj)
             %GET.WARNINGS Return the number of warning log events.
+
             value = obj.countSeverity("warning");
         end
 
         function value = get.fatals(obj)
             %GET.FATALS Return the number of fatal log events.
+
             value = obj.countSeverity("fatal");
         end
     end
 
     methods (Access = private)
-        function n = countSeverity(obj, severity)
+        function count = countSeverity(obj, severity)
             %COUNTSEVERITY Count log events matching severity, ignoring case.
 
             if isempty(obj.logs)
-                n = 0;
+                count = 0;
             else
-                n = sum(strcmpi(string({obj.logs.severity}), severity));
+                count = sum(strcmpi(string({obj.logs.severity}), severity));
             end
         end
     end

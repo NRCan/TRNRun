@@ -5,7 +5,7 @@ function [first, second] = wait_for_one(first_deck_path, second_deck_path)
     addpath(library_path)
 
     config = trnrun.SimulationConfig(watch_tmp=false);
-    manager = trnrun.SimulationManager(max_concurrent=2);
+    manager = trnrun.SimulationManager(maxConcurrent=2);
     cleanup = onCleanup(@() delete(manager));
 
     first = manager.add(first_deck_path, config);

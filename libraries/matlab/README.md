@@ -45,7 +45,7 @@ function simulation = run_deck(deck_path)
     addpath(matlab_library)
 
     config = trnrun.SimulationConfig(watch_tmp=false);
-    manager = trnrun.SimulationManager(max_concurrent=1);
+    manager = trnrun.SimulationManager(maxConcurrent=1);
     cleanup = onCleanup(@() delete(manager));
 
     simulation = manager.add(deck_path, config);
@@ -165,17 +165,21 @@ and clearing them later is not a substitute for normal `shutdown()`.
 
 Public class names match the Python client. `Simulation` properties and methods
 use `camelCase`, including `deckPath`, `isFinished`, `applyEvent`, and `statusTable`.
-Its status-table columns also use camelCase (`deckPath`, `exitCode`). Manager and
-configuration APIs retain `snake_case`. MATLAB constructors use name-value arguments:
+Its status-table columns also use camelCase (`deckPath`, `exitCode`). Manager
+options and properties use camelCase; `SimulationConfig` options retain
+`snake_case`. MATLAB constructors use name-value arguments:
 
 ```matlab
 config = trnrun.SimulationConfig(watch_tmp=true, severity="Warning");
-manager = trnrun.SimulationManager(max_concurrent=4, refresh_interval=0.5);
+manager = trnrun.SimulationManager(maxConcurrent=4, refreshInterval=0.5);
 ```
 
-Use names such as `watch_tmp` and `max_concurrent` for configuration and manager
-options. The former snake_case `Simulation` member names have been replaced, not
-aliased; callers must migrate to camelCase. Event payload names remain unchanged.
+Use `watch_tmp` for configuration and `maxConcurrent`, `refreshInterval`, and
+`trnrunqPath` for manager options. Read manager diagnostics through
+`sessionDiagnostics`. The former snake_case manager options/properties and
+`Simulation` member names have been replaced, not aliased; callers must migrate
+to camelCase. Event payload names
+and the internal Display API remain unchanged.
 
 Shared `Simulation` members follow Python's terminology with camelCase spelling:
 `completion_event` → `completionEvent`, `has_terminal_status` → `hasTerminalStatus`,
@@ -198,26 +202,32 @@ log snapshots are returned by value.
 
 ```matlab
 manager = trnrun.SimulationManager( ...
-    max_concurrent=4, ...
-    refresh_interval=1.0);
+    maxConcurrent=4, ...
+    refreshInterval=1.0);
 ```
 
 | Option | Default | Description |
 | --- | --- | --- |
-| `max_concurrent` | logical processor count minus one, at least `1` | Maximum number of active runners owned by the queue. |
-| `refresh_interval` | `1.0` | Minimum seconds between Command Window redraws while calls pump events. A non-positive value disables built-in rendering. |
-| `trnrunq_path` | bundled `bin/win64/trnrunq.exe` | Queue executable override, primarily for development and testing. |
+| `maxConcurrent` | logical processor count minus one, at least `1` | Maximum number of active runners owned by the queue. |
+| `refreshInterval` | `1.0` | Minimum seconds between Command Window redraws while calls pump events. A non-positive value disables built-in rendering. |
+| `trnrunqPath` | bundled `bin/win64/trnrunq.exe` | Queue executable override, primarily for development and testing. |
 
 | Member | Description |
 | --- | --- |
-| `add(deck_file, config)` | Validate and submit one deck, wait for worker acceptance, and return its `Simulation`. |
+| `add(deckFile, config)` | Validate and submit one deck, wait for worker acceptance, and return its `Simulation`. |
 | `wait()` | Pump events until every accepted run receives queue completion. It has no client-side timeout. |
 | `wait(simulation)` | Pump all events until one owned simulation completes. Rejects a simulation from another manager. |
 | `follow(callback)` | Apply each new update, then invoke the callback with the updated simulation. Updates already consumed are not replayed. |
-| `simulations` | Accepted simulations in acceptance order. |
+| `simulations` | Accepted simulations in submission order. |
 | `succeeded` | Completed simulations whose latest terminal status is exactly `DONE`. |
 | `failed` | Completed simulations that did not succeed. |
+| `sessionDiagnostics` | Read-only string array of retained session diagnostics (up to 200 entries). |
 | `shutdown()` | Close input, drain output, finish remaining work, and reap the queue. |
+
+The default concurrency uses Windows `NUMBER_OF_PROCESSORS`, independently of
+MATLAB's computational-thread limit, and falls back to one runner if unavailable.
+Input validation uses MATLAB's built-in validation errors. Passing an empty
+`trnrun.Simulation` array to `wait` is equivalent to omitting the argument.
 
 Each manager owns a separate live queue. Python and MATLAB use the same native
 backend implementation, but they do not share a queue process or manager state.
@@ -304,8 +314,8 @@ Defaults match the native runner contract.
 | `write_events` | `false` | Replace and write `<deckFile>.jsonl` with emitted runner events. |
 
 Logical options require logical scalar values (`true` or `false`), not numeric or
-string substitutes. Times are milliseconds except `refresh_interval`, which is
-seconds. The native runner clamps negative timeout/delay values to zero and
+string substitutes. Configuration times are milliseconds; the manager's
+`refreshInterval` is in seconds. The native runner clamps negative timeout/delay values to zero and
 raises positive watch/stall timeouts shorter than `poll_ms` to the polling
 interval.
 

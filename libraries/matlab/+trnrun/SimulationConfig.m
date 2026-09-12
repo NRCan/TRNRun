@@ -1,5 +1,5 @@
 classdef SimulationConfig
-    %SIMULATIONCONFIG Configuration used to launch TRNRun.
+    %SIMULATIONCONFIG Configure a TRNRun launch.
     %   Value class: each submitted run keeps its own independent copy.
     %
     %   cfg = trnrun.SimulationConfig(watch_tmp=true, stall_timeout_ms=60000)
@@ -12,7 +12,7 @@ classdef SimulationConfig
     properties
         % Runner executable; defaults to the copy bundled with this package.
         trnrun_path (1,1) string {mustBeNonmissing, mustBeNonzeroLengthText} = ...
-            fullfile(trnrun.internal.libraryRoot(), "bin", "win64", "trnrun.exe")
+            fullfile(fileparts(fileparts(mfilename('fullpath'))), "bin", "win64", "trnrun.exe")
 
         % TRNSYS executable (--trnexePath).
         trnexe_path (1,1) string {mustBeNonmissing, mustBeNonzeroLengthText} = ...
@@ -45,43 +45,59 @@ classdef SimulationConfig
     end
 
     methods
-        function obj = SimulationConfig(opts)
+        function obj = SimulationConfig(options)
             %SIMULATIONCONFIG Create a configuration from name-value options.
-            %   CFG = trnrun.SimulationConfig() uses the default runner settings.
-            %   CFG = trnrun.SimulationConfig(NAME=VALUE, ...) overrides the
+            %   OBJ = trnrun.SimulationConfig() uses the default runner settings.
+            %   OBJ = trnrun.SimulationConfig(NAME=VALUE, ...) overrides the
             %   named properties; inputs are converted to the property type.
             %
-            %   Before launching, call CFG = CFG.validate() to resolve and
+            %   Before launching, call OBJ = OBJ.validate() to resolve and
             %   check the executable paths.
+
+            % List names explicitly for R2021a; properties own defaults and validation.
             arguments
-                opts.?trnrun.SimulationConfig
+                options.trnrun_path
+                options.trnexe_path
+                options.gui_visibility
+                options.wait_for_gui
+                options.wait_for_lst
+                options.wait_for_tmp
+                options.detect_timeout_ms
+                options.extra_delay_ms
+                options.poll_ms
+                options.watch_log
+                options.watch_tmp
+                options.watch_timeout_ms
+                options.stall_timeout_ms
+                options.clean_on_success
+                options.kill_on_timeout
+                options.kill_on_stall
+                options.severity
+                options.write_events
             end
 
-            for name = string(fieldnames(opts))'
-                obj.(name) = opts.(name);
+            for name = string(fieldnames(options))'
+                obj.(name) = options.(name);
             end
         end
 
         function obj = validate(obj)
-            %VALIDATE Resolve and check executable paths; call as cfg = cfg.validate().
-            obj.trnrun_path = trnrun.internal.absolutePath(obj.trnrun_path, 'trnrun_path');
-            obj.trnexe_path = trnrun.internal.absolutePath(obj.trnexe_path, 'trnexe_path');
+            %VALIDATE Check that the executables exist and make their paths absolute.
 
-            if ~isfile(obj.trnrun_path)
-                error('trnrun:RunnerNotFound', ...
-                    'TRNRun executable not found: %s', obj.trnrun_path);
-            end
-            if ~isfile(obj.trnexe_path)
-                error('trnrun:TrnexeNotFound', ...
-                    'TrnEXE executable not found: %s', obj.trnexe_path);
-            end
+            mustBeFile(obj.trnrun_path);
+            mustBeFile(obj.trnexe_path);
+
+            [~, info] = fileattrib(obj.trnrun_path);
+            obj.trnrun_path = info.Name;
+            [~, info] = fileattrib(obj.trnexe_path);
+            obj.trnexe_path = info.Name;
         end
 
         function args = to_cli_args(obj)
             %TO_CLI_ARGS Return unquoted --name:value arguments as a cell row of char vectors.
-            trnexe = trnrun.internal.absolutePath(obj.trnexe_path, 'trnexe_path');
+
             args = cellstr([
-                "--trnexePath:"    + trnexe
+                "--trnexePath:"    + obj.trnexe_path
                 "--guiVisibility:" + obj.gui_visibility
                 "--waitForGui:"    + obj.wait_for_gui
                 "--waitForLst:"    + obj.wait_for_lst
@@ -105,11 +121,13 @@ end
 
 function mustBeGuiVisibility(value)
     %MUSTBEGUIVISIBILITY Accept supported window modes and aliases, ignoring case.
+
     mustBeMember(lower(value), ["keep", "keepopen", "auto", "autoclose", ...
         "min", "minimized", "minauto", "minimizedauto", "hidden"]);
 end
 
 function mustBeSeverity(value)
     %MUSTBESEVERITY Accept supported log severities, ignoring case.
+
     mustBeMember(lower(value), ["notice", "warning", "fatal"]);
 end
