@@ -9,22 +9,23 @@ concurrency and the manager routes JSON Lines events to MATLAB
 ## Support status and requirements
 
 - Windows x64
-- MATLAB R2022b or newer as a **provisional release floor**
+- MATLAB R2021a or newer as a **provisional release floor**
 - TRNSYS 17 or 18
 - Optional: separately installed Progress Tracker (Type3830) for progress and
   stall monitoring
 
-R2022b compatibility is a target, not a runtime-verified compatibility claim.
+R2021a compatibility is a target, not a runtime-verified compatibility claim.
 The client requires neither Python nor additional MATLAB toolboxes. It is
 intended for both desktop MATLAB and noninteractive `matlab -batch` use; the API
 does not require a MATLAB GUI.
 
 ## Installation
 
-Add only the MATLAB library root to the MATLAB path:
+Install the released `TRNRun.mltbx` by opening it in MATLAB. For a source
+checkout, add only the `toolbox` directory to the MATLAB path:
 
 ```matlab
-addpath("C:\path\to\TRNRun\libraries\matlab")
+addpath("C:\path\to\TRNRun\libraries\matlab\toolbox")
 ```
 
 Do not use `genpath` and do not add `+trnrun`, `bin`, `examples`, or test
@@ -41,7 +42,7 @@ Use function scope so the cleanup guard runs deterministically:
 
 ```matlab
 function simulation = run_deck(deck_path)
-    matlab_library = "C:\path\to\TRNRun\libraries\matlab";
+    matlab_library = "C:\path\to\TRNRun\libraries\matlab\toolbox";
     addpath(matlab_library)
 
     config = trnrun.SimulationConfig(watch_tmp=false);
@@ -164,10 +165,10 @@ and clearing them later is not a substitute for normal `shutdown()`.
 ## API naming
 
 Public class names match the Python client. `Simulation` properties and methods
-use `camelCase`, including `deckPath`, `isFinished`, `applyEvent`, and `statusTable`.
-Its status-table columns also use camelCase (`deckPath`, `exitCode`). Manager
-options and properties use camelCase; `SimulationConfig` options retain
-`snake_case`. MATLAB constructors use name-value arguments:
+use `camelCase`, including `deckPath`, `isFinished`, `applyEvent`, and `logTable`.
+Its log-table columns also use camelCase. Manager options and properties use
+camelCase; `SimulationConfig` options retain `snake_case`. MATLAB constructors
+use name-value arguments:
 
 ```matlab
 config = trnrun.SimulationConfig(watch_tmp=true, severity="Warning");
@@ -210,7 +211,7 @@ manager = trnrun.SimulationManager( ...
 | --- | --- | --- |
 | `maxConcurrent` | logical processor count minus one, at least `1` | Maximum number of active runners owned by the queue. |
 | `refreshInterval` | `1.0` | Minimum seconds between Command Window redraws while calls pump events. A non-positive value disables built-in rendering. |
-| `trnrunqPath` | bundled `bin/win64/trnrunq.exe` | Queue executable override, primarily for development and testing. |
+| `trnrunqPath` | bundled `bin/trnrunq.exe` | Queue executable override, primarily for development and testing. |
 
 | Member | Description |
 | --- | --- |
@@ -261,14 +262,14 @@ The constructor accepts `deckPath`, `config`, and `simId`; there is no log-capac
 argument. All log events are retained in memory, so memory usage grows with log volume.
 Unknown severities contribute to `logCount`, but not the three named severity totals.
 
-`statusTable(simulations)` returns one row per simulation in linear array order,
-with columns `id`, `deckPath`, `state`, `status`, `percent`, `exitCode`, `notices`,
-`warnings`, and `fatals`. Row, column, and empty simulation arrays are supported.
-Text columns are strings; absent status is a missing string, and absent numeric
-values (including a null exit code) are `NaN`. `percent` retains its original
-0-to-1 scale. An empty simulation array produces a zero-row table with the same
-columns and types. The `exitCode` table column reads the event's `exitCode`
-field; event payloads themselves are not renamed.
+To summarise a whole batch, read the properties above directly from
+`manager.simulations`, which returns the simulations in submission order:
+
+```matlab
+simulations = manager.simulations;
+failed = simulations(~[simulations.succeeded]);
+fprintf("%d of %d runs failed\n", numel(failed), numel(simulations));
+```
 
 `simulation.logTable()` returns retained log events as a table, oldest first,
 without changing their fields or values. With no retained logs it returns
@@ -294,7 +295,7 @@ Defaults match the native runner contract.
 
 | Option | Default | Description |
 | --- | --- | --- |
-| `trnrun_path` | bundled `bin/win64/trnrun.exe` | Runner executable used by the queue. |
+| `trnrun_path` | bundled `bin/trnrun.exe` | Runner executable used by the queue. |
 | `trnexe_path` | `C:\TRNSYS18\Exe\TrnEXE64.exe` | TRNSYS executable. |
 | `gui_visibility` | `"hidden"` | `keep`/`keepOpen`, `auto`/`autoClose`, `min`/`minimized`, `minAuto`/`minimizedAuto`, or `hidden` (case-insensitive). |
 | `wait_for_gui` | `true` | Include a recognized TRNSYS window in launch detection. |
@@ -313,34 +314,81 @@ Defaults match the native runner contract.
 | `severity` | `"Notice"` | Minimum emitted log severity: `Notice`, `Warning`, or `Fatal` (case-insensitive). |
 | `write_events` | `false` | Replace and write `<deckFile>.jsonl` with emitted runner events. |
 
-Logical options require logical scalar values (`true` or `false`), not numeric or
-string substitutes. Configuration times are milliseconds; the manager's
+Logical options accept a logical scalar or the numeric values `0` and `1`, which
+property validation converts to `false` and `true`; other numeric or string
+substitutes are rejected. Configuration times are milliseconds; the manager's
 `refreshInterval` is in seconds. The native runner clamps negative timeout/delay values to zero and
 raises positive watch/stall timeouts shorter than `poll_ms` to the polling
 interval.
 
 ## Examples
 
-The examples add only their parent `libraries/matlab` directory to the MATLAB
-path. Run the example functions with `libraries/matlab/examples` as the current
-directory; do not add package or example subdirectories to the MATLAB path.
+The examples add only their parent `libraries/matlab/toolbox` directory to the MATLAB
+path and resolve their decks relative to the example file, so they run from any
+current directory. Do not add package or example subdirectories to the MATLAB path.
 
 | Example | Purpose |
 | --- | --- |
-| [`run_one_deck.m`](examples/run_one_deck.m) | Run one ordinary deck without requiring Type3830. |
-| [`run_deck_folder.m`](examples/run_deck_folder.m) | Submit every `.dck` file in a folder with bounded concurrency. |
-| [`wait_for_one.m`](examples/wait_for_one.m) | Wait for one selected run while still updating another run. |
-| [`progress_callback.m`](examples/progress_callback.m) | Render Type3830 progress through a short blocking `follow` callback. |
-| [`custom_paths.m`](examples/custom_paths.m) | Override TRNSYS, runner, and queue executable paths. |
-| [`inspect_results.m`](examples/inspect_results.m) | Inspect success/failure groups, status, exit code, and log counts. |
-| [`function_scoped_cleanup.m`](examples/function_scoped_cleanup.m) | Use deterministic function-scoped `onCleanup` with normal shutdown. |
+| [`example_single.m`](toolbox/examples/example_single.m) | Run one deck with Type3830 progress reporting. |
+| [`example_manager.m`](toolbox/examples/example_manager.m) | Copy the example deck and run the copies with bounded concurrency. |
 
-For example:
+Both mirror the Python clients' `example_single.py` and `example_manager.py`.
+`example_manager.m` writes its deck copies to `toolbox/examples/runs` and uses
+the default `C:\TRNSYS18\Exe\TrnEXE64.exe`; edit those constants for another
+installation. For example:
 
 ```matlab
-cd("C:\path\to\TRNRun\libraries\matlab\examples")
-simulation = run_one_deck("C:\path\to\deck.dck");
+cd("C:\path\to\TRNRun\libraries\matlab\toolbox\examples")
+simulation = example_single();
+simulations = example_manager();
 ```
 
 These examples document the intended API and behavior. They do not constitute a
 claim that MATLAB or TRNSYS runtime verification has been performed.
+
+## Development and packaging
+
+The layout follows [MathWorks Toolbox Best Practices](https://github.com/mathworks/toolboxdesign):
+
+- `toolbox/`: all distributable code, executables, documentation, examples, and licenses.
+- `toolbox/functionSignatures.json`: tab-completion hints for the public API.
+- `buildfile.m`: `buildtool` tasks for packaging and cleaning.
+- `images/TRNRun.jpg`: toolbox icon applied when packaging.
+- `dist/`: generated `.mltbx` files, ignored by Git.
+
+Run the build tasks from `libraries/matlab` in MATLAB R2023a or newer:
+
+```matlab
+buildtool                 % default: package dist/TRNRun.mltbx
+buildtool clean           % remove dist/
+```
+
+**Packaging requires MATLAB R2023a or newer.** `buildfile.m` builds a
+`matlab.addons.toolbox.ToolboxOptions` object describing the toolbox and passes
+it to `packageToolbox`; there is no MATLAB Project or `.prj` file involved. The
+toolbox version is read from `toolbox/+trnrun/version.m`, so that file is the
+single source of truth. Only `toolbox/` is distributed, and only its root is
+added to the installed path.
+
+`buildtool package` archives whatever `toolbox/` already contains. The
+repository `justfile` stages the license, README and native executables into it
+first, so `just matlab` is the command that produces a complete archive.
+
+**Recipients only need the generated `dist/TRNRun.mltbx`.** They do not
+need the project or the packaging tools. R2021a remains the provisional
+runtime target; building on a newer release does not verify older-release
+compatibility.
+
+Build the native executables, then copy `trnrun.exe` and `trnrunq.exe` into
+`toolbox/bin` before packaging. They are build artifacts and are not committed.
+TRNSYS and Type3830 are not bundled. Keep the version in the project's Package
+Toolbox task synchronized with `toolbox/+trnrun/version.m` when preparing a
+release.
+
+From `libraries/matlab` in MATLAB R2025a or newer, `buildtool verify` performs
+the whole sequence: option check, packaging, and archive validation.
+
+`runUnitTests` and `runTransportTests` remain available for running the suites
+directly; transport tests require their fake queue to be built first. Verify
+installation and a real TRNSYS run on R2021a before claiming compatibility with
+that release.

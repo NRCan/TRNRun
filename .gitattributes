@@ -4,6 +4,7 @@
 *.py text eol=lf
 *.nim text eol=lf
 *.md text eol=lf
+*.m text eol=lf
 
 *.exe binary
 *.dll binary

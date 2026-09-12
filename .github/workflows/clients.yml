@@ -43,6 +43,9 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: matlab-actions/setup-matlab@v2
+        with:
+          release: R2025a
       - uses: jiro4989/setup-nim-action@v2
         with:
           nim-version: "2.2.10"
@@ -60,14 +63,21 @@ jobs:
           Push-Location components/trnrunq
           nimble bin -y
           Pop-Location
-          ./libraries/matlab/interop/build.ps1
-          ./libraries/matlab/stage-native.ps1
           uv build --wheel --out-dir dist libraries/python
-          ./libraries/matlab/package.ps1
+          New-Item libraries/matlab/toolbox/bin -ItemType Directory -Force | Out-Null
+          Copy-Item components/trnrun/build/trnrun.exe libraries/matlab/toolbox/bin -Force
+          Copy-Item components/trnrunq/build/trnrunq.exe libraries/matlab/toolbox/bin -Force
+          Copy-Item LICENSE libraries/matlab/toolbox/LICENSE -Force
+          Copy-Item libraries/matlab/README.md libraries/matlab/toolbox/README.md -Force
+      - uses: matlab-actions/run-command@v2
+        with:
+          command: cd('libraries/matlab'); buildtool package
       - uses: actions/upload-artifact@v4
         with:
           name: client-packages
-          path: dist/*
+          path: |
+            dist/*
+            libraries/matlab/dist/TRNRun.mltbx
 
   matlab-contract:
     if: github.event_name == 'workflow_dispatch' && inputs.run_matlab
@@ -79,7 +89,6 @@ jobs:
           release: R2022b
       - shell: powershell
         run: |
-          ./libraries/matlab/interop/build.ps1
           ./libraries/matlab/tests/transport/buildFakeQueue.ps1
       - uses: matlab-actions/run-command@v2
         with:

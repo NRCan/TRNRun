@@ -36,7 +36,7 @@ classdef SimulationManager < handle
             %   refreshInterval - Real, finite display refresh interval in
             %       seconds (default 1). Values at or below zero disable output.
             %   trnrunqPath - Path to the queue executable. Defaults to
-            %       bin/win64/trnrunq.exe beneath the trnrun package directory.
+            %       bin/trnrunq.exe beneath the trnrun package directory.
             %
             %   Use add to submit runs, wait to process updates until completion,
             %   or follow to receive callbacks as updates are applied. Call
@@ -57,7 +57,7 @@ classdef SimulationManager < handle
                     {mustBeReal, mustBeFinite} = 1.0
                 options.trnrunqPath (1,1) string = fullfile( ...
                     fileparts(fileparts(mfilename('fullpath'))), ...
-                    'bin', 'win64', 'trnrunq.exe')
+                    'bin', 'trnrunq.exe')
             end
 
             obj.display = trnrun.internal.Display(options.refreshInterval);

@@ -12,7 +12,7 @@ classdef SimulationConfig
     properties
         % Runner executable; defaults to the copy bundled with this package.
         trnrun_path (1,1) string {mustBeNonmissing, mustBeNonzeroLengthText} = ...
-            fullfile(fileparts(fileparts(mfilename('fullpath'))), "bin", "win64", "trnrun.exe")
+            fullfile(fileparts(fileparts(mfilename('fullpath'))), "bin", "trnrun.exe")
 
         % TRNSYS executable (--trnexePath).
         trnexe_path (1,1) string {mustBeNonmissing, mustBeNonzeroLengthText} = ...

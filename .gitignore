@@ -18,13 +18,38 @@ nimble.develop
 nimble.paths
 nimbledeps
 
+#MATLAB
+*.asv
+*.m~
+*.autosave
+*.slx.r*
+*.mdl.r*
+*.bak
+*.p
+*.mex*
+*.mlappinstall
+*.mltbx
+*.ctf
+helpsearch*/
+slprj/
+sccprj/
+codegen/
+*.slxc
+.MATLABDriveTag
+libraries/matlab/toolbox/LICENSE
+libraries/matlab/toolbox/README.md
+
+
 # Build & Dist
 build
+.buildtool
 dist
 *.exe
 *.dll
 *.csv
 runs/
+bin
+
 # Old stuff to sort
 
 # nimcache/

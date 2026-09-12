@@ -1,5 +1,15 @@
 set shell := ["powershell.exe", "-c"]
 
+# Stage the toolbox payload, then package it with libraries/matlab/buildfile.m.
+# Requires the native components to have been built (just deploy, or nimble bin).
+matlab:
+    New-Item libraries/matlab/toolbox/bin -ItemType Directory -Force | Out-Null
+    Copy-Item components/trnrun/build/trnrun.exe libraries/matlab/toolbox/bin -Force
+    Copy-Item components/trnrunq/build/trnrunq.exe libraries/matlab/toolbox/bin -Force
+    Copy-Item LICENSE libraries/matlab/toolbox/LICENSE -Force
+    Copy-Item libraries/matlab/README.md libraries/matlab/toolbox/README.md -Force
+    Set-Location libraries/matlab -ErrorAction Stop; matlab -batch "buildtool package"
+
 deploy:
     Remove-Item dist -Recurse -Force -ErrorAction SilentlyContinue; New-Item dist -ItemType Directory -Force | Out-Null
     Set-Location components/type3830 -ErrorAction Stop; nimble deploy

@@ -1,0 +1,78 @@
+{
+    "_schemaVersion": "1.0.0",
+
+    "trnrun.SimulationConfig":
+    {
+        "inputs":
+        [
+            {"name":"trnrun_path", "kind":"namevalue", "type":["file=*.exe"], "purpose":"Runner executable"},
+            {"name":"trnexe_path", "kind":"namevalue", "type":["file=*.exe"], "purpose":"TRNSYS executable"},
+            {"name":"gui_visibility", "kind":"namevalue", "type":["choices={'keep','keepOpen','auto','autoClose','min','minimized','minAuto','minimizedAuto','hidden'}"], "purpose":"TRNSYS window mode"},
+            {"name":"wait_for_gui", "kind":"namevalue", "type":["logical","scalar"], "purpose":"Wait for a TRNSYS window"},
+            {"name":"wait_for_lst", "kind":"namevalue", "type":["logical","scalar"], "purpose":"Wait for the .lst component header"},
+            {"name":"wait_for_tmp", "kind":"namevalue", "type":["logical","scalar"], "purpose":"Wait for a Type3830 .tmp file"},
+            {"name":"detect_timeout_ms", "kind":"namevalue", "type":["numeric","scalar","integer",">=0"], "purpose":"Launch-detection deadline (ms); 0 is unlimited"},
+            {"name":"extra_delay_ms", "kind":"namevalue", "type":["numeric","scalar","integer",">=0"], "purpose":"Delay after readiness checks (ms)"},
+            {"name":"poll_ms", "kind":"namevalue", "type":["numeric","scalar","integer",">=1"], "purpose":"Native polling interval (ms)"},
+            {"name":"watch_log", "kind":"namevalue", "type":["logical","scalar"], "purpose":"Emit TRNSYS .log entries"},
+            {"name":"watch_tmp", "kind":"namevalue", "type":["logical","scalar"], "purpose":"Emit Type3830 config and progress events"},
+            {"name":"watch_timeout_ms", "kind":"namevalue", "type":["numeric","scalar","integer",">=0"], "purpose":"Runtime-monitoring deadline (ms); 0 is unlimited"},
+            {"name":"stall_timeout_ms", "kind":"namevalue", "type":["numeric","scalar","integer",">=0"], "purpose":"No-progress deadline (ms); 0 disables"},
+            {"name":"clean_on_success", "kind":"namevalue", "type":["logical","scalar"], "purpose":"Delete sidecar artifacts after success"},
+            {"name":"kill_on_timeout", "kind":"namevalue", "type":["logical","scalar"], "purpose":"Kill TRNSYS after a timeout"},
+            {"name":"kill_on_stall", "kind":"namevalue", "type":["logical","scalar"], "purpose":"Kill TRNSYS after a detected stall"},
+            {"name":"severity", "kind":"namevalue", "type":["choices={'Notice','Warning','Fatal'}"], "purpose":"Minimum emitted log severity"},
+            {"name":"write_events", "kind":"namevalue", "type":["logical","scalar"], "purpose":"Write emitted events to <deckFile>.jsonl"}
+        ],
+        "outputs":
+        [
+            {"name":"obj", "type":["trnrun.SimulationConfig"]}
+        ]
+    },
+
+    "trnrun.SimulationManager":
+    {
+        "inputs":
+        [
+            {"name":"maxConcurrent", "kind":"namevalue", "type":["numeric","scalar","integer",">=1"], "purpose":"Maximum concurrent runners"},
+            {"name":"refreshInterval", "kind":"namevalue", "type":["numeric","scalar","real"], "purpose":"Seconds between redraws; <=0 disables output"},
+            {"name":"trnrunqPath", "kind":"namevalue", "type":["file=*.exe"], "purpose":"Queue executable override"}
+        ],
+        "outputs":
+        [
+            {"name":"obj", "type":["trnrun.SimulationManager"]}
+        ]
+    },
+
+    "trnrun.SimulationManager.add":
+    {
+        "inputs":
+        [
+            {"name":"obj", "kind":"required", "type":["trnrun.SimulationManager"]},
+            {"name":"deckFile", "kind":"required", "type":["file=*.dck"], "purpose":"Deck to submit"},
+            {"name":"config", "kind":"required", "type":["trnrun.SimulationConfig"], "purpose":"Configuration snapshot"}
+        ],
+        "outputs":
+        [
+            {"name":"simulation", "type":["trnrun.Simulation"]}
+        ]
+    },
+
+    "trnrun.SimulationManager.wait":
+    {
+        "inputs":
+        [
+            {"name":"obj", "kind":"required", "type":["trnrun.SimulationManager"]},
+            {"name":"simulation", "kind":"ordered", "type":["trnrun.Simulation"], "purpose":"Single owned simulation to wait for"}
+        ]
+    },
+
+    "trnrun.SimulationManager.follow":
+    {
+        "inputs":
+        [
+            {"name":"obj", "kind":"required", "type":["trnrun.SimulationManager"]},
+            {"name":"callback", "kind":"required", "type":["function_handle"], "purpose":"Called with each updated simulation"}
+        ]
+    }
+}

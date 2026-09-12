@@ -15,7 +15,7 @@ TRNRun is a tool for running [TRNSYS](https://www.trnsys.com/) simulations, buil
 | Client | Description |
 | --- | --- |
 | [Python](libraries/python/) | `trnrun` Python package for synchronous batch submission, monitoring, and result inspection with a live terminal display. |
-| [MATLAB](libraries/matlab/) | Native MATLAB API for synchronous batch submission, monitoring, callbacks, and result inspection without Python or additional MATLAB toolboxes. MATLAB R2022b is the provisional release floor. |
+| [MATLAB](libraries/matlab/) | Native MATLAB API for synchronous batch submission, monitoring, callbacks, and result inspection without Python or additional MATLAB toolboxes. MATLAB R2021a is the provisional release floor. |
 
 Each manager owns its own `trnrunq.exe` process. The queue manages concurrent
 native runners, but client state is pumped synchronously by `add`, `wait`, and
@@ -34,7 +34,7 @@ Shared runtime requirements:
 Client-specific requirements:
 
 - Python client: Python >= 3.12
-- MATLAB client: MATLAB R2022b or newer as a provisional target; no Python or
+- MATLAB client: MATLAB R2021a or newer as a provisional target; no Python or
   additional MATLAB toolboxes
 
 The MATLAB release floor and runtime behavior have not been verified by
@@ -50,10 +50,10 @@ pip install trnrun
 
 ### MATLAB
 
-Add only the MATLAB library root, not its package or subdirectories:
+Add only the MATLAB `toolbox` directory, not its package or subdirectories:
 
 ```matlab
-addpath("C:\path\to\TRNRun\libraries\matlab")
+addpath("C:\path\to\TRNRun\libraries\matlab\toolbox")
 ```
 
 See the [MATLAB client README](libraries/matlab/) for lifecycle guidance,
@@ -77,7 +77,7 @@ with SimulationManager() as manager:
 
 ```matlab
 function simulation = run_deck(deck_path)
-    addpath("C:\path\to\TRNRun\libraries\matlab")
+    addpath("C:\path\to\TRNRun\libraries\matlab\toolbox")
 
     config = trnrun.SimulationConfig(watch_tmp=false);
     manager = trnrun.SimulationManager(maxConcurrent=1);
