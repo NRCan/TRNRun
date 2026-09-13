@@ -10,6 +10,8 @@ classdef Display < handle
         sims = trnrun.Simulation.empty(1, 0)
         finished = false(1, 0)
         activeText = ''
+        rowStates = cell(1, 0)
+        rowLines = cell(1, 0)
         window = []
         textArea = []
     end
@@ -51,6 +53,8 @@ classdef Display < handle
             if ~any(obj.sims == simulation)
                 obj.sims(end + 1) = simulation;
                 obj.finished(end + 1) = false;
+                obj.rowStates{end + 1} = [];
+                obj.rowLines{end + 1} = '';
             end
             obj.refresh(wasEmpty);
         end
@@ -78,12 +82,14 @@ classdef Display < handle
             end
             done = obj.sims(obj.finished);
             obj.sims = obj.sims(~obj.finished);
+            obj.rowStates = obj.rowStates(~obj.finished);
+            obj.rowLines = obj.rowLines(~obj.finished);
             obj.finished = false(1, numel(obj.sims));
 
             if ~isempty(done)
                 fprintf('%s\n', obj.renderLines(done));
             end
-            text = obj.renderLines(obj.sims);
+            text = obj.renderLines(obj.sims, true);
             obj.updateActive(text);
             obj.activeText = text;
             obj.lastRefresh = tic;
@@ -104,11 +110,26 @@ classdef Display < handle
     end
 
     methods (Access = private)
-        function text = renderLines(obj, sims)
-            %RENDERLINES Join one summary line per simulation, oldest first.
+        function text = renderLines(obj, sims, useCache)
+            %RENDERLINES Join summaries, reusing unchanged active rows.
 
-            text = strjoin(arrayfun(@(sim) obj.renderLine(sim), sims, ...
-                'UniformOutput', false), newline);
+            if nargin < 3 || ~useCache
+                text = strjoin(arrayfun(@(sim) obj.renderLine(sim), sims, ...
+                    'UniformOutput', false), newline);
+                return
+            end
+            for index = 1:numel(sims)
+                sim = sims(index);
+                % Value snapshots detect updates to mutable simulation handles.
+                % The immutable id and deckPath need not be compared.
+                state = {sim.status, sim.progress, sim.configEvent, ...
+                    sim.notices, sim.warnings, sim.fatals};
+                if ~isequaln(obj.rowStates{index}, state)
+                    obj.rowLines{index} = obj.renderLine(sim);
+                    obj.rowStates{index} = state;
+                end
+            end
+            text = strjoin(obj.rowLines, newline);
         end
 
         function updateActive(obj, text)
@@ -178,7 +199,16 @@ function text = formatHhmmss(seconds)
     %FORMATHHMMSS Format seconds as HH:MM:SS, truncating and clamping to zero.
     %   Hours are not wrapped at 24, and NaN reads as 00:00:00.
 
-    text = char(duration(0, 0, max(fix(seconds), 0), 'Format', 'hh:mm:ss'));
+    if isnan(seconds) || seconds < 0
+        seconds = 0;
+    elseif isinf(seconds)
+        text = 'Inf';
+        return
+    end
+    seconds = fix(seconds);
+    hours = floor(seconds / 3600);
+    minutes = floor(mod(seconds, 3600) / 60);
+    text = sprintf('%02.0f:%02.0f:%02.0f', hours, minutes, mod(seconds, 60));
 end
 
 function text = progressBar(percent, width)

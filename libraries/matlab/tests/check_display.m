@@ -40,6 +40,19 @@ function check_display()
     previous = area.Value;
     assert(isempty(evalc('display.refresh(true);')) && isequal(area.Value, previous));
 
+    sims{2}.applyEvent(struct('kind', 'PROGRESS', 'percent', 0.25, ...
+        'time', 10, 'elapsed', NaN, 'eta', -1000));
+    evalc('display.refresh(true);');
+    assert(contains(area.Value{2}, 'Elapsed: 00:00:00 | ETA: 00:00:00'), ...
+        'Clamp negative and NaN times to zero.');
+    assert(isequal(area.Value([1 3:20]), previous([1 3:20])), ...
+        'Updating one simulation must leave the other rows unchanged.');
+    sims{2}.applyEvent(struct('kind', 'PROGRESS', 'percent', 0.75, ...
+        'time', 20, 'elapsed', 360000999, 'eta', 1000));
+    evalc('display.refresh(true);');
+    assert(contains(area.Value{2}, 'Elapsed: 100:00:00 | ETA: 00:00:01'), ...
+        'Refresh cached progress, truncate fractions, and retain large hours.');
+
     completed = struct('kind', 'QUEUE', 'event', 'COMPLETED');
     sims{1}.applyEvent(struct('kind', 'STATUS', 'status', 'DONE'));
     sims{1}.applyEvent(struct('kind', 'LOG', 'severity', 'warning'));
@@ -50,6 +63,8 @@ function check_display()
     assert(contains(output, 'Status: DONE') && contains(output, 'N:0 W:1 F:0'));
     assert(sum(output == newline) == 1 && ~contains(output, char(8)));
     assert(numel(area.Value) == 19, 'Remove completed rows from the live window.');
+    assert(startsWith(area.Value{1}, '[2]') && contains(area.Value{1}, '(75%)'), ...
+        'Keep cached rows aligned after removing a completed simulation.');
 
     close(window);
     assert(~isgraphics(window));
