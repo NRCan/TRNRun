@@ -8,12 +8,19 @@ function check_display()
     assert(isequal(findall(groot, 'Type', 'figure'), before), 'Create the window lazily.');
     sims = cell(1, 20);
     for index = 1:20
-        sims{index} = trnrun.Simulation(sprintf('run_%02d.dck', index), ...
-            trnrun.SimulationConfig(), index);
+        name = sprintf('run_%02d.dck', index);
+        if index == 20
+            % Overflows the path column, so alignment must survive truncation.
+            name = ['C:\a\deeply\nested\output\directory\' name];
+        end
+        sims{index} = trnrun.Simulation(name, trnrun.SimulationConfig(), index);
         sims{index}.applyEvent(struct('kind', 'STATUS', 'status', 'RUNNING'));
         output = evalc('display.simulationStarted(sims{index});');
         assert(isempty(output), 'Live progress must not write to the console.');
     end
+    sims{1}.applyEvent(struct('kind', 'CONFIG', 'stop', 8760));
+    sims{1}.applyEvent(struct('kind', 'PROGRESS', 'percent', 0.5, ...
+        'time', 1234567, 'elapsed', 3661000, 'eta', 90000000));
     window = setdiff(findall(groot, 'Type', 'figure'), before);
     assert(isscalar(window), 'Use one window for all simulations.');
     area = findall(window, 'Type', 'uitextarea');
@@ -21,6 +28,15 @@ function check_display()
     assert(numel(area.Value) == 1, 'Additional starts should be throttled.');
     assert(isempty(evalc('display.refresh(true);')));
     assert(numel(area.Value) == 20 && all(contains(string(area.Value), 'RUNNING')));
+    % Runs 10 to 20 share an id width, so any shift here comes from the path.
+    assert(isscalar(unique(cellfun(@(row) find(row == '|', 1), cellstr(area.Value(10:20))))), ...
+        'Align columns across short and overlong deck paths.');
+    assert(contains(area.Value{20}, '...') && contains(area.Value{20}, 'directory\run_20.dck'), ...
+        'Truncate overlong deck paths from the left, keeping the deck name.');
+    assert(contains(area.Value{1}, 'Elapsed: 01:01:01 | ETA: 25:00:00'), ...
+        'Report elapsed and ETA in HH:MM:SS without wrapping at 24 hours.');
+    assert(contains(area.Value{1}, '[##########----------] 1,234,567 /  8,760 (50%)'), ...
+        'Group thousands and fill the bar to the reported fraction.');
     previous = area.Value;
     assert(isempty(evalc('display.refresh(true);')) && isequal(area.Value, previous));
 

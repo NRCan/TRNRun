@@ -28,9 +28,9 @@ function exit_code = manual_stress_manager()
         "test_slow_wo_plot_w_tracking.dck");
     dck_folder = fullfile(tests_folder, "runs");
 
-    fast_sim_count = 1;
-    slow_sim_count = 40;
-    max_concurrent = 20;
+    fast_sim_count = 100;
+    slow_sim_count = 100;
+    max_concurrent = 50;
     refresh_interval = 0.1;
 
     config = SimulationConfig( ...

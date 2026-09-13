@@ -7,9 +7,8 @@ classdef Display < handle
         enabled = true
         refreshInterval = 1
         lastRefresh
-        active
-        activeIds = {}
-        finishedIds = {}
+        sims = trnrun.Simulation.empty(1, 0)
+        finished = false(1, 0)
         activeText = ''
         window = []
         textArea = []
@@ -40,7 +39,6 @@ classdef Display < handle
             obj.enabled = refreshInterval > 0;
             obj.refreshInterval = refreshInterval;
             obj.lastRefresh = tic;
-            obj.active = containers.Map('KeyType', 'char', 'ValueType', 'any');
         end
 
         function simulationStarted(obj, simulation)
@@ -49,25 +47,22 @@ classdef Display < handle
             if ~obj.enabled
                 return
             end
-            wasEmpty = isempty(obj.activeIds);
-            key = sprintf('%.0f', simulation.id);
-            if ~isKey(obj.active, key)
-                obj.active(key) = simulation;
-                obj.activeIds{end + 1} = key;
+            wasEmpty = isempty(obj.sims);
+            if ~any(obj.sims == simulation)
+                obj.sims(end + 1) = simulation;
+                obj.finished(end + 1) = false;
             end
             obj.refresh(wasEmpty);
         end
 
         function simulationFinished(obj, simulation)
             %SIMULATIONFINISHED Queue a final summary for the next refresh.
+            %   Simulations that were never started are ignored.
 
             if ~obj.enabled
                 return
             end
-            key = sprintf('%.0f', simulation.id);
-            if isKey(obj.active, key) && ~ismember(key, obj.finishedIds)
-                obj.finishedIds{end + 1} = key;
-            end
+            obj.finished(obj.sims == simulation) = true;
         end
 
         function refresh(obj, force)
@@ -76,29 +71,19 @@ classdef Display < handle
             if nargin < 2
                 force = false;
             end
-            allFinished = ~isempty(obj.activeIds) && ...
-                numel(obj.finishedIds) == numel(obj.activeIds);
+            allFinished = ~isempty(obj.sims) && all(obj.finished);
             if ~obj.enabled || (~force && ~allFinished && ...
                     toc(obj.lastRefresh) < obj.refreshInterval)
                 return
             end
-            finalLines = cell(1, numel(obj.finishedIds));
-            for index = 1:numel(obj.finishedIds)
-                key = obj.finishedIds{index};
-                finalLines{index} = [obj.renderLine(obj.active(key)) newline];
-                remove(obj.active, key);
+            done = obj.sims(obj.finished);
+            obj.sims = obj.sims(~obj.finished);
+            obj.finished = false(1, numel(obj.sims));
+
+            if ~isempty(done)
+                fprintf('%s\n', obj.renderLines(done));
             end
-            obj.activeIds(ismember(obj.activeIds, obj.finishedIds)) = [];
-            obj.finishedIds = {};
-            lines = cell(1, numel(obj.activeIds));
-            for index = 1:numel(obj.activeIds)
-                key = obj.activeIds{index};
-                lines{index} = obj.renderLine(obj.active(key));
-            end
-            text = strjoin(lines, newline);
-            if ~isempty(finalLines)
-                fprintf('%s', [finalLines{:}]);
-            end
+            text = obj.renderLines(obj.sims);
             obj.updateActive(text);
             obj.activeText = text;
             obj.lastRefresh = tic;
@@ -119,6 +104,13 @@ classdef Display < handle
     end
 
     methods (Access = private)
+        function text = renderLines(obj, sims)
+            %RENDERLINES Join one summary line per simulation, oldest first.
+
+            text = strjoin(arrayfun(@(sim) obj.renderLine(sim), sims, ...
+                'UniformOutput', false), newline);
+        end
+
         function updateActive(obj, text)
             %UPDATEACTIVE Assign the whole live block without clearing it first.
 
@@ -153,50 +145,40 @@ classdef Display < handle
                 status = char(simulation.status.status);
             end
 
-            percent = [];
+            percent = 0;
+            simPercent = '';
             elapsed = '--:--:--';
             eta = '--:--:--';
+            simProgress = '- / -';
             if ~isempty(simulation.progress)
                 percent = simulation.progress.percent;
+                simPercent = sprintf('(%.0f%%)', 100 * percent);
                 elapsed = formatHhmmss( ...
                     simulation.progress.elapsed / obj.MillisecondsPerSecond);
                 eta = formatHhmmss( ...
                     simulation.progress.eta / obj.MillisecondsPerSecond);
-            end
-
-            bar = progressBar(0, obj.ProgressBarWidth);
-            simPercent = '';
-            if ~isempty(percent)
-                bar = progressBar(percent, obj.ProgressBarWidth);
-                simPercent = sprintf('(%.0f%%)', 100 * percent);
-            end
-
-            simProgress = '- / -';
-            if ~isempty(simulation.progress) && ~isempty(simulation.configEvent)
-                simProgress = sprintf('%6s / %6s', ...
-                    formatNumber(simulation.progress.time), ...
-                    formatNumber(simulation.configEvent.stop));
+                if ~isempty(simulation.configEvent)
+                    simProgress = sprintf('%6s / %6s', ...
+                        formatNumber(simulation.progress.time), ...
+                        formatNumber(simulation.configEvent.stop));
+                end
             end
 
             logs = sprintf('N:%d W:%d F:%d', ...
                 simulation.notices, simulation.warnings, simulation.fatals);
             line = sprintf( ...
-                '[%d] %s | Status: %-10s | Logs: %-12s | Elapsed: %-8s | ETA: %-8s | %s %s %-6s', ...
-                simulation.id, path, status, logs, elapsed, eta, ...
-                bar, simProgress, simPercent);
+                '[%d] %-*s | Status: %-10s | Logs: %-12s | Elapsed: %-8s | ETA: %-8s | %s %s %-6s', ...
+                simulation.id, obj.PathWidth, path, status, logs, elapsed, eta, ...
+                progressBar(percent, obj.ProgressBarWidth), simProgress, simPercent);
         end
     end
 end
 
 function text = formatHhmmss(seconds)
     %FORMATHHMMSS Format seconds as HH:MM:SS, truncating and clamping to zero.
+    %   Hours are not wrapped at 24, and NaN reads as 00:00:00.
 
-    seconds = max(fix(seconds), 0);
-    hours = fix(seconds / 3600);
-    seconds = seconds - hours * 3600;
-    minutes = fix(seconds / 60);
-    seconds = seconds - minutes * 60;
-    text = sprintf('%02d:%02d:%02d', hours, minutes, seconds);
+    text = char(duration(0, 0, max(fix(seconds), 0), 'Format', 'hh:mm:ss'));
 end
 
 function text = progressBar(percent, width)
@@ -208,25 +190,8 @@ end
 
 function text = formatNumber(value)
     %FORMATNUMBER Round a number and insert thousands separators.
+    %   Each digit followed by a whole number of trailing digit triples gains
+    %   a comma, which leaves a leading sign, NaN and Inf untouched.
 
-    text = sprintf('%.0f', value);
-    sign = '';
-    if text(1) == '-'
-        sign = '-';
-        text = text(2:end);
-    end
-
-    firstGroupLength = mod(numel(text), 3);
-    if firstGroupLength == 0
-        firstGroupLength = 3;
-    end
-
-    groupCount = 1 + (numel(text) - firstGroupLength) / 3;
-    groups = cell(1, groupCount);
-    groups{1} = text(1:firstGroupLength);
-    for groupIndex = 2:groupCount
-        first = firstGroupLength + 3 * (groupIndex - 2) + 1;
-        groups{groupIndex} = text(first:(first + 2));
-    end
-    text = [sign strjoin(groups, ',')];
+    text = regexprep(sprintf('%.0f', value), '\d(?=(\d{3})+$)', '$0,');
 end
