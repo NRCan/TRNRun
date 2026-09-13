@@ -15,12 +15,14 @@ dist:
     just trnrun-dist
     just trnrunq-dist
     just type3830-dist
+    just python-dist
 
 # Run every component test suite
 test:
     just trnrun-test
     just trnrunq-test
     just type3830-test
+    just python-test
 
 # Build all artifacts and assemble the root distribution
 deploy:
@@ -28,11 +30,19 @@ deploy:
     just type3830-deploy
     just trnrun-deploy
     just trnrunq-deploy
-    Set-Location libraries/python -ErrorAction Stop; uv build --wheel --out-dir ../../dist
+    just python-dist
     Copy-Item components/type3830/dist/* dist -Recurse -Force
     Copy-Item components/trnrun/dist/* dist -Recurse -Force
     Copy-Item components/trnrunq/dist/* dist -Recurse -Force
     Get-ChildItem dist -Directory | ForEach-Object { Compress-Archive -Path $_.FullName -DestinationPath (Join-Path dist "$($_.Name).zip") -Force }
+
+# Build the Python wheel
+python-dist:
+    Set-Location libraries/python -ErrorAction Stop; uv build --wheel --out-dir ../../dist
+
+# Run the Python test suite
+python-test:
+    Set-Location libraries/python -ErrorAction Stop; uv run pytest
 
 # Build the TRNRun release executable
 trnrun-bin:
