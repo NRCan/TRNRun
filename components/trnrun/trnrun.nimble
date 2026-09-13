@@ -16,6 +16,7 @@ const
   buildDir = "build"
   cacheDir = buildDir & "/nimcache"
   distDir = "dist"
+  matlabBinDir = "../../libraries/matlab/toolbox/bin"
   pythonBinDir = "../../libraries/python/trnrun/bin"
   target = "x86_64-windows-gnu"
   zigcc = "scripts/zigcc.bat"
@@ -73,12 +74,14 @@ proc assembleDistribution() =
   assemblePackage()
 
 proc deployPackage() =
+  let packagedExe =
+    distDir & "/" & exeName & "-v" & version & "-win_amd64/" & exeName & ".exe"
+
+  mkDir matlabBinDir
   mkDir pythonBinDir
 
-  cpFile(
-    distDir & "/" & exeName & "-v" & version & "-win_amd64/" & exeName & ".exe",
-    pythonBinDir & "/" & exeName & ".exe",
-  )
+  cpFile(packagedExe, matlabBinDir & "/" & exeName & ".exe")
+  cpFile(packagedExe, pythonBinDir & "/" & exeName & ".exe")
 
 # Tasks
 task bin, "Build the release executable":
