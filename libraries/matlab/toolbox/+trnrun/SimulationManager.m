@@ -233,11 +233,17 @@ classdef SimulationManager < handle
         end
 
         function delete(obj)
-            %DELETE Clean up the queue without throwing during destruction.
+            %DELETE Clean up the queue and progress window without throwing.
 
             try
                 if ~isempty(obj.transport) && ~obj.shutdownComplete
                     obj.transport.forceCleanup();
+                end
+            catch
+            end
+            try
+                if ~isempty(obj.display)
+                    delete(obj.display);
                 end
             catch
             end
@@ -317,8 +323,8 @@ classdef SimulationManager < handle
 
                     otherwise
                         simulation.applyEvent(event);
-                        obj.display.refresh();
                 end
+                obj.display.refresh();
                 return
             end
         end

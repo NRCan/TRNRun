@@ -1,10 +1,7 @@
 classdef Display < handle
-    %DISPLAY Show a throttled in-place Command Window simulation summary.
-    %   Tracks active simulations and prints a permanent summary when each
-    %   finishes. Active summaries include status, progress, timing, and
-    %   diagnostic counts, and are redrawn at the configured interval.
-    %
-    %   Backspace redraws assume no unrelated output within the active block.
+    %DISPLAY Show throttled live progress in a native MATLAB text window.
+    %   Completed summaries are appended to the Command Window. Closing the
+    %   progress window disables live updates, not simulations or final output.
 
     properties (Access = private)
         enabled = true
@@ -12,7 +9,10 @@ classdef Display < handle
         lastRefresh
         active
         activeIds = {}
+        finishedIds = {}
         activeText = ''
+        window = []
+        textArea = []
     end
 
     properties (Constant, Access = private)
@@ -29,10 +29,10 @@ classdef Display < handle
             %   must be a real, finite numeric scalar; values at or below zero
             %   disable all simulation output.
             %
-            %   The first simulation and every finished simulation force an
-            %   immediate redraw when enabled. Additional starts are throttled.
-            %   Deleting the display leaves active progress visible and moves
-            %   the Command Window prompt to a new line.
+            %   The first simulation forces a redraw. Completions are batched
+            %   into the next refresh; the last completion bypasses throttling.
+            %   The progress window opens on the first simulation. Deleting
+            %   the display closes it and prints any interrupted progress.
 
             validateattributes(refreshInterval, {'numeric'}, ...
                 {'real', 'scalar', 'finite'}, 'trnrun.internal.Display', 'refreshInterval');
@@ -59,20 +59,15 @@ classdef Display < handle
         end
 
         function simulationFinished(obj, simulation)
-            %SIMULATIONFINISHED Remove a simulation and print its final summary.
+            %SIMULATIONFINISHED Queue a final summary for the next refresh.
 
             if ~obj.enabled
                 return
             end
             key = sprintf('%.0f', simulation.id);
-            if isKey(obj.active, key)
-                remove(obj.active, key);
-                obj.activeIds(strcmp(obj.activeIds, key)) = [];
+            if isKey(obj.active, key) && ~ismember(key, obj.finishedIds)
+                obj.finishedIds{end + 1} = key;
             end
-            obj.eraseActive();
-            fprintf('%s\n', obj.renderLine(simulation));
-            obj.refresh(true);
-            drawnow nocallbacks
         end
 
         function refresh(obj, force)
@@ -81,48 +76,68 @@ classdef Display < handle
             if nargin < 2
                 force = false;
             end
-            if ~obj.enabled || (~force && toc(obj.lastRefresh) < obj.refreshInterval)
+            allFinished = ~isempty(obj.activeIds) && ...
+                numel(obj.finishedIds) == numel(obj.activeIds);
+            if ~obj.enabled || (~force && ~allFinished && ...
+                    toc(obj.lastRefresh) < obj.refreshInterval)
                 return
             end
+            finalLines = cell(1, numel(obj.finishedIds));
+            for index = 1:numel(obj.finishedIds)
+                key = obj.finishedIds{index};
+                finalLines{index} = [obj.renderLine(obj.active(key)) newline];
+                remove(obj.active, key);
+            end
+            obj.activeIds(ismember(obj.activeIds, obj.finishedIds)) = [];
+            obj.finishedIds = {};
             lines = cell(1, numel(obj.activeIds));
             for index = 1:numel(obj.activeIds)
                 key = obj.activeIds{index};
                 lines{index} = obj.renderLine(obj.active(key));
             end
             text = strjoin(lines, newline);
+            if ~isempty(finalLines)
+                fprintf('%s', [finalLines{:}]);
+            end
             obj.updateActive(text);
+            obj.activeText = text;
             obj.lastRefresh = tic;
         end
 
         function delete(obj)
-            %DELETE Leave interrupted progress visible on its own prompt line.
+            %DELETE Close the window and preserve interrupted progress as text.
 
+            if isgraphics(obj.window)
+                delete(obj.window);
+            end
+            obj.refresh(true);
             if ~isempty(obj.activeText)
-                fprintf('\n');
+                fprintf('%s\n', obj.activeText);
                 obj.activeText = '';
             end
         end
     end
 
     methods (Access = private)
-        function eraseActive(obj)
-            %ERASEACTIVE Erase the active summary block using backspaces.
-
-            if ~isempty(obj.activeText)
-                fprintf('%s', repmat(sprintf('\b'), 1, numel(obj.activeText)));
-                obj.activeText = '';
-            end
-        end
-
         function updateActive(obj, text)
-            %UPDATEACTIVE Replace the active block only when its text changed.
+            %UPDATEACTIVE Assign the whole live block without clearing it first.
 
-            if strcmp(obj.activeText, text)
+            if isempty(obj.window) && ~isempty(text)
+                obj.window = uifigure('Name', 'TRNRun progress', ...
+                    'Position', [100 100 1200 520], 'Visible', 'off');
+                layout = uigridlayout(obj.window, [1 1]);
+                obj.textArea = uitextarea(layout, 'Editable', 'off', ...
+                    'FontName', get(groot, 'FixedWidthFontName'), ...
+                    'WordWrap', 'off');
+                obj.textArea.Value = splitlines(string(text));
+                obj.window.Visible = 'on';
+            elseif isgraphics(obj.textArea) && ~strcmp(obj.activeText, text)
+                obj.textArea.Value = splitlines(string(text));
+            else
+                % A deleted window handle stays nonempty: never reopen it.
                 return
             end
-            obj.eraseActive();
-            fprintf('%s', text);
-            obj.activeText = text;
+            drawnow limitrate nocallbacks
         end
 
         function line = renderLine(obj, simulation)

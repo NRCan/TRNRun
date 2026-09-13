@@ -210,8 +210,13 @@ manager = trnrun.SimulationManager( ...
 | Option | Default | Description |
 | --- | --- | --- |
 | `maxConcurrent` | logical processor count minus one, at least `1` | Maximum number of active runners owned by the queue. |
-| `refreshInterval` | `1.0` | Minimum seconds between Command Window redraws while calls pump events. A non-positive value disables built-in rendering. |
+| `refreshInterval` | `1.0` | Minimum seconds between progress-window updates while calls pump events. A non-positive value disables built-in rendering (use this for headless runs). |
 | `trnrunqPath` | bundled `bin/trnrunq.exe` | Queue executable override, primarily for development and testing. |
+
+Live progress opens in one resizable, read-only text window; completed summaries
+are appended to the Command Window. Closing the progress window disables live
+updates for that manager without stopping simulations or final summaries.
+Deleting the manager closes its window and prints any interrupted progress.
 
 | Member | Description |
 | --- | --- |
