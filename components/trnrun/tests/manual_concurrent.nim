@@ -66,7 +66,7 @@ for copyIndex in 1 .. CopyCount:
     startProcess(
       executablePath,
       args = @[
-        "--runId=" & runName,
+        "--runID=" & runName,
         "--deckFile=" & stagedDeck,
       ] & @CliOptions,
       options = {poStdErrToStdOut},

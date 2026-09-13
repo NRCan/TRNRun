@@ -20,14 +20,14 @@ try {
     # The fixed one-slot handoff buffers one unacknowledged request.
     # QUEUE/ACCEPTED marks worker pickup, not a successful pipe write.
     1..$RunCount | ForEach-Object {
-        $RunId = 'example-{0:D2}' -f $_
-        $DeckFile = Join-Path $RunDirectory "$RunId.dck"
+        $RunID = 'example-{0:D2}' -f $_
+        $DeckFile = Join-Path $RunDirectory "$RunID.dck"
 
         # Each run needs its own deck because TRNRun writes sidecars beside it.
         Copy-Item -LiteralPath $SourceDeck -Destination $DeckFile
 
         @{
-            runId = $RunId
+            runID = $RunID
             deckFile = $DeckFile
             runnerPath = $RunnerPath
             runnerArgs = @(

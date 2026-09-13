@@ -25,7 +25,7 @@ Options:
   --maxConcurrent:N       Maximum simultaneous runners (default: max(CPUs - 1, 1))
 
 Read one JSON request per stdin line:
-  {"runId":"1","deckFile":"model.dck","runnerPath":"trnrun.exe","runnerArgs":[]}
+  {"runID":"1","deckFile":"model.dck","runnerPath":"trnrun.exe","runnerArgs":[]}
 
 Requests use a fixed one-slot handoff channel. QUEUE/ACCEPTED is emitted only
 when a worker picks up a request, before resolving or launching the runner.

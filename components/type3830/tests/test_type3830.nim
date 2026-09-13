@@ -8,7 +8,7 @@ const
 let
   testsDir = currentSourcePath().parentDir
   dckDir = testsDir / "dck"
-  runnerPath = (testsDir / ".." / ".." / "runner" / "build" / "trnrun.exe").normalizedPath()
+  runnerPath = (testsDir / ".." / ".." / "trnrun" / "build" / "trnrun.exe").normalizedPath()
   runSpecs = [
     (name: "TRNSYS 17", deck: dckDir / "type3830-trnsys17.dck", trnexe: Trnsys17Exe),
     (name: "TRNSYS 18", deck: dckDir / "type3830-trnsys18.dck", trnexe: Trnsys18Exe),

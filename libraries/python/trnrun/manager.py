@@ -72,7 +72,7 @@ class SimulationManager:
         self._next_id += 1
         self._process.send(
             {
-                "runId": str(simulation.id),
+                "runID": str(simulation.id),
                 "deckFile": str(deck_path),
                 "runnerPath": str(config.trnrun_path),
                 "runnerArgs": config.to_cli_args(),

@@ -161,10 +161,10 @@ proc runSimulation*(
 proc simulate*(
     deckFile: string,
     settings: RunnerSettings = DefaultRunnerSettings,
-    runId: string = "",
+    runID: string = "",
 ): SimResult =
   ## Runs one simulation, reporting to stdout and an optional JSONL file.
-  ## When non-empty, `runId` is attached to every emitted event.
+  ## When non-empty, `runID` is attached to every emitted event.
   ##
   ## Each call owns a deck-specific JSONL writer and an independent event sink,
   ## so repeated calls produce separate event files and sequences.
@@ -177,7 +177,7 @@ proc simulate*(
 
   let
     jsonlOutput = newJsonlWriter()
-    eventSink = stdoutEventSink(jsonlOutput, runId)
+    eventSink = stdoutEventSink(jsonlOutput, runID)
   try:
     try:
       jsonlOutput.attachEventFile(validateDeck(deckFile), settings.writeEvents)
