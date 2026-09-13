@@ -57,7 +57,7 @@ trnrun "C:\path\to\deck.dck" --guiVisibility:auto
 trnrun "C:\path\to\deck.dck" --watchTmp:true
 
 # Attach an orchestration identifier to every event
-trnrun "C:\path\to\deck.dck" --runId:batch-42
+trnrun "C:\path\to\deck.dck" --runID:batch-42
 ```
 
 The deck may be passed as the first positional argument or via `--deckFile`. If
@@ -99,7 +99,7 @@ Representative event shapes, using the actual JSON value types:
   `start`, `stop`, and `step` are simulation hours.
 - `seq` starts at `1` and increments once per emitted event, allowing consumers
   to order lines and detect dropped events.
-- When `--runId` is non-empty, its opaque value is included as `runId` on every
+- When `--runID` is non-empty, its opaque value is included as `runID` on every
   event written to stdout or the optional JSONL mirror.
 - `SETTING` is always first and records the configured runner settings.
 - `CONFIG` is emitted on the first successful `.tmp` snapshot.
@@ -163,7 +163,7 @@ Flags use `--name:value` (or `--name=value`).
 | Option            | Type     | Default                        | Description                                                                                                                    |
 | ----------------- | -------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------ |
 | `--deckFile`      | `string` | not set (opens file dialog)      | Path to a TRNSYS deck (`.dck` or `.trd`); may also be the first positional argument.                                              |
-| `--runId`         | `string` | not set                           | Opaque run identifier attached as `runId` to every emitted event.                                                                |
+| `--runID`         | `string` | not set                           | Opaque run identifier attached as `runID` to every emitted event.                                                                |
 | `--trnexePath`    | `string` | `C:\TRNSYS18\Exe\TrnEXE64.exe` | Path to the TRNSYS executable (`TrnEXE64.exe` or `TrnEXE.exe`).                                                                  |
 | `--guiVisibility` | `string` | `hidden`                         | Window behavior. Accepts `keep`/`keepopen`, `auto`/`autoclose`, `min`/`minimized`, `minauto`/`minimizedauto`, or `hidden`. |
 

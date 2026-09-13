@@ -15,7 +15,7 @@ import ./validate
 proc runTrnrun*(
     deckFile: string,
     runnerPath: string,
-    runId: string,
+    runID: string,
     runnerArgs: openArray[string],
     output: var OutputSink,
 ): Option[int] =
@@ -29,11 +29,11 @@ proc runTrnrun*(
       executable = validateTrnrun(runnerPath)
     process = startProcess(
       executable,
-      args = @[deck] & @runnerArgs & @["--runId:" & runId],
+      args = @[deck] & @runnerArgs & @["--runID:" & runID],
       options = {poStdErrToStdOut, poDaemon},
     )
   except CatchableError:
-    output.emit(errorLine(runId, getCurrentExceptionMsg()))
+    output.emit(errorLine(runID, getCurrentExceptionMsg()))
     return none(int)
 
   try:

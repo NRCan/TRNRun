@@ -53,21 +53,21 @@ proc runWorker(pool: ptr WorkerPool) {.thread.} =
       break
 
     of wkRun:
-      pool[].output.emit(acceptedLine(work.request.runId))
+      pool[].output.emit(acceptedLine(work.request.runID))
       var exitCode = none(int)
 
       try:
         exitCode = runTrnrun(
           work.request.deckFile,
           work.request.runnerPath,
-          work.request.runId,
+          work.request.runID,
           work.request.runnerArgs,
           pool[].output,
         )
       except CatchableError:
-        pool[].output.emit(errorLine(work.request.runId, getCurrentExceptionMsg()))
+        pool[].output.emit(errorLine(work.request.runID, getCurrentExceptionMsg()))
 
-      pool[].output.emit(completedLine(work.request.runId, exitCode))
+      pool[].output.emit(completedLine(work.request.runID, exitCode))
 
 
 proc stopWorkers(pool: var WorkerPool) =
