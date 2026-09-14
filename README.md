@@ -1,8 +1,8 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="./assets/TRNRUN_White.svg">
-    <source media="(prefers-color-scheme: light)" srcset="./assets/TRNRUN_Black.svg">
-    <img alt="TRNRun Logo" src="./assets/TRNRUN_Black.svg">
+    <source media="(prefers-color-scheme: dark)" srcset="./assets/trnrun-white.svg">
+    <source media="(prefers-color-scheme: light)" srcset="./assets/trnrun-black.svg">
+    <img alt="TRNRun Logo" src="./assets/trnrun-black.svg">
   </picture>
 </p>
 
