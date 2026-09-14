@@ -196,13 +196,15 @@ classdef DisplayTest < matlab.unittest.TestCase
         function refreshHonoursTheInterval(testCase)
             %REFRESHHONOURSTHEINTERVAL An elapsed interval redraws without forcing.
 
-            display = testCase.makeDisplay(0.01);
-            capture(@() display.simulationStarted(testCase.makeSimulation(1)));
-            capture(@() display.simulationStarted(testCase.makeSimulation(2)));
+            display = testCase.makeDisplay(1);
+            first = testCase.makeSimulation(1);
+            second = testCase.makeSimulation(2);
+            capture(@() display.simulationStarted(first));
+            capture(@() display.simulationStarted(second));
             area = testCase.textArea();
             testCase.assertNumElements(area.Value, 1);
 
-            pause(0.05);
+            pause(1.25);
             capture(@() display.refresh());
 
             testCase.verifyNumElements(area.Value, 2);
