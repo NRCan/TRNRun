@@ -144,7 +144,8 @@ classdef Display < handle
                     'WordWrap', 'off');
                 obj.textArea.Value = splitlines(string(text));
                 obj.window.Visible = 'on';
-            elseif isgraphics(obj.textArea) && ~strcmp(obj.activeText, text)
+            elseif ~isempty(obj.textArea) && isgraphics(obj.textArea) && ...
+                    ~strcmp(obj.activeText, text)
                 obj.textArea.Value = splitlines(string(text));
             else
                 % A deleted window handle stays nonempty: never reopen it.

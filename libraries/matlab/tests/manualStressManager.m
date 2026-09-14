@@ -1,12 +1,12 @@
-function exit_code = manual_stress_manager()
-%MANUAL_STRESS_MANAGER Stress-test fast and slow tracked simulations.
-%   EXIT_CODE = MANUAL_STRESS_MANAGER() copies fast and slow deck fixtures,
+function exitCode = manualStressManager()
+%MANUALSTRESSMANAGER Stress-test fast and slow tracked simulations.
+%   EXITCODE = MANUALSTRESSMANAGER() copies fast and slow deck fixtures,
 %   submits them through one TRNRun manager, and returns zero only when every
 %   simulation succeeds.
 %
 %   Run from libraries/matlab with:
 %
-%       matlab -batch "addpath('tests'); exit(manual_stress_manager())"
+%       matlab -batch "addpath('tests'); exit(manualStressManager())"
 %
 %   This test requires TRNSYS, Type3830, and the bundled TRNRun and queue
 %   executables. The slow fixture also requires its referenced TRNSYS weather
@@ -55,9 +55,9 @@ function exit_code = manual_stress_manager()
 
     fprintf("Decks and outputs: %s\n", dck_folder);
 
-    dck_files = copy_dck(fast_dck, dck_folder, fast_sim_count);
+    dck_files = copyDck(fast_dck, dck_folder, fast_sim_count);
     dck_files = [dck_files, ...
-        copy_dck(slow_dck, dck_folder, slow_sim_count)];
+        copyDck(slow_dck, dck_folder, slow_sim_count)];
 
     fprintf("Running %d fast + %d slow simulations (concurrency: %d).\n", ...
         fast_sim_count, slow_sim_count, max_concurrent);
@@ -86,16 +86,16 @@ function exit_code = manual_stress_manager()
 
     for simulation = failed
         fprintf("FAILED %s: status=%s, completion=%s\n", ...
-            deck_name(simulation.deckPath), ...
-            event_json(simulation.status), ...
-            event_json(simulation.completionEvent));
+            deckName(simulation.deckPath), ...
+            eventJson(simulation.status), ...
+            eventJson(simulation.completionEvent));
     end
 
-    exit_code = double(numel(succeeded) ~= numel(dck_files));
+    exitCode = double(numel(succeeded) ~= numel(dck_files));
 end
 
-function dck_files = copy_dck(src, dst_dir, n)
-%COPY_DCK Copy SRC N times with unique, zero-padded names.
+function dck_files = copyDck(src, dst_dir, n)
+%COPYDCK Copy SRC N times with unique, zero-padded names.
 
     [~, stem, extension] = fileparts(src);
     dck_files = strings(1, n);
@@ -108,15 +108,15 @@ function dck_files = copy_dck(src, dst_dir, n)
     end
 end
 
-function name = deck_name(path)
-%DECK_NAME Return the filename portion of a deck path.
+function name = deckName(path)
+%DECKNAME Return the filename portion of a deck path.
 
     [~, stem, extension] = fileparts(path);
     name = stem + extension;
 end
 
-function text = event_json(event)
-%EVENT_JSON Render an event struct for failure diagnostics.
+function text = eventJson(event)
+%EVENTJSON Render an event struct for failure diagnostics.
 
     if isempty(event)
         text = "[]";

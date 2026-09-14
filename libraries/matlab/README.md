@@ -21,8 +21,9 @@ does not require a MATLAB GUI.
 
 ## Installation
 
-Install the released `TRNRun.mltbx` by opening it in MATLAB. For a source
-checkout, add only the `toolbox` directory to the MATLAB path:
+Install the released `trnrun-v<version>-win_amd64.mltbx` by opening it in
+MATLAB. For a source checkout, add only the `toolbox` directory to the MATLAB
+path:
 
 ```matlab
 addpath("C:\path\to\TRNRun\libraries\matlab\toolbox")
@@ -357,14 +358,16 @@ The layout follows [MathWorks Toolbox Best Practices](https://github.com/mathwor
 
 - `toolbox/`: all distributable code, executables, documentation, examples, and licenses.
 - `toolbox/functionSignatures.json`: tab-completion hints for the public API.
-- `buildfile.m`: `buildtool` tasks for packaging and cleaning.
-- `images/TRNRun.jpg`: toolbox icon applied when packaging.
+- `buildfile.m`: `buildtool` tasks for packaging, verification, testing, and cleaning.
+- `images/trnrun.png`: toolbox icon applied when packaging.
 - `dist/`: generated `.mltbx` files, ignored by Git.
 
 Run the build tasks from `libraries/matlab` in MATLAB R2023a or newer:
 
 ```matlab
-buildtool                 % default: package dist/TRNRun.mltbx
+buildtool                 % default: package a versioned .mltbx in dist/
+buildtool verify          % stage and validate required package files
+buildtool test            % run the unit tests in tests/
 buildtool clean           % remove dist/
 ```
 
@@ -375,13 +378,15 @@ toolbox version is read from `toolbox/+trnrun/version.m`, so that file is the
 single source of truth. Only `toolbox/` is distributed, and only its root is
 added to the installed path.
 
-`buildtool package` archives whatever `toolbox/` already contains. The
-repository `justfile` stages the license, README and native executables into it
-first, so `just matlab` is the command that produces a complete archive.
+`buildtool verify` refreshes the ignored `toolbox/README.md` and
+`toolbox/LICENSE` package inputs from this README and the repository-level
+license, then checks that all required documentation, metadata, icon, version
+source, and native executables are present. `buildtool package` depends on this
+verification, so it cannot silently produce an incomplete archive.
 
-**Recipients only need the generated `dist/TRNRun.mltbx`.** They do not need the
-packaging tools. R2021a remains the provisional runtime target; building on a
-newer release does not verify older-release compatibility.
+**Recipients only need the generated versioned `.mltbx` in `dist/`.** They do
+not need the packaging tools. R2021a remains the provisional runtime target;
+building on a newer release does not verify older-release compatibility.
 
 Build the native executables, then copy `trnrun.exe` and `trnrunq.exe` into
 `toolbox/bin` before packaging. They are build artifacts and are not committed.
@@ -389,5 +394,7 @@ TRNSYS and Type3830 are not bundled. `buildfile.m` reads the packaged version
 from `toolbox/+trnrun/version.m`, so that file is the only place to change it
 when preparing a release.
 
-There is currently no automated test suite. Verify installation and a real
-TRNSYS run on R2021a before claiming compatibility with that release.
+Run the automated unit suite with `buildtool test`, or with `just matlab-test`
+from the repository root. The suite requires Windows and the bundled queue
+executable, but does not require TRNSYS. Verify installation and a real TRNSYS
+run on R2021a before claiming compatibility with that release.
