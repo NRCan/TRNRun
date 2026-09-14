@@ -16,6 +16,7 @@ dist:
     just trnrunq-dist
     just type3830-dist
     just python-dist
+    just matlab-dist
 
 # Run every component test suite
 test:
@@ -23,6 +24,7 @@ test:
     just trnrunq-test
     just type3830-test
     just python-test
+    just matlab-test
 
 # Build all artifacts and assemble the root distribution
 deploy:
@@ -31,10 +33,20 @@ deploy:
     just trnrun-deploy
     just trnrunq-deploy
     just python-dist
+    just matlab-dist
     Copy-Item components/type3830/dist/* dist -Recurse -Force
     Copy-Item components/trnrun/dist/* dist -Recurse -Force
     Copy-Item components/trnrunq/dist/* dist -Recurse -Force
+    Copy-Item libraries/matlab/dist/*.mltbx dist -Force
     Get-ChildItem dist -Directory | ForEach-Object { Compress-Archive -Path $_.FullName -DestinationPath (Join-Path dist "$($_.Name).zip") -Force }
+
+# Package the MATLAB toolbox
+matlab-dist:
+    Set-Location libraries/matlab -ErrorAction Stop; matlab -batch "buildtool clean package"
+
+# Run the MATLAB test suite
+matlab-test:
+    Set-Location libraries/matlab -ErrorAction Stop; matlab -batch "buildtool test"
 
 # Build the Python wheel
 python-dist:

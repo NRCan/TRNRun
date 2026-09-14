@@ -2,7 +2,7 @@
 
 TRNRun is a tool for running [TRNSYS](https://www.trnsys.com/) simulations, built to make batch runs easy to automate, monitor, and orchestrate.
 
-## NIM components and packages
+## Nim components and packages
 
 | Component | Description |
 | --- | --- |
@@ -14,22 +14,35 @@ TRNRun is a tool for running [TRNSYS](https://www.trnsys.com/) simulations, buil
 
 | Library | Description |
 | --- | --- |
-| [Python](libraries/python/) | `trnrun` Python package runs many decks at once (up to a set limit), with a thread-safe API and a live terminal display. |
+| [Python](libraries/python/) | `trnrun` Python package runs many decks at once with bounded concurrency, a thread-safe API, and a live terminal display. |
+| [MATLAB](libraries/matlab/) | TRNRun MATLAB toolbox submits and monitors concurrent simulations through the bundled runner and queue executables. |
 
 ## Requirements
 
-- Windows
-- Python >= 3.12
-- TRNSYS v17 or v18
-- _Optional: Progress Tracker (Type3830)_
+- Windows x64
+- TRNSYS 17 or 18
+- Python 3.12 or newer for the Python package
+- MATLAB R2021a or newer for the MATLAB toolbox (provisional release floor)
+- Optional: Progress Tracker (Type3830)
 
 ## Installation
+
+### Python
 
 ```sh
 pip install trnrun
 ```
 
+### MATLAB
+
+Open the released `trnrun-v<version>-win_amd64.mltbx` file in MATLAB. See the
+[MATLAB library documentation](libraries/matlab/) for source-checkout and
+packaging instructions.
+
 ## Usage
+
+### Python
+
 ```python
 from trnrun import SimulationConfig, SimulationManager
 
@@ -40,11 +53,20 @@ with SimulationManager() as manager:
     manager.wait()
 ```
 
+### MATLAB
+
+```matlab
+config = trnrun.SimulationConfig(watch_tmp=true);
+manager = trnrun.SimulationManager();
+
+simulation = manager.add("path/to/deck.dck", config);
+manager.wait(simulation);
+manager.shutdown();
+```
+
 ## Demo
 
 https://github.com/user-attachments/assets/a3599f98-c011-4ccd-8f6d-2f819b6f493d
-
-
 
 ## License
 
