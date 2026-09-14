@@ -1,7 +1,7 @@
 import std/strutils
 
 # Package
-version = "0.5.0"
+version = "0.6.0"
 author = "Alex Lachance"
 description = "Bounded concurrent launcher for TRNRun simulations"
 license = "MIT"
