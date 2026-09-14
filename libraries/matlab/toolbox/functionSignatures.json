@@ -30,6 +30,30 @@
         ]
     },
 
+    "trnrun.SimulationConfig.validate":
+    {
+        "inputs":
+        [
+            {"name":"obj", "kind":"required", "type":["trnrun.SimulationConfig"]}
+        ],
+        "outputs":
+        [
+            {"name":"obj", "type":["trnrun.SimulationConfig"]}
+        ]
+    },
+
+    "trnrun.SimulationConfig.to_cli_args":
+    {
+        "inputs":
+        [
+            {"name":"obj", "kind":"required", "type":["trnrun.SimulationConfig"]}
+        ],
+        "outputs":
+        [
+            {"name":"args", "type":["cell"]}
+        ]
+    },
+
     "trnrun.SimulationManager":
     {
         "inputs":
@@ -63,7 +87,7 @@
         "inputs":
         [
             {"name":"obj", "kind":"required", "type":["trnrun.SimulationManager"]},
-            {"name":"simulation", "kind":"ordered", "type":["trnrun.Simulation"], "purpose":"Single owned simulation to wait for"}
+            {"name":"simulation", "kind":"optional", "type":["trnrun.Simulation"], "purpose":"Single owned simulation to wait for"}
         ]
     },
 
@@ -73,6 +97,74 @@
         [
             {"name":"obj", "kind":"required", "type":["trnrun.SimulationManager"]},
             {"name":"callback", "kind":"required", "type":["function_handle"], "purpose":"Called with each updated simulation"}
+        ]
+    },
+
+    "trnrun.SimulationManager.shutdown":
+    {
+        "inputs":
+        [
+            {"name":"obj", "kind":"required", "type":["trnrun.SimulationManager"]}
+        ]
+    },
+
+    "trnrun.Simulation":
+    {
+        "inputs":
+        [
+            {"name":"deckPath", "kind":"required", "type":[["string","scalar"],["char","vector"]], "purpose":"Simulation deck path"},
+            {"name":"config", "kind":"required", "type":["trnrun.SimulationConfig","scalar"], "purpose":"Configuration snapshot"},
+            {"name":"simId", "kind":"required", "type":["numeric","scalar","real","finite","integer",">=1"], "purpose":"Manager-local simulation ID"}
+        ],
+        "outputs":
+        [
+            {"name":"obj", "type":["trnrun.Simulation"]}
+        ]
+    },
+
+    "trnrun.Simulation.applyEvent":
+    {
+        "inputs":
+        [
+            {"name":"obj", "kind":"required", "type":["trnrun.Simulation"]},
+            {"name":"event", "kind":"required", "type":["struct","scalar"], "purpose":"Parsed runner event"}
+        ]
+    },
+
+    "trnrun.Simulation.logTable":
+    {
+        "inputs":
+        [
+            {"name":"obj", "kind":"required", "type":["trnrun.Simulation"]}
+        ],
+        "outputs":
+        [
+            {"name":"value", "type":["table"]}
+        ]
+    },
+
+    "trnrun.Simulation.markAccepted":
+    {
+        "inputs":
+        [
+            {"name":"obj", "kind":"required", "type":["trnrun.Simulation"]}
+        ]
+    },
+
+    "trnrun.Simulation.markCompleted":
+    {
+        "inputs":
+        [
+            {"name":"obj", "kind":"required", "type":["trnrun.Simulation"]},
+            {"name":"event", "kind":"required", "type":["struct","scalar"], "purpose":"QUEUE/COMPLETED event"}
+        ]
+    },
+
+    "trnrun.version":
+    {
+        "outputs":
+        [
+            {"name":"value", "type":["char"]}
         ]
     }
 }
