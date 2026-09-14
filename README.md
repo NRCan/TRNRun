@@ -1,3 +1,11 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="./assets/TRNRUN_White.svg">
+    <source media="(prefers-color-scheme: light)" srcset="./assets/TRNRUN_Black.svg">
+    <img alt="TRNRun Logo" src="./assets/TRNRUN_Black.svg">
+  </picture>
+</p>
+
 # TRNRun
 
 TRNRun is a tool for running [TRNSYS](https://www.trnsys.com/) simulations, built to make batch runs easy to automate, monitor, and orchestrate.
