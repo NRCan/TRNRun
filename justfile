@@ -40,6 +40,22 @@ deploy:
     Copy-Item libraries/matlab/dist/*.mltbx dist -Force
     Get-ChildItem dist -Directory | ForEach-Object { Compress-Archive -Path $_.FullName -DestinationPath (Join-Path dist "$($_.Name).zip") -Force }
 
+# Build, test, and package the Python and MATLAB clients
+clients-ci:
+    Remove-Item dist -Recurse -Force -ErrorAction SilentlyContinue; New-Item dist -ItemType Directory -Force | Out-Null
+    just trnrun-test
+    just trnrun-deploy
+    just trnrunq-test
+    just trnrunq-deploy
+    just python-test
+    just matlab-test
+    just python-dist
+    just matlab-dist
+    Copy-Item components/trnrun/dist/* dist -Recurse -Force
+    Copy-Item components/trnrunq/dist/* dist -Recurse -Force
+    Copy-Item libraries/matlab/dist/*.mltbx dist -Force
+    Get-ChildItem dist -Directory | ForEach-Object { Compress-Archive -Path $_.FullName -DestinationPath (Join-Path dist "$($_.Name).zip") -Force }
+
 # Package the MATLAB toolbox
 matlab-dist:
     Set-Location libraries/matlab -ErrorAction Stop; matlab -batch "buildtool clean package"
