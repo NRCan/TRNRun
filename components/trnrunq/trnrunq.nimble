@@ -16,12 +16,27 @@ const
   buildDir = "build"
   cacheDir = buildDir & "/nimcache"
   distDir = "dist"
+  resourceScript = exeName & ".rc"
+  iconFile = "../../assets/trnrun-mark.ico"
   matlabBinDir = "../../libraries/matlab/toolbox/bin"
   pythonBinDir = "../../libraries/python/trnrun/bin"
   target = "x86_64-windows-gnu"
   zigcc = "scripts/zigcc.bat"
 
 # Build
+proc compileResource(): string =
+  result = buildDir & "/" & exeName & ".res"
+
+  if not fileExists(resourceScript):
+    quit("Missing resource script: " & resourceScript)
+
+  if not fileExists(iconFile):
+    quit("Missing application icon: " & iconFile)
+
+  mkDir buildDir
+
+  exec "zig rc --fo " & result & " " & resourceScript
+
 proc compileExe() =
   let
     output = buildDir & "/" & exeName & ".exe"
@@ -32,6 +47,8 @@ proc compileExe() =
 
   mkDir buildDir
 
+  let resource = compileResource()
+
   var args: seq[string]
   args.add "nim c"
   args.add "--verbosity:3"
@@ -41,6 +58,7 @@ proc compileExe() =
   args.add "--passC:--target=" & target
   args.add "--passL:--target=" & target
   args.add "--passL:-s"
+  args.add "--passL:" & resource
   args.add "-d:NimblePkgVersion=" & version
   args.add "--nimcache:" & cacheDir
   args.add "--out:" & output
