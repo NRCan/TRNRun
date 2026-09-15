@@ -4,8 +4,8 @@ The queue owns the concurrency: it runs simulations on its own worker threads
 and reports on them through one stdout stream. This manager is its synchronous
 client. Nothing runs in the background here, so simulation state advances only
 while a call into the manager is reading that stream: `add` reads until its own
-request is picked up, and `wait` and `follow` read until the accepted runs
-finish. Long pauses between calls can fill the stdout pipe and stall the queue.
+request is picked up, while `wait` and `follow` read until the selected run or
+all accepted runs finish. Long pauses between calls can fill the stdout pipe and stall the queue.
 Use this manager from one thread; it has no background reader or synchronization.
 Premature queue EOF raises an error; no recovery or simulation outcomes are
 synthesized.
@@ -84,19 +84,30 @@ class SimulationManager:
             _ = self._read_next_update()
         return simulation
 
-    def follow(self) -> Iterator[Simulation]:
-        """Yield updated simulations until no runs remain.
+    def follow(self, simulation: Simulation | None = None) -> Iterator[Simulation]:
+        """Yield updates for one simulation, or all simulations when omitted.
 
-        Each simulation is yielded after the event that changed it has been
-        applied, which makes this the point to render or record progress.
-        Updates already consumed by other manager calls are not replayed.
-        Raises `RuntimeError` if queue stdout closes with outstanding runs.
+        Every queue event is still processed so all simulations remain current,
+        but when `simulation` is provided only that run is yielded and iteration
+        ends when it completes. Updates already consumed by other manager calls
+        are not replayed. The selected simulation must belong to this manager,
+        or a `ValueError` is raised. Raises `RuntimeError` if queue stdout closes
+        with outstanding runs.
         """
-        while self._active:
-            simulation = self._read_next_update()
-            if simulation is None:
+        if simulation is not None:
+            if not any(simulation is owned for owned in self._simulations):
+                raise ValueError("Simulation does not belong to this manager")
+            if simulation.is_finished:
                 return
-            yield simulation
+
+        while self._active:
+            updated = self._read_next_update()
+            if updated is None:
+                return
+            if simulation is None or updated is simulation:
+                yield updated
+            if simulation is not None and simulation.is_finished:
+                return
 
     def wait(self, simulation: Simulation | None = None) -> None:
         """Read queue output until one simulation or all simulations finish.
@@ -111,15 +122,8 @@ class SimulationManager:
         queue EOF. Inspect the simulations for runner-reported outcomes.
         Leaving the manager context still waits for all remaining runs.
         """
-        if simulation is not None:
-            if not any(simulation is owned for owned in self._simulations):
-                raise ValueError("Simulation does not belong to this manager")
-            if simulation.is_finished:
-                return
-
-        for _ in self.follow():
-            if simulation is not None and simulation.is_finished:
-                return
+        for _ in self.follow(simulation):
+            pass
 
     @property
     def succeeded(self) -> list[Simulation]:

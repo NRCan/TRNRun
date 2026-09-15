@@ -2,54 +2,56 @@
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="./assets/trnrun-white.svg">
     <source media="(prefers-color-scheme: light)" srcset="./assets/trnrun-black.svg">
-    <img alt="TRNRun Logo" src="./assets/trnrun-black.svg">
+    <img alt="TRNRun" src="./assets/trnrun-black.svg">
   </picture>
 </p>
 
-# TRNRun
+TRNRun is a tool for running [TRNSYS](https://www.trnsys.com/) simulations,
+designed to make batch runs easy to automate, monitor, and orchestrate from
+Python, MATLAB, or the command line.
 
-TRNRun is a tool for running [TRNSYS](https://www.trnsys.com/) simulations, built to make batch runs easy to automate, monitor, and orchestrate.
+## Components
 
-## Nim components and packages
-
-| Component | Description |
+| Component | Role |
 | --- | --- |
-| [Type3830](components/type3830/) | Custom TRNSYS component that periodically writes simulation `TIME`, `START`, `STOP`, and `STEP` to a `***.tmp` file. |
-| [TRNRun CLI](components/trnrun/) | `trnrun.exe` launches a single deck, serializes TRNSYS startup machine-wide, monitors the run, and emits `STATUS` / `CONFIG` / `PROGRESS` / `LOG` events as JSON Lines on stdout. |
-| [TRNRun Queue](components/trnrunq/) | `trnrunq.exe` accepts JSON Lines requests on stdin, runs `trnrun.exe` with bounded concurrency, and merges runner output onto stdout. |
+| [TRNRun CLI](components/trnrun/) | Runs and monitors one deck, emitting JSON Lines events. |
+| [TRNRun Queue](components/trnrunq/) | Runs multiple decks with bounded concurrency and merges their events. |
+| [Type3830](components/type3830/) | Reports simulation progress for monitoring and stall detection. |
 
 ## Libraries
 
-| Library | Description |
+| Client | Use it for |
 | --- | --- |
-| [Python](libraries/python/) | `trnrun` Python package runs many decks at once with bounded concurrency, a thread-safe API, and a live terminal display. |
-| [MATLAB](libraries/matlab/) | TRNRun MATLAB toolbox submits and monitors concurrent simulations through the bundled runner and queue executables. |
+| [Python](libraries/python/) | Automating concurrent simulation batches from Python. |
+| [MATLAB](libraries/matlab/) | Running and inspecting concurrent simulations from MATLAB. |
+
+Both libraries bundle the `trnrun` and `trnrunq` executables.
 
 ## Requirements
 
 - Windows x64
 - TRNSYS 17 or 18
-- Python 3.12 or newer for the Python package
-- MATLAB R2021a or newer for the MATLAB toolbox (provisional release floor)
-- Optional: Progress Tracker (Type3830)
+- Python 3.12 or newer for the Python library
+- MATLAB R2021a or newer for the MATLAB library
 
-## Installation
+Progress reporting requires the optional
+[Type3830 Progress Tracker](components/type3830/) in each deck.
 
-### Python
+## Python quick start
 
-```sh
+Install the package with pip:
+
+```powershell
 pip install trnrun
 ```
 
-### MATLAB
+Or with uv:
 
-Open the released `trnrun-v<version>-win_amd64.mltbx` file in MATLAB. See the
-[MATLAB library documentation](libraries/matlab/) for source-checkout and
-packaging instructions.
+```powershell
+uv add trnrun
+```
 
-## Usage
-
-### Python
+Run a deck:
 
 ```python
 from trnrun import SimulationConfig, SimulationManager
@@ -57,20 +59,30 @@ from trnrun import SimulationConfig, SimulationManager
 config = SimulationConfig(watch_tmp=True)
 
 with SimulationManager() as manager:
-    manager.add("path/to/deck.dck", config)
+    simulation = manager.add(r"C:\path\to\deck.dck", config)
     manager.wait()
 ```
 
-### MATLAB
+See the [Python documentation](libraries/python/) for concurrent batches,
+monitoring, and configuration.
+
+## MATLAB quick start
+
+Install the TRNRun toolbox from the MATLAB Add-On Explorer
+
+Run a deck:
 
 ```matlab
 config = trnrun.SimulationConfig(watch_tmp=true);
 manager = trnrun.SimulationManager();
 
-simulation = manager.add("path/to/deck.dck", config);
-manager.wait(simulation);
+simulation = manager.add("C:\path\to\deck.dck", config);
+manager.wait();
 manager.shutdown();
 ```
+
+See the [MATLAB documentation](libraries/matlab/) for installation, concurrent
+batches, and result inspection.
 
 ## Demo
 
@@ -78,4 +90,4 @@ https://github.com/user-attachments/assets/a3599f98-c011-4ccd-8f6d-2f819b6f493d
 
 ## License
 
-MIT License - see LICENSE file for details.
+TRNRun is available under the [MIT License](LICENSE).

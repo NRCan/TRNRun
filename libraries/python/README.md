@@ -1,202 +1,167 @@
-# TRNRun
+# TRNRun for Python
 
-`trnrun` runs and monitors TRNSYS simulations from Python. Each
-`SimulationManager` owns one bundled `trnrunq.exe` process, which queues requests
-and launches the bundled `trnrun.exe` runner with bounded concurrency. Events
-from every runner are routed back to `Simulation` objects.
+`trnrun` is a thin Python wrapper for running and monitoring
+[TRNSYS](https://www.trnsys.com/) simulations with bounded concurrency. The
+package includes the native `trnrun.exe` runner and `trnrunq.exe` queue.
 
 ## Requirements
 
-- Windows
-- Python >= 3.12
-- TRNSYS v17 or v18
-- Optional: Progress Tracker (Type3830) for progress events
+- Windows x64
+- Python 3.12 or newer
+- TRNSYS 17 or 18
+- Optional: Type3830 Progress Tracker for progress and stall monitoring
 
 ## Installation
 
-```sh
+Install with pip:
+
+```powershell
 pip install trnrun
 ```
 
-The Windows package includes both `trnrun.exe` and `trnrunq.exe`.
+Or with uv:
+
+```powershell
+uv add trnrun
+```
 
 ## Quick start
 
 ```python
 from trnrun import SimulationConfig, SimulationManager
 
-config = SimulationConfig(watch_tmp=True)
+config = SimulationConfig()
 
 with SimulationManager(max_concurrent=1) as manager:
     simulation = manager.add(r"C:\path\to\deck.dck", config)
     manager.wait()
 
-status = simulation.status.status if simulation.status is not None else "UNKNOWN"
-print(f"{simulation.deck_path}: {status}")
+if simulation.succeeded:
+    print(f"Completed: {simulation.deck_path}")
+else:
+    status = simulation.status.status if simulation.status is not None else "UNKNOWN"
+    print(f"Failed: {simulation.deck_path} ({status})")
 ```
 
-Run a folder of decks with bounded concurrency:
+## Run a batch
 
 ```python
 from pathlib import Path
 
 from trnrun import SimulationConfig, SimulationManager
 
-config = SimulationConfig(watch_tmp=True)
-decks = sorted(Path(r"C:\path\to\dck").glob("*.dck"))
+config = SimulationConfig()
+decks = sorted(Path(r"C:\path\to\decks").glob("*.dck"))
 
 with SimulationManager(max_concurrent=4) as manager:
     simulations = [manager.add(deck, config) for deck in decks]
     manager.wait()
 
-for simulation in simulations:
-    status = simulation.status.status if simulation.status is not None else "UNKNOWN"
-    print(f"{simulation.deck_path}: {status}")
-```
-
-`add()` waits for an available worker before returning. Drive the manager from
-one thread: simulation state updates only during `add()`, `wait()`, or `follow()`.
-Use `follow()` for live monitoring rather than polling in a sleep loop.
-
-## Completion and results
-
-A runner reports its outcome through one of these terminal `STATUS` values:
-
-| Status | Meaning |
-| --- | --- |
-| `DONE` | Completed successfully. |
-| `ERROR` | Failed during launch or execution, or reported a fatal error. |
-| `CANCELLED` | The runner stopped before completing the simulation. |
-| `TIMEOUT` | Exceeded a configured detection or monitoring timeout. |
-| `STALLED` | Simulation progress stopped for longer than `stall_timeout_ms`. |
-
-A run succeeds only after it finishes with status `DONE`. After `wait()`, use
-`manager.succeeded` and `manager.failed` to inspect results. A finished run without
-a terminal status is considered failed.
-
-Queue failures raise `RuntimeError`; unfinished runs remain unfinished and are
-not automatically retried.
-
-```python
-with SimulationManager(max_concurrent=4) as manager:
-    for deck in decks:
-        manager.add(deck, config)
-    manager.wait()
-
-    for simulation in manager.succeeded:
-        print(f"completed: {simulation.deck_path}")
-
-    for simulation in manager.failed:
-        status = simulation.status
-        label = status.status if status is not None else ""
-        print(f"failed: {simulation.deck_path} ({label})")
-
-```
-
-## `SimulationManager`
-
-```python
-SimulationManager(
-    max_concurrent=DEFAULT_MAX_CONCURRENT,
-    refresh_interval=1.0,
-)
-```
-
-| Parameter | Default | Description |
-| --- | --- | --- |
-| `max_concurrent` | `cpu_count() - 1`, at least 1 | Maximum number of active runners. |
-| `refresh_interval` | `1.0` | Minimum seconds between display redraws, which the manager issues as it reads the queue. A non-positive value disables the display. |
-| `trnrunq_path` | bundled queue | Keyword-only queue executable path, primarily for development and testing. |
-
-| Member | Description |
-| --- | --- |
-| `add(deck_file, config)` | Submit a deck, block until worker pickup before launch, and return its `Simulation`. |
-| `wait(simulation=None)` | Wait for one simulation, or all when omitted. Returns `None`; has no timeout. |
-| `follow()` | Yield updated simulations until all runs finish. |
-| `simulations` | All queue-accepted simulations in acceptance order. |
-| `succeeded` | Finished simulations whose terminal status is `DONE`. |
-| `failed` | Finished simulations that did not succeed. |
-| `shutdown()` | Finish remaining runs and close the queue. Called automatically on context exit. |
-
-Use each manager in a single `with` block. Context exit waits for remaining runs
-and closes the queue; results remain readable afterward. Do not reuse the manager
-or call `shutdown()` inside the block. Without a context, call `shutdown()` exactly once.
-
-Pass a simulation returned by this manager's `add()` to wait for only that run:
-
-```python
-with SimulationManager(max_concurrent=2) as manager:
-    first = manager.add(decks[0], config)
-    second = manager.add(decks[1], config)
-    manager.wait(first)
-    print(f"first succeeded: {first.succeeded}")
-    manager.wait()  # Finish any remaining runs.
-```
-
-`wait(simulation)` still updates other runs while waiting. The selected simulation
-must belong to this manager; other runs may still be active when it returns.
-
-## `Simulation`
-
-A `Simulation` holds the state and results of one submitted run.
-
-| Member | Description |
-| --- | --- |
-| `id` | Identifier assigned by the manager and used as the queue `runID`. |
-| `deck_path` | Absolute submitted deck path. |
-| `config` | Per-run copy of the submitted configuration. |
-| `status` | Latest status event, with an optional outcome or failure message. |
-| `progress` | Latest `PROGRESS` event; requires `watch_tmp=True`. |
-| `config_event` | Latest simulation start, stop, and step event. |
-| `setting_event` | Latest runner settings event. |
-| `completion_event` | Queue completion event, including its `exit_code`, or `None` if none was received. |
-| `logs` | Snapshot of the latest 5,000 received log events, oldest first. |
-| `log_count` | Total received log events, including entries no longer retained in `logs`. |
-| `notices`, `warnings`, `fatals` | Received log severity counters, including entries no longer retained in `logs`. |
-| `is_running` | Whether the simulation is waiting or running. |
-| `is_accepted` | Whether a queue worker picked the simulation up. |
-| `is_finished` | Whether the queue reported completion for this run. |
-| `has_terminal_status` | Whether the runner reported a canonical terminal status. |
-| `succeeded` | Whether the completed run has terminal status `DONE`. |
-
-See [`trnrun.events`](trnrun/events.py) for event fields and units.
-
-## Monitoring progress
-
-Progress events require `watch_tmp=True` and Type3830 in the deck. The built-in
-terminal display is enabled by default; set `refresh_interval=0` for custom output.
-
-`follow()` yields simulations as they update until all runs finish. It does not
-replay updates already consumed by another manager call.
-
-```python
-from trnrun import SimulationConfig, SimulationManager
-
-config = SimulationConfig(watch_tmp=True)
-
-with SimulationManager(max_concurrent=1, refresh_interval=0) as manager:
-    simulation = manager.add(r"C:\path\to\deck.dck", config)
-
-    for updated in manager.follow():
-        if updated.progress is not None:
-            print(f"[{updated.id}] {updated.progress.percent:6.1%}", end="\r")
-
-status = simulation.status.status if simulation.status is not None else "UNKNOWN"
-print(f"\nstatus: {status}")
+print(f"{len(manager.succeeded)} succeeded, {len(manager.failed)} failed")
 ```
 
 ## `SimulationConfig`
 
-`SimulationConfig` controls runner behavior, including the TRNSYS executable
-path, launch detection, log and progress monitoring, timeouts, cleanup, severity
-filtering, and event-file output. Its defaults match the runner defaults.
-See [`SimulationConfig`](trnrun/config.py) for the complete field reference.
+`SimulationConfig` defines how one deck is launched and monitored.
 
-Set `trnexe_path` if TRNSYS is installed somewhere other than
-`C:\TRNSYS18\Exe\TrnEXE64.exe`. To stop TRNSYS on timeout or stall, enable the
-corresponding kill option; timeouts alone do not bound `wait()`.
+### Executables and window
 
-For example:
+- _`trnrun_path`_ (`str | Path`, default: bundled `trnrun.exe`)
+
+  Path to the `trnrun.exe` executable.
+
+- _`trnexe_path`_ (`str | Path`, default:
+  `C:\TRNSYS18\Exe\TrnEXE64.exe`)
+
+  Path to the `TrnEXE64.exe` or `TrnEXE.exe` executable.
+
+- _`gui_visibility`_ (`str`, default: `"hidden"`)
+
+  Controls the TRNSYS simulation window. Values are case-insensitive:
+
+  - `keep` / `keepOpen`: show the window and leave it open after the simulation.
+  - `auto` / `autoClose`: show the window and close it after the simulation.
+  - `min` / `minimized`: minimize the window and leave it open afterward.
+  - `minAuto` / `minimizedAuto`: minimize the window and close it afterward.
+  - `hidden`: hide the window and close it after the simulation.
+
+### Launch detection
+
+- _`wait_for_gui`_ (`bool`, default: `True`)
+
+  Wait for a recognized TRNSYS simulation window as part of the launch-readiness checks.
+
+- _`wait_for_lst`_ (`bool`, default: `True`)
+
+  Wait for the component-order header in the deck's `.lst` file.
+
+- _`wait_for_tmp`_ (`bool`, default: `False`)
+
+  Wait for a Type3830 `.tmp` file. Do not enable this for a deck without
+  Type3830, or launch detection will wait until its deadline.
+
+- _`detect_timeout_ms`_ (`int`, default: `300_000`)
+
+  Maximum time, in milliseconds, to wait for launch readiness. Set to `0` to
+  wait indefinitely. The runner holds the launch mutex for the current Windows
+  session until detection completes.
+
+- _`extra_delay_ms`_ (`int`, default: `0`)
+
+  Additional delay in milliseconds after all enabled readiness checks pass.
+
+### Runtime monitoring
+
+- _`poll_ms`_ (`int`, default: `100`)
+
+  Polling interval in milliseconds for the TRNSYS process and output files.
+  Values below `1` are clamped to `1`.
+
+- _`watch_log`_ (`bool`, default: `True`)
+
+  Read the deck's `.log` file and emit parsed `LOG` events.
+
+- _`watch_tmp`_ (`bool`, default: `False`)
+
+  Read Type3830 `.tmp` updates and emit configuration and progress events.
+  Required for progress-based `CANCELLED` and `STALLED` outcomes.
+
+- _`watch_timeout_ms`_ (`int`, default: `0`)
+
+  Maximum runtime-monitoring duration in milliseconds. `0` means unlimited.
+
+- _`stall_timeout_ms`_ (`int`, default: `0`)
+
+  Maximum milliseconds without simulation-time progress. `0` disables stall
+  detection. Requires `watch_tmp=True` and a valid Type3830 snapshot.
+
+- _`kill_on_timeout`_ (`bool`, default: `False`)
+
+  Terminate the owned TRNSYS process after a detection or monitoring timeout. Without it, the
+  `trnrun.exe` stop polling and waits for process exit.
+
+- _`kill_on_stall`_ (`bool`, default: `False`)
+
+  Terminate the owned TRNSYS process after detecting a stall. Without it, the
+  `trnrun.exe` waits for process exit.
+
+### Output and cleanup
+
+- _`clean_on_success`_ (`bool`, default: `False`)
+
+  Delete `.tmp`, `.log`, `.lst`, and `.PTI` sidecar files after a successful
+  run.
+
+- _`severity`_ (`str`, default: `"Notice"`)
+
+  Minimum emitted log severity: `Notice`, `Warning`, or `Fatal`,
+  case-insensitively.
+
+- _`write_events`_ (`bool`, default: `False`)
+
+  Mirror emitted runner events to a `.jsonl` file beside the deck.
+
+A configuration with every parameter set explicitly:
 
 ```python
 from pathlib import Path
@@ -204,12 +169,238 @@ from pathlib import Path
 from trnrun import SimulationConfig
 
 config = SimulationConfig(
+    trnrun_path=Path(r"C:\path\to\trnrun.exe"),
     trnexe_path=Path(r"C:\TRNSYS18\Exe\TrnEXE64.exe"),
+    gui_visibility="hidden",
+    wait_for_gui=True,
+    wait_for_lst=True,
+    wait_for_tmp=True,
+    detect_timeout_ms=300_000,
+    extra_delay_ms=0,
+    poll_ms=100,
+    watch_log=True,
     watch_tmp=True,
     watch_timeout_ms=300_000,
     stall_timeout_ms=300_000,
+    clean_on_success=True,
     kill_on_timeout=True,
     kill_on_stall=True,
-    clean_on_success=True,
+    severity="Notice",
+    write_events=False,
 )
 ```
+
+## `SimulationManager`
+
+`SimulationManager` owns one queue process and controls how simulations are
+submitted, monitored, and displayed.
+
+### Parameters
+
+- _`max_concurrent`_ (`int`, default: logical processor count minus one, at
+  least `1`)
+
+  Maximum number of runners that may execute concurrently. Additional
+  submissions wait for a worker.
+
+- _`refresh_interval`_ (`float`, default: `1.0`)
+
+  Minimum seconds between terminal-display redraws while events are being read.
+  Set to `0` or a negative value to disable the built-in display.
+
+- _`trnrunq_path`_ (`str | Path`, default: bundled `trnrunq.exe`)
+
+  Path to the `trnrunq.exe` executable.
+
+A manager with every parameter set explicitly:
+
+```python
+from pathlib import Path
+
+from trnrun import SimulationManager
+
+with SimulationManager(
+    max_concurrent=4,
+    refresh_interval=1.0,
+    trnrunq_path=Path(r"C:\path\to\trnrunq.exe"),
+) as manager:
+    ...
+```
+
+### Methods
+
+- _`add(deck_file: str | Path, config: SimulationConfig) -> Simulation`_
+
+  Validate and submit `deck_file` using a copy of `config`. Blocks until a queue
+  worker accepts the request and returns its `Simulation`.
+
+- _`wait(simulation: Simulation | None = None) -> None`_
+
+  With no argument, process events until every accepted simulation completes.
+  Pass a manager-owned `Simulation` to return when that run completes while
+  continuing to process updates from other runs. There is no client-side
+  timeout.
+
+- _`follow(simulation: Simulation | None = None) -> Iterator[Simulation]`_
+
+  With no argument, yield the affected `Simulation` after every newly processed
+  event until all runs complete. Pass a manager-owned `Simulation` to yield only
+  that run's updates and return when it completes. Events for other runs are
+  still processed, and previously consumed events are not replayed.
+
+- _`shutdown() -> None`_
+
+  Close queue input, finish accepted work, and reap the queue process. Called
+  automatically when leaving a `with` block.
+
+An example using every method:
+
+```python
+from trnrun import SimulationConfig, SimulationManager
+
+config = SimulationConfig()
+manager = SimulationManager(max_concurrent=2)
+
+try:
+    first = manager.add(r"C:\path\to\first.dck", config)
+    second = manager.add(r"C:\path\to\second.dck", config)
+
+    for updated in manager.follow(first):
+        if updated.status is not None:
+            print(f"{updated.deck_path}: {updated.status.status}")
+
+    manager.wait()
+    print(f"First succeeded: {first.succeeded}")
+    print(f"Second succeeded: {second.succeeded}")
+finally:
+    manager.shutdown()
+```
+
+## `Simulation`
+
+`SimulationManager.add()` returns a `Simulation` containing the current state and
+results of one run. The manager updates this object as it processes queue events;
+applications normally inspect it rather than constructing or updating it
+directly.
+
+### Identity and configuration
+
+- _`id`_ (`int`)
+
+  Manager-assigned simulation identifier. The queue uses its string form as the
+  run ID.
+
+- _`deck_path`_ (`Path`)
+
+  Absolute path to the submitted deck.
+
+- _`config`_ (`SimulationConfig`)
+
+  Independent copy of the configuration used for this run.
+
+### Events
+
+- _`status`_ (`StatusEvent | None`)
+
+  Latest runner status, or `None` before the first status event. Terminal status
+  values are `DONE`, `ERROR`, `CANCELLED`, `TIMEOUT`, and `STALLED`.
+
+- _`progress`_ (`ProgressEvent | None`)
+
+  Latest Type3830 progress event, or `None` when progress has not been reported.
+  `percent` is a fraction from `0` to `1`; `elapsed` and `eta` are milliseconds.
+
+- _`config_event`_ (`ConfigEvent | None`)
+
+  Latest simulation-time configuration event, containing `start`, `stop`, and
+  `step`, or `None` before Type3830 reports it.
+
+- _`setting_event`_ (`SettingEvent | None`)
+
+  `trnrun.exe` settings reported when the simulation starts, or `None` before they
+  are received.
+
+- _`completion_event`_ (`QueueEvent | None`)
+
+  Queue completion metadata, including `exit_code`, or `None` until the queue
+  finishes the request. `exit_code` is `None` if the runner could not be launched.
+
+- _`logs`_ (`list[LogEvent]`)
+
+  Snapshot of the latest 5,000 log events in arrival order. Older events are
+  discarded from this list, but remain included in the log counters.
+
+### State and outcome
+
+- _`is_running`_ (`bool`)
+
+  Whether the simulation is pending or running and has not received queue
+  completion.
+
+- _`is_accepted`_ (`bool`)
+
+  Whether a queue worker has accepted the request.
+
+- _`is_finished`_ (`bool`)
+
+  Whether the queue has reported completion for the request.
+
+- _`has_terminal_status`_ (`bool`)
+
+  Whether the runner has reported one of the canonical terminal statuses.
+
+- _`succeeded`_ (`bool`)
+
+  Whether the queue completed the request and the latest runner status is
+  exactly `DONE`.
+
+### Log counters
+
+- _`log_count`_ (`int`)
+
+  Total number of received log events, including events no longer retained in
+  `logs`.
+
+- _`notices`_ (`int`)
+
+  Number of received `Notice` log events.
+
+- _`warnings`_ (`int`)
+
+  Number of received `Warning` log events.
+
+- _`fatals`_ (`int`)
+
+  Number of received `Fatal` log events.
+
+An example inspecting every property:
+
+```python
+from trnrun import SimulationConfig, SimulationManager
+
+with SimulationManager(max_concurrent=1) as manager:
+    simulation = manager.add(r"C:\path\to\deck.dck", SimulationConfig())
+    manager.wait(simulation)
+
+print(f"ID: {simulation.id}")
+print(f"Deck: {simulation.deck_path}")
+print(f"Config: {simulation.config}")
+print(f"Running: {simulation.is_running}")
+print(f"Accepted: {simulation.is_accepted}")
+print(f"Finished: {simulation.is_finished}")
+print(f"Terminal status received: {simulation.has_terminal_status}")
+print(f"Succeeded: {simulation.succeeded}")
+print(f"Status: {simulation.status}")
+print(f"Progress: {simulation.progress}")
+print(f"Simulation config event: {simulation.config_event}")
+print(f"Runner settings: {simulation.setting_event}")
+print(f"Queue completion: {simulation.completion_event}")
+print(f"Logs: {simulation.logs}")
+print(f"Log count: {simulation.log_count}")
+print(f"Notices: {simulation.notices}")
+print(f"Warnings: {simulation.warnings}")
+print(f"Fatals: {simulation.fatals}")
+```
+
+Runnable examples are available
+in the [TRNRun repository](https://github.com/NRCan/TRNRun/tree/main/libraries/python/examples).

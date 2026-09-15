@@ -168,6 +168,38 @@ def test_follow_routes_updates_deduplicates_acceptance_and_completes(
     harness.display.simulation_finished.assert_called_once_with(simulation)
 
 
+def test_follow_for_one_filters_yields_but_updates_other_runs(
+    harness: Harness,
+    valid_inputs: tuple[Path, SimulationConfig],
+) -> None:
+    """Targeted follow yields one run while keeping interleaved runs current."""
+    deck, config = valid_inputs
+    harness.process.read_line.side_effect = [accepted("1")]
+    first = harness.manager.add(deck, config)
+    harness.process.read_line.side_effect = [accepted("2")]
+    second = harness.manager.add(deck, config)
+    harness.process.read_line.side_effect = [
+        stream("2", "STATUS", status="RUNNING"),
+        stream("1", "PROGRESS", time=5, percent=0.5, elapsed=1000, eta=1000),
+        stream("2", "PROGRESS", time=2, percent=0.2, elapsed=500, eta=2000),
+        completed("1"),
+        completed("2"),
+    ]
+
+    updates = list(harness.manager.follow(first))
+
+    assert updates == [first, first]
+    assert first.is_finished
+    assert not second.is_finished
+    assert second.status is not None
+    assert second.status.status == "RUNNING"
+    assert second.progress is not None
+    assert second.progress.percent == 0.2
+
+    assert list(harness.manager.follow()) == [second]
+    assert second.is_finished
+
+
 def test_result_lists_use_acceptance_order_and_return_snapshots(
     harness: Harness,
     valid_inputs: tuple[Path, SimulationConfig],
@@ -228,7 +260,7 @@ def test_wait_for_one_processes_other_runs_and_returns_at_target(
     assert harness.manager._active == {}
 
 
-def test_wait_rejects_simulation_from_another_manager(
+def test_wait_and_follow_reject_simulation_from_another_manager(
     harness: Harness,
     valid_inputs: tuple[Path, SimulationConfig],
 ) -> None:
@@ -238,6 +270,8 @@ def test_wait_rejects_simulation_from_another_manager(
 
     with pytest.raises(ValueError, match="does not belong"):
         harness.manager.wait(outsider)
+    with pytest.raises(ValueError, match="does not belong"):
+        _ = list(harness.manager.follow(outsider))
 
     harness.process.read_line.assert_not_called()
 
