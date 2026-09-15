@@ -1,8 +1,8 @@
 # TRNRun for Python
 
 `trnrun` is a thin Python wrapper for running and monitoring
-[TRNSYS](https://www.trnsys.com/) simulations with bounded concurrency. The
-package includes the native `trnrun.exe` runner and `trnrunq.exe` queue.
+[TRNSYS](https://www.trnsys.com/) batch simulations. The
+package includes the `trnrun.exe` runner and `trnrunq.exe` queue.
 
 ## Requirements
 
@@ -35,13 +35,12 @@ config = SimulationConfig()
 
 with SimulationManager(max_concurrent=1) as manager:
     simulation = manager.add(r"C:\path\to\deck.dck", config)
-    manager.wait()
+    manager.wait(simulation)
 
 if simulation.succeeded:
     print(f"Completed: {simulation.deck_path}")
 else:
-    status = simulation.status.status if simulation.status is not None else "UNKNOWN"
-    print(f"Failed: {simulation.deck_path} ({status})")
+    print(f"Failed: {simulation.deck_path}")
 ```
 
 ## Run a batch
@@ -51,7 +50,7 @@ from pathlib import Path
 
 from trnrun import SimulationConfig, SimulationManager
 
-config = SimulationConfig()
+config = SimulationConfig(watch_tmp=true)
 decks = sorted(Path(r"C:\path\to\decks").glob("*.dck"))
 
 with SimulationManager(max_concurrent=4) as manager:
@@ -145,8 +144,8 @@ print(f"{len(manager.succeeded)} succeeded, {len(manager.failed)} failed")
 
 - _`kill_on_stall`_ (`bool`, default: `False`)
 
-  Terminate the owned TRNSYS process after detecting a stall. Without it, the
-  `trnrun.exe` waits for process exit.
+  Terminate the owned TRNSYS process after detecting a stall. Without it, 
+  the `trnrun.exe` waits for process exit.
 
 ### Output and cleanup
 
@@ -211,7 +210,7 @@ from one thread. Simulation state advances only while `add()`, `wait()`,
 
 - _`refresh_interval`_ (`float`, default: `1.0`)
 
-  Minimum seconds between terminal-display redraws while events are being read.
+  Minimum seconds between terminal-display redraws while events are being read. 
   Set to `0` or a negative value to disable the built-in display.
 
 - _`trnrunq_path`_ (`str | Path`, default: bundled `trnrunq.exe`)
@@ -233,7 +232,7 @@ with SimulationManager(
     ...
 ```
 
-### Result properties
+### Methods and properties
 
 - _`simulations`_ (`list[Simulation]`)
 
@@ -241,14 +240,12 @@ with SimulationManager(
 
 - _`succeeded`_ (`list[Simulation]`)
 
-  Snapshot of simulations that completed successfully.
+  Snapshot of accepted simulations that completed successfully.
 
 - _`failed`_ (`list[Simulation]`)
 
   Snapshot of simulations that completed without succeeding. Pending and
   running simulations are not included.
-
-### Methods
 
 - _`add(deck_file: str | Path, config: SimulationConfig) -> Simulation`_
 
@@ -275,12 +272,12 @@ with SimulationManager(
   Close queue input, finish accepted work, and reap the queue process. Called
   automatically when leaving a `with` block.
 
-Example manager workflow with every method:
+Example manager workflow with every method and property:
 
 ```python
 from trnrun import SimulationConfig, SimulationManager
 
-config = SimulationConfig()
+config = SimulationConfig(watch_tmp=true)
 manager = SimulationManager(max_concurrent=2)
 
 try:
@@ -292,6 +289,9 @@ try:
             print(f"{updated.deck_path}: {updated.status.status}")
 
     manager.wait()
+    print(f"Simulations: {len(manager.simulations)}")
+    print(f"Succeeded: {len(manager.succeeded)}")
+    print(f"Failed: {len(manager.failed)}")
     print(f"First succeeded: {first.succeeded}")
     print(f"Second succeeded: {second.succeeded}")
 finally:
@@ -380,8 +380,7 @@ directly.
 
 - _`log_count`_ (`int`)
 
-  Total number of received log events, including events no longer retained in
-  `logs`.
+  Total number of received log events.
 
 - _`notices`_ (`int`)
 
@@ -401,7 +400,7 @@ An example inspecting every property:
 from trnrun import SimulationConfig, SimulationManager
 
 with SimulationManager(max_concurrent=1) as manager:
-    simulation = manager.add(r"C:\path\to\deck.dck", SimulationConfig())
+    simulation = manager.add(r"C:\path\to\deck.dck", SimulationConfig(watch_tmp=true))
     manager.wait(simulation)
 
 print(f"ID: {simulation.id}")

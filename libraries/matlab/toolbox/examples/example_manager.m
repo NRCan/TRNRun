@@ -17,7 +17,7 @@ function simulations = example_manager()
 
     sim_count = 20;
     max_concurrent = 10;
-    refresh_interval = 1;
+    refresh_interval = 0.1;
 
     config = SimulationConfig(trnexe_path=trnexe_path, watch_tmp=true);
 

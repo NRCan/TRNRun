@@ -41,7 +41,8 @@ classdef SimulationManager < handle
             %   Use add to submit runs, wait to process updates until completion,
             %   or follow to receive callbacks as updates are applied. Call
             %   shutdown to close queue input, drain output, and wait for exit.
-            %   Deleting the manager performs best-effort cleanup instead.
+            %   Deleting the manager releases its owned transport and display,
+            %   whose destructors perform best-effort cleanup.
             %
             %   Example:
             %       manager = trnrun.SimulationManager( ...
@@ -143,24 +144,42 @@ classdef SimulationManager < handle
             end
         end
 
-        function follow(obj, callback)
-            %FOLLOW Invoke callback after every newly applied update until completion.
+        function follow(obj, callback, simulation)
+            %FOLLOW Invoke a callback as updates arrive for all runs or one run.
+            %   FOLLOW(CALLBACK) invokes CALLBACK after every newly applied
+            %   update until all currently pending simulations complete.
+            %
+            %   FOLLOW(CALLBACK, SIMULATION) processes every queue event but
+            %   invokes CALLBACK only for SIMULATION, returning when that
+            %   manager-owned simulation completes.
 
             arguments
                 obj (1,1) trnrun.SimulationManager
                 callback (1,1) function_handle
+                simulation trnrun.Simulation {mustBeScalarOrEmpty} = ...
+                    trnrun.Simulation.empty(1, 0)
             end
 
             guard = obj.enterOperation('follow'); %#ok<NASGU>
-            pending = obj.sims(~[obj.sims.isFinished]);
+            if isempty(simulation)
+                pending = obj.sims(~[obj.sims.isFinished]);
+            else
+                if ~any(obj.sims == simulation)
+                    error('trnrun:ForeignSimulation', ...
+                        'Simulation does not belong to this manager.');
+                end
+                pending = simulation(~simulation.isFinished);
+            end
             if isempty(pending)
                 return
             end
             obj.requireOpen();
 
             while ~isempty(pending)
-                simulation = obj.readNextUpdate();
-                callback(simulation);
+                updated = obj.readNextUpdate();
+                if isempty(simulation) || updated == simulation
+                    callback(updated);
+                end
                 pending = pending(~[pending.isFinished]);
             end
         end
@@ -232,22 +251,6 @@ classdef SimulationManager < handle
             value = obj.diagnostics;
         end
 
-        function delete(obj)
-            %DELETE Clean up the queue and progress window without throwing.
-
-            try
-                if ~isempty(obj.transport) && ~obj.shutdownComplete
-                    obj.transport.forceCleanup();
-                end
-            catch
-            end
-            try
-                if ~isempty(obj.display)
-                    delete(obj.display);
-                end
-            catch
-            end
-        end
     end
 
     methods (Access = private)

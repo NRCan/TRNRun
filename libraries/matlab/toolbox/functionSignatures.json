@@ -96,7 +96,8 @@
         "inputs":
         [
             {"name":"obj", "kind":"required", "type":["trnrun.SimulationManager"]},
-            {"name":"callback", "kind":"required", "type":["function_handle"], "purpose":"Called with each updated simulation"}
+            {"name":"callback", "kind":"required", "type":["function_handle"], "purpose":"Called with each updated simulation"},
+            {"name":"simulation", "kind":"optional", "type":["trnrun.Simulation","scalar"], "purpose":"Single owned simulation whose updates invoke the callback"}
         ]
     },
 

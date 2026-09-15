@@ -492,6 +492,83 @@ classdef SimulationManagerTest < matlab.unittest.TestCase
             end
         end
 
+        function followForOneFiltersCallbacksAndStopsAtItsCompletion(testCase)
+            %FOLLOWFORONEFILTERSCALLBACKS Other runs update without being yielded.
+
+            first = testCase.addAccepted();
+            second = testCase.addAccepted();
+            testCase.Queue.queue([ ...
+                progress(2, 0.2), ...
+                progress(1, 0.5), ...
+                status(2, "RUNNING"), ...
+                completed(1), ...
+                completed(2)]);
+            seen = trnrun.Simulation.empty(1, 0);
+
+            testCase.Manager.follow(@record, first);
+
+            testCase.verifyNumElements(seen, 2);
+            testCase.verifyTrue(all(seen == first));
+            testCase.verifyTrue(first.isFinished);
+            testCase.verifyFalse(second.isFinished);
+            testCase.verifyEqual(second.progress.percent, 0.2);
+            testCase.verifyEqual(second.status.status, "RUNNING");
+
+            testCase.Manager.wait(second);
+            testCase.verifyTrue(second.isFinished);
+
+            function record(updated)
+                %RECORD Capture only updates for the selected simulation.
+
+                seen(end + 1) = updated;
+            end
+        end
+
+        function followForOneReturnsImmediatelyWhenFinished(testCase)
+            %FOLLOWFORONERETURNSIMMEDIATELYWHENFINISHED No reads or callbacks occur.
+
+            simulation = testCase.addAccepted();
+            testCase.Queue.queue(completed(1));
+            testCase.Manager.wait(simulation);
+            mark = numel(testCase.Queue.calls);
+            count = 0;
+
+            testCase.Manager.follow(@increment, simulation);
+
+            testCase.verifyEqual(count, 0);
+            testCase.verifyEmpty(testCase.Queue.callsSince(mark));
+
+            function increment(~)
+                %INCREMENT Count callbacks that should never happen.
+
+                count = count + 1;
+            end
+        end
+
+        function followRejectsAForeignSimulation(testCase)
+            %FOLLOWREJECTSAFOREIGNSIMULATION Ownership is checked before reading.
+
+            testCase.makeManager();
+            outsider = trnrun.Simulation(testCase.Deck, testCase.Config, 1);
+            mark = numel(testCase.Queue.calls);
+
+            testCase.verifyError(@() testCase.Manager.follow( ...
+                @(simulation) simulation, outsider), ...
+                'trnrun:ForeignSimulation');
+            testCase.verifyEmpty(testCase.Queue.callsSince(mark));
+        end
+
+        function followRejectsNonScalarTargets(testCase)
+            %FOLLOWREJECTSNONSCALARTARGETS Follow takes one selected run or all runs.
+
+            first = testCase.addAccepted();
+            second = testCase.addAccepted();
+
+            testCase.verifyError(@() testCase.Manager.follow( ...
+                @(simulation) simulation, [first, second]), ...
+                'MATLAB:validators:mustBeScalarOrEmpty');
+        end
+
         function followOnAnIdleManagerDoesNothing(testCase)
             %FOLLOWONANIDLEMANAGERDOESNOTHING No pending runs means no callbacks.
 
@@ -515,6 +592,9 @@ classdef SimulationManagerTest < matlab.unittest.TestCase
             testCase.makeManager();
 
             testCase.verifyError(@() testCase.Manager.follow('disp'), ...
+                'MATLAB:validation:UnableToConvert');
+            simulation = trnrun.Simulation(testCase.Deck, testCase.Config, 1);
+            testCase.verifyError(@() testCase.Manager.follow('disp', simulation), ...
                 'MATLAB:validation:UnableToConvert');
         end
 
@@ -694,32 +774,6 @@ classdef SimulationManagerTest < matlab.unittest.TestCase
             testCase.verifyEmpty(testCase.Manager.sessionDiagnostics);
         end
 
-        % -----------------------------------------------------------------
-        % delete
-        % -----------------------------------------------------------------
-
-        function deleteTerminatesAQueueThatWasNeverShutDown(testCase)
-            %DELETETERMINATESAQUEUETHATWASNEVERSHUTDOWN Cleanup is best effort but happens.
-
-            testCase.makeManager();
-            queue = testCase.Queue;
-
-            delete(testCase.Manager);
-
-            testCase.verifyTrue(queue.cleanedUp);
-        end
-
-        function deleteLeavesACleanlyShutDownQueueAlone(testCase)
-            %DELETELEAVESACLEANLYSHUTDOWNQUEUEALONE No forced kill after a clean exit.
-
-            testCase.makeManager();
-            testCase.Manager.shutdown();
-            queue = testCase.Queue;
-
-            delete(testCase.Manager);
-
-            testCase.verifyFalse(queue.cleanedUp);
-        end
 
         % -----------------------------------------------------------------
         % Display
