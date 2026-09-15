@@ -9,7 +9,8 @@ package includes the native `trnrun.exe` runner and `trnrunq.exe` queue.
 - Windows x64
 - Python 3.12 or newer
 - TRNSYS 17 or 18
-- Optional: Type3830 Progress Tracker for progress and stall monitoring
+- Optional: [Type3830 Progress Tracker](../../components/type3830/) for
+  progress and stall monitoring
 
 ## Installation
 
@@ -137,8 +138,10 @@ print(f"{len(manager.succeeded)} succeeded, {len(manager.failed)} failed")
 
 - _`kill_on_timeout`_ (`bool`, default: `False`)
 
-  Terminate the owned TRNSYS process after a detection or monitoring timeout. Without it, the
-  `trnrun.exe` stop polling and waits for process exit.
+  Terminate the owned TRNSYS process when launch detection or runtime
+  monitoring times out. If disabled, a detection timeout proceeds to runtime
+  monitoring; after a runtime-monitoring timeout, `trnrun.exe` stops polling
+  and waits for the process to exit.
 
 - _`kill_on_stall`_ (`bool`, default: `False`)
 
@@ -159,7 +162,8 @@ print(f"{len(manager.succeeded)} succeeded, {len(manager.failed)} failed")
 
 - _`write_events`_ (`bool`, default: `False`)
 
-  Mirror emitted runner events to a `.jsonl` file beside the deck.
+  Mirror emitted runner events to a `.jsonl` file beside the deck, replacing
+  any existing file when the run starts.
 
 A configuration with every parameter set explicitly:
 
@@ -193,7 +197,9 @@ config = SimulationConfig(
 ## `SimulationManager`
 
 `SimulationManager` owns one queue process and controls how simulations are
-submitted, monitored, and displayed.
+submitted, monitored, and displayed. It is synchronous and intended for use
+from one thread. Simulation state advances only while `add()`, `wait()`,
+`follow()`, or `shutdown()` reads queue output. 
 
 ### Parameters
 
@@ -227,12 +233,28 @@ with SimulationManager(
     ...
 ```
 
+### Result properties
+
+- _`simulations`_ (`list[Simulation]`)
+
+  Snapshot of all queue-accepted simulations in acceptance order.
+
+- _`succeeded`_ (`list[Simulation]`)
+
+  Snapshot of simulations that completed successfully.
+
+- _`failed`_ (`list[Simulation]`)
+
+  Snapshot of simulations that completed without succeeding. Pending and
+  running simulations are not included.
+
 ### Methods
 
 - _`add(deck_file: str | Path, config: SimulationConfig) -> Simulation`_
 
   Validate and submit `deck_file` using a copy of `config`. Blocks until a queue
-  worker accepts the request and returns its `Simulation`.
+  worker accepts the request and returns its `Simulation`. If every worker is
+  occupied, this may not return until an earlier simulation finishes.
 
 - _`wait(simulation: Simulation | None = None) -> None`_
 
@@ -253,7 +275,7 @@ with SimulationManager(
   Close queue input, finish accepted work, and reap the queue process. Called
   automatically when leaving a `with` block.
 
-An example using every method:
+Example manager workflow with every method:
 
 ```python
 from trnrun import SimulationConfig, SimulationManager
