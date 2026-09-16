@@ -10,9 +10,11 @@ from trnrun import SimulationConfig, SimulationManager
 # -----------------------------------------------------------------------------
 # Configuration
 # -----------------------------------------------------------------------------
+__root__ = Path(__file__).resolve().parent
+
 TRNEXE_PATH = Path(r"C:\TRNSYS18\Exe\TrnEXE64.exe")
-MASTER_DCK = Path(r"examples\dck\example_wo_plot_w_tracking.dck")
-DCK_FOLDER = Path(r"examples\runs")
+MASTER_DCK = __root__ / "dck" / "example_wo_plot_w_tracking.dck"
+DCK_FOLDER = __root__ / "runs"
 
 SIM_COUNT = 100
 MAX_CONCURRENT = 50
