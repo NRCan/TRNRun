@@ -98,12 +98,11 @@ class ParsedHTML(HTMLParser):
 
 @pytest.fixture
 def notebook_api(monkeypatch: pytest.MonkeyPatch) -> tuple[Mock, list[FakeDisplayHandle]]:
-    """Return handles only for live output; ordinary results have no display ID."""
+    """Record the live display; completed lines must use stdout instead."""
     handles: list[FakeDisplayHandle] = []
 
-    def publish(obj: FakeHTML, *, display_id: bool = False) -> FakeDisplayHandle | None:
-        if not display_id:
-            return None
+    def publish(obj: FakeHTML, *, display_id: bool) -> FakeDisplayHandle:
+        assert display_id is True
         handle = FakeDisplayHandle(obj)
         handles.append(handle)
         return handle
@@ -356,6 +355,7 @@ def test_nonpositive_interval_selects_null_display(monkeypatch: pytest.MonkeyPat
 def test_notebook_display_throttles_progress_but_updates_lifecycle_promptly(
     notebook_api: tuple[Mock, list[FakeDisplayHandle]],
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     """Starts and completions bypass throttling, while progress waits for its interval."""
     display_html, handles = notebook_api
@@ -377,12 +377,12 @@ def test_notebook_display_throttles_progress_but_updates_lifecycle_promptly(
     simulation.apply_event(StatusEvent("DONE", TIMESTAMP))
     display.simulation_finished(simulation)
 
-    assert display_html.call_count == 2
+    display_html.assert_called_once()
     assert len(handles) == 1
-    assert display_html.call_args_list[0].kwargs == {"display_id": True}
-    assert display_html.call_args_list[1].kwargs == {}
-    final_html = display_html.call_args_list[1].args[0].data
-    assert ParsedHTML(final_html).lines == [display_module._render_line(simulation).plain.rstrip()]
+    assert display_html.call_args.kwargs == {"display_id": True}
+    captured = capsys.readouterr()
+    assert captured.out == display_module._render_line(simulation).plain + "\n"
+    assert captured.err == ""
     assert len(handle.updates) == 3
     assert "50%" in handle.updates[1].data
     assert ParsedHTML(handle.html.data).lines == [display_module._render_line(second).plain.rstrip()]
@@ -471,8 +471,9 @@ def test_notebook_html_is_an_escaped_inline_styled_fragment(
 def test_notebook_unchanged_refreshes_advance_throttle_without_publishing(
     notebook_api: tuple[Mock, list[FakeDisplayHandle]],
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Unchanged frames advance the throttle; finishing publishes once and empties live output."""
+    """Unchanged frames advance the throttle; finishing prints once and empties live output."""
     display_html, handles = notebook_api
     monotonic = Mock(side_effect=[10.0, 11.0, 11.5, 12.0, 12.5, 13.0, 13.25])
     monkeypatch.setattr(display_module.time, "monotonic", monotonic)
@@ -513,13 +514,12 @@ def test_notebook_unchanged_refreshes_advance_throttle_without_publishing(
     assert display._last_refresh == 13.0
     display.simulation_finished(simulation)
 
-    assert display_html.call_count == 2
-    assert display_html.call_args.kwargs == {}
-    assert "25%" in display_html.call_args.args[0].data
+    display_html.assert_called_once()
+    assert capsys.readouterr().out == display_module._render_line(simulation).plain + "\n"
     assert len(handles) == 1
     assert len(handle.updates) == 2
     assert handle.html.data == ""
-    assert render_html.call_count == 6
+    assert render_html.call_count == 5
     assert display._handle is handle
     assert display._last_html == ""
     assert display._last_refresh == 13.25
@@ -568,8 +568,9 @@ def test_notebook_renders_use_fresh_silent_recording_consoles(
 def test_notebook_progress_renders_only_five_active_after_one_hundred_completions(
     notebook_api: tuple[Mock, list[FakeDisplayHandle]],
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Completed runs are published once, not revisited by active progress refreshes."""
+    """Completed runs are printed once, not revisited by active progress refreshes."""
     display_html, handles = notebook_api
     display = NotebookDisplay(refresh_interval=1.0)
     completed = [make_simulation(sim_id, f"completed-{sim_id}.dck") for sim_id in range(1, 101)]
@@ -584,13 +585,11 @@ def test_notebook_progress_renders_only_five_active_after_one_hundred_completion
         render_line.assert_called_once_with(simulation)
 
     assert len(handles) == 1
-    assert display_html.call_count == 101
-    assert display_html.call_args_list[0].kwargs == {"display_id": True}
-    static_results = [invocation.args[0] for invocation in display_html.call_args_list[1:]]
-    snapshots = [result.data for result in static_results]
-    assert all(invocation.kwargs == {} for invocation in display_html.call_args_list[1:])
-    for simulation, html in zip(completed, snapshots, strict=True):
-        assert ParsedHTML(html).lines == [display_module._render_line(simulation).plain.rstrip()]
+    display_html.assert_called_once()
+    assert display_html.call_args.kwargs == {"display_id": True}
+    captured = capsys.readouterr()
+    assert captured.out == "".join(display_module._render_line(simulation).plain + "\n" for simulation in completed)
+    assert captured.err == ""
 
     active = [make_simulation(sim_id, f"active-{sim_id}.dck") for sim_id in range(101, 106)]
     for simulation in active:
@@ -610,20 +609,21 @@ def test_notebook_progress_renders_only_five_active_after_one_hundred_completion
 
     assert render_line.call_args_list == [call(simulation) for simulation in active]
     assert export_html.call_count == 1
-    assert display_html.call_count == 101
+    display_html.assert_called_once()
     assert len(handles) == 1
     assert len(handles[0].updates) == updates_before + 1
     assert len(ParsedHTML(handles[0].html.data).lines) == 5
     assert "completed-" not in handles[0].html.data
-    assert [result.data for result in static_results] == snapshots
+    assert capsys.readouterr().out == ""
     assert display._active == {simulation.id: simulation for simulation in active}
 
 
 def test_notebook_reuses_live_handle_and_preserves_completed_output(
     notebook_api: tuple[Mock, list[FakeDisplayHandle]],
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Final output stays escaped and static while the same live area handles later batches."""
+    """Completed lines are plain text and never reprinted when later batches start."""
     display_html, handles = notebook_api
     display = NotebookDisplay()
     simulation = make_simulation(1, "first<script>&.dck")
@@ -633,26 +633,26 @@ def test_notebook_reuses_live_handle_and_preserves_completed_output(
     display.simulation_finished(simulation)
 
     assert handle.html.data == ""
-    final_result = display_html.call_args.args[0]
-    final_html = final_result.data
-    assert "first&lt;script&gt;&amp;.dck" in final_html
-    assert "first<script>" not in final_html
-    assert display_html.call_args.kwargs == {}
+    captured = capsys.readouterr()
+    assert captured.out == display_module._render_line(simulation).plain + "\n"
+    assert "first<script>&.dck" in captured.out
+    assert "\x1b" not in captured.out
+    assert captured.err == ""
+    display_html.assert_called_once()
     simulation.apply_event(StatusEvent("ERROR", TIMESTAMP))
     second = make_simulation(2)
     display.simulation_started(second)
 
     assert handles == [handle]
     assert display._handle is handle
-    assert display_html.call_count == 2
+    display_html.assert_called_once()
     assert ParsedHTML(handle.html.data).lines == [display_module._render_line(second).plain.rstrip()]
-    assert final_result.data == final_html
-    assert "DONE" in final_result.data
-    assert "ERROR" not in final_result.data
+    assert capsys.readouterr().out == ""
 
     second.apply_event(StatusEvent("DONE", TIMESTAMP))
     display.simulation_finished(second)
-    assert display_html.call_count == 3
+    display_html.assert_called_once()
+    assert capsys.readouterr().out == display_module._render_line(second).plain + "\n"
     assert handle.html.data == ""
     assert display._active == {}
     monotonic = Mock()

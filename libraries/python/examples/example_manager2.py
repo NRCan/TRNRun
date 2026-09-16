@@ -14,8 +14,8 @@ TRNEXE_PATH = Path(r"C:\TRNSYS18\Exe\TrnEXE64.exe")
 MASTER_DCK = Path(r"dck\example_wo_plot_w_tracking.dck")
 DCK_FOLDER = Path(r"runs")
 
-SIM_COUNT = 10
-MAX_CONCURRENT = 5
+SIM_COUNT = 100
+MAX_CONCURRENT = 50
 REFRESH_INTERVAL = 0.1
 
 CONFIG = SimulationConfig(trnexe_path=TRNEXE_PATH, watch_tmp=True)
