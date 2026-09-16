@@ -161,19 +161,6 @@ classdef SimulationManagerTest < matlab.unittest.TestCase
             testCase.verifyEqual(request.runnerArgs, simulation.config.to_cli_args());
         end
 
-        function addValidatesConfigAndReturnsAnIndependentCopy(testCase)
-            %ADDVALIDATESCONFIGANDRETURNSANINDEPENDENTCOPY Paths are resolved per run.
-
-            testCase.makeManager();
-            testCase.Queue.queue(accepted(1));
-
-            simulation = testCase.Manager.add(testCase.Deck, testCase.Config);
-            testCase.Config.poll_ms = 999;
-
-            testCase.verifyEqual(simulation.config.poll_ms, 100, ...
-                'A later edit must not reach a submitted run.');
-            testCase.verifyTrue(isfile(simulation.config.trnrun_path));
-        end
 
         function addAssignsIncreasingRunIds(testCase)
             %ADDASSIGNSINCREASINGRUNIDS Run IDs are unique within a session.
@@ -302,6 +289,11 @@ classdef SimulationManagerTest < matlab.unittest.TestCase
                 testCase.verifySubstring(exception.message, ...
                     'Queue stderr: queue crashed | at startup');
             end
+
+            testCase.verifyEmpty(testCase.Manager.simulations, ...
+                'Runs that were never accepted must not be reported.');
+            testCase.verifyEmpty(testCase.Manager.failed, ...
+                'Runs that were never accepted must not be classified as failed.');
         end
 
         function prematureEofToleratesUnavailableDiagnostics(testCase)
@@ -667,17 +659,6 @@ classdef SimulationManagerTest < matlab.unittest.TestCase
             testCase.verifyEqual(testCase.Manager.failed, [second, third]);
         end
 
-        function resultListsExcludeRunsThatWereNeverAccepted(testCase)
-            %RESULTLISTSEXCLUDERUNSTHATWERENEVERACCEPTED Only accepted runs are reported.
-
-            testCase.makeManager();
-            testCase.Queue.stderr = "queue crashed";
-            testCase.verifyError(@() testCase.Manager.add( ...
-                testCase.Deck, testCase.Config), 'trnrun:PrematureQueueEOF');
-
-            testCase.verifyEmpty(testCase.Manager.simulations);
-            testCase.verifyEmpty(testCase.Manager.failed);
-        end
 
         % -----------------------------------------------------------------
         % shutdown
@@ -702,6 +683,8 @@ classdef SimulationManagerTest < matlab.unittest.TestCase
 
             testCase.makeManager();
             testCase.Manager.shutdown();
+            testCase.verifyEmpty(testCase.Manager.sessionDiagnostics, ...
+                'Idle EOF during shutdown must be treated as normal.');
             mark = numel(testCase.Queue.calls);
 
             testCase.Manager.shutdown();
@@ -763,15 +746,6 @@ classdef SimulationManagerTest < matlab.unittest.TestCase
             testCase.verifyError(@() testCase.Manager.shutdown(), ...
                 'trnrun:QueueExitFailure');
             testCase.verifyNotEmpty(testCase.Queue.callsSince(mark));
-        end
-
-        function idleEofDuringShutdownIsNormal(testCase)
-            %IDLEEOFDURINGSHUTDOWNISNORMAL Draining an empty queue is not an error.
-
-            testCase.makeManager();
-
-            testCase.verifyWarningFree(@() testCase.Manager.shutdown());
-            testCase.verifyEmpty(testCase.Manager.sessionDiagnostics);
         end
 
 

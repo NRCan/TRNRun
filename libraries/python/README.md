@@ -1,6 +1,12 @@
-# TRNRun for Python
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="../../assets/trnrun-white.svg">
+    <source media="(prefers-color-scheme: light)" srcset="../..assets/trnrun-black.svg">
+    <img alt="TRNRun" src="./assets/trnrun-black.svg">
+  </picture>
+</p>
 
-`trnrun` is a thin Python wrapper for running and monitoring
+Thin Python wrapper for running and monitoring
 [TRNSYS](https://www.trnsys.com/) batch simulations. The
 package includes the `trnrun.exe` runner and `trnrunq.exe` queue.
 

@@ -29,7 +29,6 @@ classdef QueueProcess < handle
         exitCode (1,1) double = 0               % value returned by wait
         sendError (1,1) string = string(missing)    % identifier raised by send
         readError (1,1) string = string(missing)    % identifier raised by readLine
-        readHook = []                           % called with obj before each read
         stderr (1,:) string = strings(1, 0)     % reported by diagnostics
         stderrDropped (1,1) double = 0
         diagnosticsError (1,1) logical = false  % make diagnostics throw
@@ -41,8 +40,6 @@ classdef QueueProcess < handle
         sent = {}                               % requests passed to send
         calls (1,:) string = strings(1, 0)      % method names, in call order
         scriptHead (1,1) double = 1
-        inputClosed (1,1) logical = false
-        cleanedUp (1,1) logical = false
     end
 
     methods
@@ -68,11 +65,6 @@ classdef QueueProcess < handle
             %READLINE Return the next scripted line, or numeric [] at EOF.
 
             obj.calls(end + 1) = "readLine";
-            if ~isempty(obj.readHook)
-                hook = obj.readHook;
-                obj.readHook = [];
-                hook(obj);
-            end
             if ~ismissing(obj.readError)
                 error(char(obj.readError), 'Mock queue read failed.');
             end
@@ -88,14 +80,12 @@ classdef QueueProcess < handle
             %CLOSE Record the end of submission.
 
             obj.calls(end + 1) = "close";
-            obj.inputClosed = true;
         end
 
         function exitCode = wait(obj)
             %WAIT Record the reap and return the configured exit code.
 
             obj.calls(end + 1) = "wait";
-            obj.inputClosed = true;
             exitCode = obj.exitCode;
         end
 
@@ -114,12 +104,6 @@ classdef QueueProcess < handle
                 'stderr_dropped', obj.stderrDropped);
         end
 
-        function forceCleanup(obj)
-            %FORCECLEANUP Record termination of the transport.
-
-            obj.calls(end + 1) = "forceCleanup";
-            obj.cleanedUp = true;
-        end
 
         function queue(obj, lines)
             %QUEUE Append stdout lines for later reads.

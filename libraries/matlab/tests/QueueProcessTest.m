@@ -119,7 +119,9 @@ classdef QueueProcessTest < matlab.unittest.TestCase
             testCase.verifyEqual(queue.wait(), testCase.RejectedExitCode);
 
             details = queue.diagnostics();
+            testCase.verifyGreaterThan(details.pid, 0);
             testCase.verifyEqual(details.exit_code, testCase.RejectedExitCode);
+            testCase.verifyClass(details.stderr, 'cell');
             testCase.verifyNotEmpty(details.stderr);
             testCase.verifySubstring(details.stderr{1}, 'deckFile');
             testCase.verifyEqual(details.stderr_dropped, 0);
@@ -130,20 +132,13 @@ classdef QueueProcessTest < matlab.unittest.TestCase
 
             queue = testCase.startQueue(1);
             queue.close();
-            line = queue.readLine(30);
+            line = queue.readLine();
 
             testCase.verifyTrue(isnumeric(line) && isempty(line));
-        end
-
-        function repeatedReadsAtEofStayAtEof(testCase)
-            %REPEATEDREADSATEOFSTAYATEOF Draining a closed queue is idempotent.
-
-            queue = testCase.startQueue(1);
-            queue.close();
-            testCase.assertEmpty(queue.readLine(30));
-
-            testCase.verifyEmpty(queue.readLine(30));
-            testCase.verifyEmpty(queue.readLine(30));
+            testCase.verifyEmpty(queue.readLine(30), ...
+                'Repeated reads must remain at EOF.');
+            testCase.verifyEmpty(queue.readLine(30), ...
+                'Repeated reads must remain at EOF.');
         end
 
         function sendRejectsNonStructRequests(testCase)
@@ -184,15 +179,6 @@ classdef QueueProcessTest < matlab.unittest.TestCase
                 'MATLAB:validators:mustBePositive');
         end
 
-        function readWithoutTimeoutWaitsIndefinitely(testCase)
-            %READWITHOUTTIMEOUTWAITSINDEFINITELY The default timeout is Inf, not zero.
-
-            queue = testCase.startQueue(1);
-            queue.close();
-
-            testCase.verifyEmpty(queue.readLine(), ...
-                'Closing input must let the default read reach EOF.');
-        end
 
         % -----------------------------------------------------------------
         % Shutdown
@@ -224,18 +210,10 @@ classdef QueueProcessTest < matlab.unittest.TestCase
             queue = testCase.startQueue(1);
             first = queue.wait();
 
-            testCase.verifyEqual(queue.wait(), first);
-            testCase.verifyEqual(queue.diagnostics().exit_code, first);
-        end
-
-        function waitClosesInputImplicitly(testCase)
-            %WAITCLOSESINPUTIMPLICITLY No submission survives a completed wait.
-
-            queue = testCase.startQueue(1);
-            queue.wait();
-
             testCase.verifyError(@() queue.send(testCase.RejectedRequest), ...
                 'trnrun:QueueInputClosed');
+            testCase.verifyEqual(queue.wait(), first);
+            testCase.verifyEqual(queue.diagnostics().exit_code, first);
         end
 
         function forceCleanupTerminatesAndIsRepeatable(testCase)
@@ -251,16 +229,8 @@ classdef QueueProcessTest < matlab.unittest.TestCase
 
             queue.forceCleanup();
             testCase.verifyEqual(queue.diagnostics().exit_code, details.exit_code);
-        end
-
-        function waitAfterForceCleanupReturnsTheCachedCode(testCase)
-            %WAITAFTERFORCECLEANUPRETURNSTHECACHEDCODE A disposed queue is not re-reaped.
-
-            queue = testCase.startQueue(1);
-            queue.forceCleanup();
-            expected = queue.diagnostics().exit_code;
-
-            testCase.verifyEqual(queue.wait(), expected);
+            testCase.verifyEqual(queue.wait(), details.exit_code, ...
+                'Waiting after cleanup must return the cached exit code.');
         end
 
         function deleteTerminatesTheQueue(testCase)
@@ -275,20 +245,7 @@ classdef QueueProcessTest < matlab.unittest.TestCase
             testCase.verifyFalse(testCase.processIsRunning(pid));
         end
 
-        function diagnosticsSurviveDisposal(testCase)
-            %DIAGNOSTICSSURVIVEDISPOSAL Failure reporting outlives the process handles.
 
-            queue = testCase.startQueue(1);
-            queue.send(testCase.RejectedRequest);
-            queue.wait();
-
-            details = queue.diagnostics();
-
-            testCase.verifyGreaterThan(details.pid, 0);
-            testCase.verifyEqual(details.exit_code, testCase.RejectedExitCode);
-            testCase.verifyClass(details.stderr, 'cell');
-            testCase.verifyNotEmpty(details.stderr);
-        end
     end
 
     methods (Access = private)

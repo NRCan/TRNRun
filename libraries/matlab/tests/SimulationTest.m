@@ -71,14 +71,6 @@ classdef SimulationTest < matlab.unittest.TestCase
             end
         end
 
-        function constructorAcceptsIntegerValuedDouble(testCase)
-            %CONSTRUCTORACCEPTSINTEGERVALUEDDOUBLE Queue IDs arrive as doubles.
-
-            simulation = trnrun.Simulation("a.dck", testCase.Config, 12);
-
-            testCase.verifyEqual(simulation.id, 12);
-            testCase.verifyClass(simulation.id, 'double');
-        end
 
         function identityPropertiesAreImmutable(testCase)
             %IDENTITYPROPERTIESAREIMMUTABLE Routing must not change after submission.

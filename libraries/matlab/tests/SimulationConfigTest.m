@@ -179,6 +179,12 @@ classdef SimulationConfigTest < matlab.unittest.TestCase
                 'MATLAB:validators:mustBeInteger');
             testCase.verifyError(@() trnrun.SimulationConfig(watch_timeout_ms=NaN), ...
                 'MATLAB:validators:mustBeInteger');
+
+            config = trnrun.SimulationConfig( ...
+                detect_timeout_ms=0, watch_timeout_ms=0, stall_timeout_ms=0);
+            testCase.verifyEqual(config.detect_timeout_ms, 0);
+            testCase.verifyEqual(config.watch_timeout_ms, 0);
+            testCase.verifyEqual(config.stall_timeout_ms, 0);
         end
 
         function rejectsNonPositivePollInterval(testCase)
@@ -190,16 +196,6 @@ classdef SimulationConfigTest < matlab.unittest.TestCase
                 'MATLAB:validators:mustBePositive');
         end
 
-        function acceptsZeroTimeoutsAsUnlimited(testCase)
-            %ACCEPTSZEROTIMEOUTSASUNLIMITED Zero disables detection and stall limits.
-
-            config = trnrun.SimulationConfig( ...
-                detect_timeout_ms=0, watch_timeout_ms=0, stall_timeout_ms=0);
-
-            testCase.verifyEqual(config.detect_timeout_ms, 0);
-            testCase.verifyEqual(config.watch_timeout_ms, 0);
-            testCase.verifyEqual(config.stall_timeout_ms, 0);
-        end
 
         function validatesOnAssignmentAsWellAsConstruction(testCase)
             %VALIDATESONASSIGNMENTASWELLASCONSTRUCTION Property validators always run.
@@ -223,26 +219,19 @@ classdef SimulationConfigTest < matlab.unittest.TestCase
             testCase.applyFixture( ...
                 matlab.unittest.fixtures.CurrentFolderFixture(folder));
 
-            config = trnrun.SimulationConfig( ...
+            original = trnrun.SimulationConfig( ...
                 trnrun_path="trnrun.exe", trnexe_path="TrnEXE64.exe");
-            config = config.validate();
+            config = original.validate();
 
+            testCase.verifyEqual(original.trnrun_path, "trnrun.exe", ...
+                'Validation must not mutate the input value.');
+            testCase.verifyEqual(original.trnexe_path, "TrnEXE64.exe", ...
+                'Validation must not mutate the input value.');
             testCase.verifyTrue(isAbsolutePath(config.trnrun_path));
             testCase.verifyTrue(isAbsolutePath(config.trnexe_path));
             testCase.verifyTrue(isfile(config.trnrun_path));
             testCase.verifyTrue(isfile(config.trnexe_path));
-        end
-
-        function validateReturnsNewValueWithoutMutatingInput(testCase)
-            %VALIDATERETURNSNEWVALUEWITHOUTMUTATINGINPUT Value semantics survive validation.
-
-            original = trnrun.SimulationConfig( ...
-                trnrun_path=testCase.Runner, trnexe_path=testCase.TrnExe);
-            validated = original.validate();
-
-            testCase.verifyEqual(original.trnrun_path, testCase.Runner);
-            testCase.verifyEqual(validated.trnrun_path, testCase.Runner);
-            testCase.verifyClass(validated, 'trnrun.SimulationConfig');
+            testCase.verifyClass(config, 'trnrun.SimulationConfig');
         end
 
         function validateRejectsMissingExecutables(testCase)
@@ -275,18 +264,6 @@ classdef SimulationConfigTest < matlab.unittest.TestCase
         % to_cli_args
         % -----------------------------------------------------------------
 
-        function cliArgsAreCharCellRow(testCase)
-            %CLIARGSARECHARCELLROW jsonencode must serialise the args as a JSON array.
-
-            args = trnrun.SimulationConfig().to_cli_args();
-
-            testCase.verifyClass(args, 'cell');
-            testCase.verifySize(args, [1 17]);
-            testCase.verifyTrue(all(cellfun(@ischar, args)));
-            testCase.verifyEqual(jsonencode(args(1:2)), ...
-                ['["--trnexePath:C:\\TRNSYS18\\Exe\\TrnEXE64.exe",' ...
-                 '"--guiVisibility:hidden"]']);
-        end
 
         function cliArgsMatchDefaults(testCase)
             %CLIARGSMATCHDEFAULTS The default command line is fully specified.

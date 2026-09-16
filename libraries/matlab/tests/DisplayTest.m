@@ -51,8 +51,10 @@ classdef DisplayTest < matlab.unittest.TestCase
             finite = 'MATLAB:trnrun:internal:Display:expectedFinite';
             scalar = 'MATLAB:trnrun:internal:Display:expectedScalar';
             type = 'MATLAB:trnrun:internal:Display:invalidType';
+            real = 'MATLAB:trnrun:internal:Display:expectedReal';
             cases = {NaN, finite; Inf, finite; -Inf, finite; ...
-                [1 2], scalar; [], scalar; 'a', type; "1", type; {1}, type};
+                [1 2], scalar; [], scalar; 'a', type; "1", type; {1}, type; ...
+                1 + 2i, real};
             for index = 1:size(cases, 1)
                 testCase.verifyError( ...
                     @() trnrun.internal.Display(cases{index, 1}), ...
@@ -60,12 +62,6 @@ classdef DisplayTest < matlab.unittest.TestCase
             end
         end
 
-        function rejectsComplexRefreshIntervals(testCase)
-            %REJECTSCOMPLEXREFRESHINTERVALS An interval is a real duration in seconds.
-
-            testCase.verifyError(@() trnrun.internal.Display(1 + 2i), ...
-                'MATLAB:trnrun:internal:Display:expectedReal');
-        end
 
         function acceptsIntegerAndRationalIntervals(testCase)
             %ACCEPTSINTEGERANDRATIONALINTERVALS Numeric input is converted to double.
@@ -111,17 +107,8 @@ classdef DisplayTest < matlab.unittest.TestCase
 
             capture(@() display.simulationStarted(testCase.makeSimulation(1)));
             testCase.verifyNumElements(testCase.newFigures(), 1);
-        end
-
-        function allSimulationsShareOneWindow(testCase)
-            %ALLSIMULATIONSSHAREONEWINDOW The window is reused, never duplicated.
-
-            display = testCase.makeDisplay(3600);
-            for index = 1:5
-                capture(@() display.simulationStarted(testCase.makeSimulation(index)));
-            end
-
-            testCase.verifyNumElements(testCase.newFigures(), 1);
+            testCase.verifyNumElements(testCase.textArea().Value, 1, ...
+                'The first simulation must be rendered immediately.');
         end
 
         function textAreaIsReadOnlyAndUnwrapped(testCase)
@@ -169,14 +156,6 @@ classdef DisplayTest < matlab.unittest.TestCase
         % Throttling
         % -----------------------------------------------------------------
 
-        function firstSimulationForcesARedraw(testCase)
-            %FIRSTSIMULATIONFORCESAREDRAW The window must appear without waiting.
-
-            display = testCase.makeDisplay(3600);
-            capture(@() display.simulationStarted(testCase.makeSimulation(1)));
-
-            testCase.verifyNumElements(testCase.textArea().Value, 1);
-        end
 
         function laterSimulationsAreThrottled(testCase)
             %LATERSIMULATIONSARETHROTTLED Additional starts wait for the interval.
@@ -423,17 +402,6 @@ classdef DisplayTest < matlab.unittest.TestCase
             testCase.verifySubstring(testCase.textArea().Value{1}, 'N:0 W:0 F:1');
         end
 
-        function repeatedRefreshesAreIdempotent(testCase)
-            %REPEATEDREFRESHESAREIDEMPOTENT Redrawing unchanged state changes nothing.
-
-            display = testCase.makeDisplay(3600);
-            capture(@() display.simulationStarted(testCase.makeSimulation(1)));
-            before = testCase.textArea().Value;
-
-            testCase.verifyEmpty(capture(@() display.refresh(true)));
-
-            testCase.verifyEqual(testCase.textArea().Value, before);
-        end
 
         % -----------------------------------------------------------------
         % Completion

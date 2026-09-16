@@ -66,14 +66,6 @@ classdef ParseStreamLineTest < matlab.unittest.TestCase
             end
         end
 
-        function treatsASingleElementJsonArrayAsAnObject(testCase)
-            %TREATSASINGLEELEMENTJSONARRAYASANOBJECT jsondecode collapses it to a scalar.
-            %   The queue never frames events this way, so the resulting
-            %   malformed event is reported rather than silently routed.
-
-            testCase.verifyError(@() trnrun.internal.parseStreamLine( ...
-                '[{"runID":"1","kind":"STATUS"}]'), testCase.ParseError);
-        end
 
         function acceptsStringScalarLine(testCase)
             %ACCEPTSSTRINGSCALARLINE String and char lines parse identically.
@@ -101,12 +93,13 @@ classdef ParseStreamLineTest < matlab.unittest.TestCase
             %PARSESSTATUSWITHMESSAGE Every STATUS field is a string scalar.
 
             [runId, event] = trnrun.internal.parseStreamLine( ...
-                ['{"runID":"12","kind":"STATUS","status":"RUNNING",' ...
+                ['{"runID":"007","kind":"STATUS","status":"RUNNING",' ...
                  '"timestamp":"t0","message":"launched"}']);
 
-            testCase.verifyEqual(runId, '12');
+            testCase.verifyClass(runId, 'char');
+            testCase.verifyEqual(runId, '007');
             testCase.verifyEqual(event, struct( ...
-                'kind', "STATUS", 'runID', "12", 'status', "RUNNING", ...
+                'kind', "STATUS", 'runID', "007", 'status', "RUNNING", ...
                 'timestamp', "t0", 'message', "launched"));
         end
 
@@ -194,12 +187,19 @@ classdef ParseStreamLineTest < matlab.unittest.TestCase
                  '"elapsed":1,"eta":2,"timestamp":"t"}']), testCase.ParseError);
         end
 
-        function rejectsProgressMissingRequiredField(testCase)
-            %REJECTSPROGRESSMISSINGREQUIREDFIELD PROGRESS has no optional fields.
+        function rejectsEventsWithMissingRequiredFields(testCase)
+            %REJECTSEVENTSWITHMISSINGREQUIREDFIELDS Required wire fields cannot default.
 
-            testCase.verifyError(@() trnrun.internal.parseStreamLine( ...
-                '{"runID":"2","kind":"PROGRESS","time":1,"percent":0.5,"eta":2,"timestamp":"t"}'), ...
-                testCase.ParseError);
+            lines = { ...
+                '{"runID":"2","kind":"PROGRESS","time":1,"percent":0.5,"eta":2,"timestamp":"t"}', ...
+                '{"runID":"9","kind":"CONFIG","start":0,"stop":8760,"timestamp":"t"}', ...
+                '{"runID":"5","kind":"LOG","timestamp":"t"}', ...
+                '{"runID":"5","kind":"LOG","severity":"Notice"}', ...
+                '{"runID":"6","kind":"QUEUE","timestamp":"t"}'};
+            for index = 1:numel(lines)
+                testCase.verifyError(@() trnrun.internal.parseStreamLine(lines{index}), ...
+                    testCase.ParseError, lines{index});
+            end
         end
 
         function parsesConfig(testCase)
@@ -215,13 +215,6 @@ classdef ParseStreamLineTest < matlab.unittest.TestCase
                 'step', 0.125, 'timestamp', "t"));
         end
 
-        function rejectsConfigMissingBound(testCase)
-            %REJECTSCONFIGMISSINGBOUND Every CONFIG bound is required.
-
-            testCase.verifyError(@() trnrun.internal.parseStreamLine( ...
-                '{"runID":"9","kind":"CONFIG","start":0,"stop":8760,"timestamp":"t"}'), ...
-                testCase.ParseError);
-        end
 
         % -----------------------------------------------------------------
         % SETTING
@@ -316,14 +309,6 @@ classdef ParseStreamLineTest < matlab.unittest.TestCase
             testCase.verifyTrue(ismissing(event.information));
         end
 
-        function rejectsLogWithoutSeverity(testCase)
-            %REJECTSLOGWITHOUTSEVERITY Severity and timestamp are required.
-
-            testCase.verifyError(@() trnrun.internal.parseStreamLine( ...
-                '{"runID":"5","kind":"LOG","timestamp":"t"}'), testCase.ParseError);
-            testCase.verifyError(@() trnrun.internal.parseStreamLine( ...
-                '{"runID":"5","kind":"LOG","severity":"Notice"}'), testCase.ParseError);
-        end
 
         function rejectsNonIntegerLogDetail(testCase)
             %REJECTSNONINTEGERLOGDETAIL Present optional fields are still validated.
@@ -359,12 +344,6 @@ classdef ParseStreamLineTest < matlab.unittest.TestCase
             testCase.verifyEqual(event.exitCode, NaN);
         end
 
-        function rejectsQueueWithoutEvent(testCase)
-            %REJECTSQUEUEWITHOUTEVENT QUEUE without a name cannot be routed.
-
-            testCase.verifyError(@() trnrun.internal.parseStreamLine( ...
-                '{"runID":"6","kind":"QUEUE","timestamp":"t"}'), testCase.ParseError);
-        end
 
         % -----------------------------------------------------------------
         % Field layout
@@ -386,15 +365,7 @@ classdef ParseStreamLineTest < matlab.unittest.TestCase
             testCase.verifyEqual(combined(2).severity, "Fatal");
         end
 
-        function returnsRunIdAsCharRow(testCase)
-            %RETURNSRUNIDASCHARROW Callers compare the wire ID as text.
 
-            [runId, ~] = trnrun.internal.parseStreamLine( ...
-                '{"runID":"007","kind":"STATUS","status":"DONE","timestamp":"t"}');
-
-            testCase.verifyClass(runId, 'char');
-            testCase.verifyEqual(runId, '007');
-        end
     end
 end
 

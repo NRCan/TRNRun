@@ -14,7 +14,7 @@ Python, MATLAB, or the command line.
 
 | Component | Role |
 | --- | --- |
-| [TRNRun CLI](components/trnrun/) | Runs and monitors one deck, emitting JSON Lines events. |
+| [TRNRun Runner](components/trnrun/) | Runs and monitors one deck, emitting JSON Lines events. |
 | [TRNRun Queue](components/trnrunq/) | Runs multiple decks with bounded concurrency and merges their events. |
 | [Type3830](components/type3830/) | Reports simulation progress for monitoring and stall detection. |
 

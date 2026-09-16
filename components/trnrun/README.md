@@ -1,279 +1,493 @@
-# TRNRun CLI
+# TRNRun Runner
 
-`trnrun.exe` provides a monitored command-line execution layer around the TRNSYS
-executables `TrnEXE64.exe` and `TrnEXE.exe`. It serializes launch and readiness
-detection within the current Windows logon session, verifies startup signals,
-streams progress, status, and log output as JSON Lines, and exits with a code
-describing the outcome.
+`trnrun.exe` is a Windows command-line runner for the TRNSYS executables
+`TrnEXE64.exe` and `TrnEXE.exe`. It is designed for scripts and orchestration
+systems that need reliable lifecycle signals:
 
-This makes the runner suitable for scripts, parsers, and job-orchestration tools.
+- serializes launch and readiness detection across concurrent runners
+- monitors TRNSYS sidecar files for logs and optional Type3830 progress
+- emits a machine-readable JSON Lines event stream
+
+## Contents
+
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Quick start](#quick-start)
+- [Settings](#settings)
+- [Output protocol](#output-protocol)
+- [Exit codes](#exit-codes)
+- [Examples](#examples)
 
 ## Requirements
 
-- Windows.
-- TRNSYS 17 or 18.
-- Optional: Progress Tracker (Type3830) for progress and stall monitoring.
+### Runtime
+
+- Windows x64
+- TRNSYS 17 or 18
+- Optional: [Type3830 Progress Tracker](../type3830/) for progress, ETA,
+  cancellation, and stall detection
+
+### Development
+
+- [Nim](https://nim-lang.org/install.html) 2.2.10 or newer
+- [Zig](https://ziglang.org/download/) as the Windows C compiler and resource
+  compiler
+- [just](https://github.com/casey/just) for repository-root recipes
 
 ## Installation
 
-The runner is written in [Nim](https://nim-lang.org/) and built as the standalone
-`trnrun.exe` executable used by the TRNRun tools.
+Download and extract `trnrun-v<version>-win_amd64.zip` from
+[GitHub Releases](https://github.com/NRCan/TRNRun/releases).
 
-### Prebuilt binary
-
-Download the latest `trnrun.exe` from the **Releases** page of this repository and
-place it somewhere accessible from your system.
-
-### Build from source
-
-To build `trnrun.exe` locally, install:
-
-- [Nim](https://nim-lang.org/install.html) 2.2.10 or newer.
-- [Zig](https://ziglang.org/download/), used as the C compiler.
-
-From the `trnrun` directory, run:
+Or build from source, run the following from the repository root:
 
 ```powershell
+Set-Location components/trnrun
 nimble bin
 ```
 
-To also rebuild the distribution and copy the current executable into the Python
-manager package, run:
-
-```powershell
-nimble deploy
-```
+The executable is written to `components/trnrun/build/trnrun.exe` relative to
+the repository root.
 
 ## Quick start
 
-```bash
-# Run a deck
+Run a deck with the default hidden-window settings:
+
+```powershell
 trnrun "C:\path\to\deck.dck"
-
-# Show the TRNSYS window and close it automatically when the run finishes
-trnrun "C:\path\to\deck.dck" --guiVisibility:auto
-
-# Full monitoring: progress and ETA (requires Type3830 in the deck)
-trnrun "C:\path\to\deck.dck" --watchTmp:true
-
-# Attach an orchestration identifier to every event
-trnrun "C:\path\to\deck.dck" --runID:batch-42
 ```
 
-The deck may be passed as the first positional argument or via `--deckFile`. If
-neither is supplied, a native file picker opens for selecting a `.dck` or `.trd`
-file.
+If TRNSYS is installed somewhere other than the default TRNSYS 18 path, select
+its executable explicitly:
 
-If TRNSYS is not installed at the default location
-(`C:\TRNSYS18\Exe\TrnEXE64.exe`), specify the path to `TrnEXE64.exe` or
-`TrnEXE.exe` with `--trnexePath`.
-
-```bash
-trnrun --help      # full usage
-trnrun --version   # version information
+```powershell
+trnrun "C:\path\to\deck.dck" `
+    --trnexePath:"C:\TRNSYS17\Exe\TrnEXE.exe"
 ```
 
-## Output
+Enable Type3830 progress with timeout and stall detection:
 
-Every event is emitted to stdout as a self-contained JSON object on one line
-([JSON Lines](https://jsonlines.org/)). With `--writeEvents:true`, the same lines
-are mirrored to a file whose extension is replaced with `.jsonl`, truncating any
-existing file when the run starts. For example, `model.dck` produces
-`model.jsonl`, not `model.dck.jsonl`.
+```powershell
+trnrun "C:\path\to\deck.dck" `
+    --watchTmp:true `
+    --watchTimeout:300000 `
+    --stallTimeout:300000 `
+    --killOnTimeout:true `
+    --killOnStall:true
+```
 
-### Events
+Running `trnrun` without a deck opens the native file picker. For all options
+and version information:
 
-Representative event shapes, using the actual JSON value types:
+```powershell
+trnrun --help
+trnrun --version
+```
+
+## Settings
+
+Options accept either `--name:value` or `--name=value`. Boolean options require
+an explicit `true` or `false`. All timeout, delay, and polling values are in
+milliseconds.
+
+### Deck, executable, and window
+
+- _`--deckFile`_ (`string`, default: not set)
+
+  Path to an existing `.dck` or `.trd` file. The deck path can also be passed
+  directly without `--deckFile`. With no deck, open the native file picker.
+
+- _`--runID`_ (`string`, default: empty)
+
+  Opaque identifier included as `runID` on every subsequently emitted event.
+  The field is omitted when the value is empty.
+
+- _`--trnexePath`_ (`string`, default:
+  `C:\TRNSYS18\Exe\TrnEXE64.exe`)
+
+  Path to the executable launched for the simulation.
+
+- _`--guiVisibility`_ (`string`, default: `hidden`)
+
+  Controls the TRNSYS window. Values are:
+
+  - `keep` / `keepOpen`: visible and left open after the simulation.
+  - `auto` / `autoClose`: visible and closed after the simulation.
+  - `min` / `minimized`: minimized and left open afterward.
+  - `minAuto` / `minimizedAuto`: minimized and closed afterward.
+  - `hidden`: hidden and closed after the simulation.
+
+### Launch detection
+
+Launch detection runs while holding the session-wide TRNSYS launch mutex.
+Enabled checks execute in this order: GUI, `.lst`, then `.tmp`.
+
+- _`--waitForGui`_ (`boolean`, default: `true`)
+
+  Wait for a top-level window owned by `TrnEXE` with a recognized TRNSYS window
+  class.
+
+- _`--waitForLst`_ (`boolean`, default: `true`)
+
+  Wait for the component-order header in the deck's `.lst` file.
+
+- _`--waitForTmp`_ (`boolean`, default: `false`)
+
+  Wait for the deck's `.tmp` file to exist.
+
+- _`--detectTimeout`_ (`integer`, default: `300000`)
+
+  Shared readiness deadline in milliseconds. `0` means unlimited. A timeout
+  stops readiness detection. With `--killOnTimeout:true`, the process is killed
+  and the run reports `TIMEOUT`; otherwise the runner enters runtime monitoring.
+
+- _`--extraDelay`_ (`integer`, default: `0`)
+
+  Delay in milliseconds after readiness succeeds. It is outside the detection
+  deadline but still holds the launch mutex.
+
+### Runtime monitoring
+
+- _`--pollMs`_ (`integer`, default: `100`)
+
+  Polling interval in milliseconds for process state and watched sidecars.
+
+- _`--watchLog`_ (`boolean`, default: `true`)
+
+  Stream parsed TRNSYS `.log` entries as `LOG` events.
+
+- _`--watchTmp`_ (`boolean`, default: `false`)
+
+  Read Type3830 `.tmp` snapshots and emit `CONFIG` and `PROGRESS` events.
+
+- _`--watchTimeout`_ (`integer`, default: `0`)
+
+  Maximum runtime-monitoring duration in milliseconds. `0` means unlimited.
+  This clock starts when monitoring begins; mutex waiting and launch detection
+  do not count toward it.
+
+- _`--stallTimeout`_ (`integer`, default: `0`)
+
+  Maximum milliseconds without forward simulation-time progress. `0` disables
+  stall detection. Requires `--watchTmp:true` and a valid Type3830 snapshot.
+
+- _`--killOnTimeout`_ (`boolean`, default: `false`)
+
+  Kill the TRNSYS process after a detection or monitoring timeout. When
+  false, a runtime `TIMEOUT` event is emitted before the runner waits for natural
+  process exit.
+
+- _`--killOnStall`_ (`boolean`, default: `false`)
+
+  Kill the TRNSYS process after detecting a stall. When false, a `STALLED`
+  event is emitted before the runner waits for natural process exit.
+
+After a runtime timeout or stall, monitoring stops permanently. If killing is
+disabled, later `tmp` updates, `log` entries, child exit state, and fatal messages
+written during the natural-exit wait are not examined and cannot change the
+reported outcome.
+
+### Logging and cleanup
+
+- _`--severity`_ (`string`, default: `Notice`)
+
+  Minimum emitted `LOG` severity: `Notice`, `Warning`, or `Fatal`.
+
+- _`--writeEvents`_ (`boolean`, default: `false`)
+
+  Mirror stdout events to a file beside the deck, replacing its extension with
+  `.jsonl`. For example, `model.dck` writes `model.jsonl`. The file is truncated
+  when the run starts.
+
+- _`--clean`_ (`boolean`, default: `false`)
+
+  Delete `.tmp`, `.log`, `.lst`, and `.PTI` sidecars after a successful run.
+  Stale copies are always removed before launch, regardless of this option.
+
+### Full example
+
+A run with every option set explicitly:
+
+```powershell
+trnrun --deckFile:"C:\path\to\deck.dck" `
+    --runID:batch-42 `
+    --trnexePath:"C:\TRNSYS18\Exe\TrnEXE64.exe" `
+    --guiVisibility:hidden `
+    --waitForGui:true `
+    --waitForLst:true `
+    --waitForTmp:true `
+    --detectTimeout:300000 `
+    --extraDelay:0 `
+    --pollMs:100 `
+    --watchLog:true `
+    --watchTmp:true `
+    --watchTimeout:300000 `
+    --stallTimeout:300000 `
+    --killOnTimeout:true `
+    --killOnStall:true `
+    --severity:Notice `
+    --writeEvents:false `
+    --clean:true
+```
+
+## Output protocol
+
+Events are written to stdout as one JSON object per line
+([JSON Lines](https://jsonlines.org/)). Stdout is flushed after every event so a
+parent process can react immediately. Treat stdout as the machine-readable
+protocol; human-facing writer diagnostics may be sent to stderr.
+
+For a successfully validated run, the lifecycle is:
+
+```text
+SETTING → PENDING → LAUNCHING → RUNNING → terminal STATUS
+```
+
+`CONFIG`, `PROGRESS`, and `LOG` events can appear after `RUNNING`. Validation or
+file-selection failures emit only a terminal `STATUS` event. Exactly one of
+`DONE`, `CANCELLED`, `ERROR`, `TIMEOUT`, or `STALLED` terminates the event
+stream.
+
+### Common fields
+
+Every event contains `kind`, `timestamp`, and `seq`. Events also contain `runID`
+when the caller supplies one.
+
+- _`kind`_ (`string`)
+
+  Event discriminator. Use it to select the remaining payload schema:
+  `SETTING`, `STATUS`, `CONFIG`, `PROGRESS`, or `LOG`.
+
+- _`timestamp`_ (`string`)
+
+  Local wall-clock time when the event was created, formatted as
+  `yyyy-MM-ddTHH:mm:ss`. The value has second precision.
+
+- _`seq`_ (`integer`)
+
+  Per-run sequence number added by the event sink. It starts at `1` and
+  increments once for every emitted event, allowing consumers to preserve order
+  and detect missing lines.
+
+- _`runID`_ (`string`, optional)
+
+  Opaque caller-provided identifier used to correlate events with an external
+  request. It is included only when a non-empty `--runID` was supplied.
+
+### `SETTING` events
+
+Reports the effective settings used by the runner after normalization.
+
+- _`trnexePath`_ (`string`)
+
+  Resolved absolute path to the executable launched for the simulation.
+
+- _`guiVisibility`_ (`string`)
+
+  Canonical mode: `keepOpen`, `autoClose`, `minimized`, `minimizedAuto`, or
+  `hidden`.
+
+- _`waitForGui`_ (`boolean`)
+
+  Whether launch detection waits for a recognized TRNSYS window.
+
+- _`waitForLst`_ (`boolean`)
+
+  Whether launch detection waits for the `.lst` component header.
+
+- _`waitForTmp`_ (`boolean`)
+
+  Whether launch detection waits for the Type3830 `.tmp` file to exist.
+
+- _`detectTimeoutMs`_ (`integer`)
+
+  Normalized shared launch-detection deadline in milliseconds. `0` is unlimited.
+
+- _`extraDelayMs`_ (`integer`)
+
+  Normalized delay after readiness checks in milliseconds.
+
+- _`watchLog`_ (`boolean`)
+
+  Whether parsed log entries are emitted as `LOG` events.
+
+- _`watchTmp`_ (`boolean`)
+
+  Whether Type3830 snapshots are monitored for configuration and progress.
+
+- _`watchTimeoutMs`_ (`integer`)
+
+  Normalized runtime-monitoring deadline in milliseconds. `0` is unlimited.
+
+- _`stallTimeoutMs`_ (`integer`)
+
+  Normalized no-progress deadline in milliseconds. `0` disables stall
+  detection.
+
+- _`pollMs`_ (`integer`)
+
+  Effective process and sidecar polling interval in milliseconds.
+
+- _`cleanOnSuccess`_ (`boolean`)
+
+  Whether sidecars are deleted after a `DONE` outcome.
+
+- _`killOnTimeout`_ (`boolean`)
+
+  Whether the owned process is killed after a timeout.
+
+- _`killOnStall`_ (`boolean`)
+
+  Whether the owned process is killed after a stall.
+
+- _`severity`_ (`string`)
+
+  Minimum emitted log severity: `Notice`, `Warning`, or `Fatal`.
+
+- _`writeEvents`_ (`boolean`)
+
+  Whether JSONL mirroring is active. This becomes `false` if the event file
+  could not be opened.
+
+### `STATUS` events
+
+Reports a lifecycle transition or terminal outcome.
+
+- _`status`_ (`string`)
+
+  One of `PENDING`, `LAUNCHING`, `RUNNING`, `DONE`, `CANCELLED`, `ERROR`,
+  `TIMEOUT`, or `STALLED`.
+
+| Status      | Meaning                                                                                                                    |
+| ----------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `PENDING`   | Waiting to acquire the launch mutex.                                                                                       |
+| `LAUNCHING` | Launch mutex acquired; stale cleanup, process creation, readiness, extra delay, and optional minimization are in progress. |
+| `RUNNING`   | Runtime monitoring has started. The child may already have exited if it finished during readiness detection.               |
+| `DONE`      | Process exited without a detected fatal condition or incomplete valid TMP snapshot.                                        |
+| `CANCELLED` | File selection was cancelled, or the process exited with a valid TMP snapshot below 100%.                                  |
+| `ERROR`     | Usage, validation, launch, mutex, Job Object, readiness, monitoring, or fatal-log failure.                                 |
+| `TIMEOUT`   | Readiness detection timed out with `killOnTimeout` enabled, or runtime monitoring timed out.                               |
+| `STALLED`   | Simulation time failed to advance for longer than `stallTimeout`.                                                          |
+
+> [!IMPORTANT]
+> `CANCELLED` and `STALLED` require `--watchTmp:true` and at least one valid
+> Type3830 snapshot. Without a valid snapshot, a non-fatal early process exit is
+> reported as `DONE`; in that configuration, `DONE` means no failure was
+> detected, not that 100% completion was independently verified.
+
+- _`message`_ (`string`)
+
+  Additional error, cancellation, timeout, or cleanup detail. The field is
+  always present and is `""` when no detail is needed.
+
+### `CONFIG` events
+
+Reports fixed Type3830 simulation-time settings. It is emitted once when the
+first valid `.tmp` snapshot is parsed and requires `--watchTmp:true`.
+
+- _`start`_ (`number`, simulation hours)
+
+  Configured simulation start time.
+
+- _`stop`_ (`number`, simulation hours)
+
+  Configured simulation stop time.
+
+- _`step`_ (`number`, simulation hours)
+
+  Configured simulation time step.
+
+### `PROGRESS` events
+
+Reports Type3830 progress. The first valid snapshot emits a progress event after
+`CONFIG`; later events are emitted only when simulation time changes.
+
+- _`time`_ (`number`, simulation hours)
+
+  Current simulation time, rounded to two decimals.
+
+- _`percent`_ (`number`, fraction)
+
+  Completion from `0` to `1`, rounded to four decimals.
+
+- _`elapsed`_ (`number`, milliseconds)
+
+  Wall-clock time since TrnEXE launch, rounded to two decimals.
+
+- _`eta`_ (`number`, milliseconds)
+
+  Estimated remaining wall-clock time, rounded to two decimals.
+
+### `LOG` events
+
+Reports one parsed TRNSYS log entry when `--watchLog:true` and the entry meets
+the configured severity threshold.
+
+- _`severity`_ (`string`)
+
+  Log severity: `Notice`, `Warning`, or `Fatal`.
+
+- _`time`_ (`number`, simulation hours)
+
+  Simulation time associated with the entry, rounded to two decimals.
+
+- _`unitID`_ (`integer`, optional)
+
+  TRNSYS unit that emitted the entry.
+
+- _`typeID`_ (`integer`, optional)
+
+  TRNSYS component type associated with the entry.
+
+- _`messageCode`_ (`integer`, optional)
+
+  Numeric TRNSYS message identifier.
+
+- _`message`_ (`string`, optional)
+
+  Human-readable message text.
+
+- _`information`_ (`string`, optional)
+
+  Additional information attached to the message.
+
+Optional fields are omitted when unavailable; they are not emitted as `null`.
+
+### Example stream
 
 ```json
 {"kind":"SETTING","timestamp":"2026-06-19T19:37:13","trnexePath":"C:\\TRNSYS18\\Exe\\TrnEXE64.exe","guiVisibility":"hidden","waitForGui":true,"waitForLst":true,"waitForTmp":false,"detectTimeoutMs":300000,"extraDelayMs":0,"watchLog":true,"watchTmp":true,"watchTimeoutMs":0,"stallTimeoutMs":0,"pollMs":100,"cleanOnSuccess":false,"killOnTimeout":false,"killOnStall":false,"severity":"Notice","writeEvents":false,"seq":1}
-{"kind":"STATUS","timestamp":"2026-06-19T19:37:13","status":"PENDING","seq":2}
-{"kind":"CONFIG","timestamp":"2026-06-19T19:37:15","start":0.0,"stop":8760.0,"step":0.25,"seq":3}
-{"kind":"PROGRESS","timestamp":"2026-06-19T19:37:15","time":24.0,"percent":0.0027,"elapsed":287.0,"eta":105576.7,"seq":4}
-{"kind":"LOG","timestamp":"2026-06-19T19:37:15","severity":"Warning","time":24.0,"unitID":5,"typeID":139,"messageCode":101,"message":"Example warning","information":"Example details","seq":5}
-```
-
-- Timestamps use `yyyy-MM-ddTHH:mm:ss` at second precision. They contain no UTC
-  offset.
-- `elapsed` and `eta` are milliseconds; `percent` is in `[0, 1]`; `time`,
-  `start`, `stop`, and `step` are simulation hours.
-- `seq` starts at `1` and increments once per emitted event, allowing consumers
-  to order lines and detect dropped events.
-- When `--runID` is non-empty, its opaque value is included as `runID` on every
-  event written to stdout or the optional JSONL mirror.
-- `SETTING` is always first and records the configured runner settings.
-- `CONFIG` is emitted on the first successful `.tmp` snapshot.
-- Optional `LOG` fields (`unitID`, `typeID`, `messageCode`, `message`, and
-  `information`) are omitted when absent; they are never emitted as `null`.
-
-### Simulation states
-
-Reported as `STATUS` events:
-
-| Status      | Meaning                                                                  |
-| ----------- | ------------------------------------------------------------------------ |
-| `PENDING`   | Waiting to acquire the launch mutex for the current Windows logon session. |
-| `LAUNCHING` | Mutex acquired; TrnEXE is being started.                                  |
-| `RUNNING`   | The runner entered runtime monitoring.                                     |
-| `DONE`      | Completed successfully.                                                   |
-| `CANCELLED` | The process exited and its last TMP snapshot was below 100 percent.        |
-| `ERROR`     | Launch or pre-launch cleanup failed, or a fatal log entry was detected.    |
-| `TIMEOUT`   | Exceeded `--watchTimeout` (or `--detectTimeout` with `--killOnTimeout`).  |
-| `STALLED`   | Simulation time stopped advancing for longer than `--stallTimeout`.       |
-
-> `CANCELLED` and `STALLED` require `--watchTmp:true` and at least one
-> successfully parsed Type3830 `.tmp` snapshot. Without a snapshot, an
-> otherwise non-fatal early exit is reported as `DONE`; a fatal log entry can
-> still produce `ERROR`. Stall detection remains disabled until a snapshot is
-> available.
-
-### Example
-
-```json
-{"kind":"SETTING","timestamp":"2026-06-19T19:37:13","trnexePath":"C:\\TRNSYS18\\Exe\\TrnEXE64.exe","guiVisibility":"hidden","waitForGui":true,"waitForLst":true,"waitForTmp":false,"detectTimeoutMs":300000,"extraDelayMs":0,"watchLog":true,"watchTmp":true,"watchTimeoutMs":0,"stallTimeoutMs":0,"pollMs":100,"cleanOnSuccess":false,"killOnTimeout":false,"killOnStall":false,"severity":"Notice","writeEvents":false,"seq":1}
-{"kind":"STATUS","timestamp":"2026-06-19T19:37:13","status":"PENDING","seq":2}
-{"kind":"STATUS","timestamp":"2026-06-19T19:37:14","status":"LAUNCHING","seq":3}
-{"kind":"STATUS","timestamp":"2026-06-19T19:37:15","status":"RUNNING","seq":4}
-{"kind":"CONFIG","timestamp":"2026-06-19T19:37:15","start":0.0,"stop":10000.0,"step":0.1,"seq":5}
-{"kind":"LOG","timestamp":"2026-06-19T19:37:15","severity":"Notice","time":0.0,"message":"\"Type169.dll\" was found but did not contain any components from the input file.","seq":6}
-{"kind":"PROGRESS","timestamp":"2026-06-19T19:37:15","time":221.6,"percent":0.0222,"elapsed":287.0,"eta":12664.26,"seq":7}
-[...]
-{"kind":"PROGRESS","timestamp":"2026-06-19T19:37:23","time":10000.0,"percent":1.0,"elapsed":8663.0,"eta":0.0,"seq":185}
-{"kind":"LOG","timestamp":"2026-06-19T19:37:23","severity":"Warning","time":10000.0,"unitID":5,"typeID":139,"message":"Furnace fan mass balance failed during 100000 timesteps. Please check the connections.","seq":186}
-{"kind":"STATUS","timestamp":"2026-06-19T19:37:23","status":"DONE","seq":187}
+{"kind":"STATUS","timestamp":"2026-06-19T19:37:13","status":"PENDING","message":"","seq":2}
+{"kind":"STATUS","timestamp":"2026-06-19T19:37:14","status":"LAUNCHING","message":"","seq":3}
+{"kind":"STATUS","timestamp":"2026-06-19T19:37:15","status":"RUNNING","message":"","seq":4}
+{"kind":"CONFIG","timestamp":"2026-06-19T19:37:15","start":0.0,"stop":8760.0,"step":0.25,"seq":5}
+{"kind":"PROGRESS","timestamp":"2026-06-19T19:37:15","time":24.0,"percent":0.0027,"elapsed":287.0,"eta":104468.0,"seq":6}
+{"kind":"LOG","timestamp":"2026-06-19T19:37:15","severity":"Warning","time":24.0,"unitID":5,"typeID":139,"messageCode":101,"message":"Example warning","information":"Example details","seq":7}
+{"kind":"STATUS","timestamp":"2026-06-19T19:37:16","status":"DONE","message":"","seq":8}
 ```
 
 ## Exit codes
 
-| Exit code | Meaning                                                                      |
-| --------- | ---------------------------------------------------------------------------- |
-| `0`       | Simulation completed successfully.                                            |
-| `1`       | Fatal error during execution.                                                 |
-| `2`       | Usage or validation error (unknown flag, bad value, missing deck/executable). |
-| `124`     | Runtime timeout, or detection timeout with `--killOnTimeout:true`.            |
-| `125`     | Simulation stalled (`--stallTimeout`).                                        |
-| `130`     | Simulation was cancelled.                                                     |
+| Exit code | Status      | Meaning                                                                                                      |
+| --------- | ----------- | ------------------------------------------------------------------------------------------------------------ |
+| `0`       | `DONE`      | Simulation completed without a detected failure. Help and version also return `0` without emitting an event. |
+| `1`       | `ERROR`     | Lifecycle failure caught during launch, monitoring, mutex, Job Object, or fatal-log handling.                |
+| `2`       | `ERROR`     | Usage, input validation, or unexpected top-level CLI failure.                                                |
+| `124`     | `TIMEOUT`   | Runtime timeout, or readiness timeout with `killOnTimeout=true`.                                             |
+| `125`     | `STALLED`   | Progress stall exceeded `stallTimeout`.                                                                      |
+| `130`     | `CANCELLED` | Incomplete tracked simulation or cancelled file selection.                                                   |
 
-## Command-line reference
+## Examples
 
-Flags use `--name:value` (or `--name=value`).
+PowerShell examples are available in [`examples`](examples). They expect
+`build/trnrun.exe` to exist and use the default TRNSYS 18 executable path.
 
-### Core settings
+- [`example_single.ps1`](examples/example_single.ps1) runs one deck.
+- [`example_sequential.ps1`](examples/example_sequential.ps1) runs decks one at
+  a time.
+- [`example_concurrent.ps1`](examples/example_concurrent.ps1) launches
+  independent runners concurrently.
 
-| Option            | Type     | Default                        | Description                                                                                                                    |
-| ----------------- | -------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------ |
-| `--deckFile`      | `string` | not set (opens file dialog)      | Path to a TRNSYS deck (`.dck` or `.trd`); may also be the first positional argument.                                              |
-| `--runID`         | `string` | not set                           | Opaque run identifier attached as `runID` to every emitted event.                                                                |
-| `--trnexePath`    | `string` | `C:\TRNSYS18\Exe\TrnEXE64.exe` | Path to the TRNSYS executable (`TrnEXE64.exe` or `TrnEXE.exe`).                                                                  |
-| `--guiVisibility` | `string` | `hidden`                         | Window behavior. Accepts `keep`/`keepopen`, `auto`/`autoclose`, `min`/`minimized`, `minauto`/`minimizedauto`, or `hidden`. |
-
-`guiVisibility` modes:
-
-| Mode                    | Window    | After the run |
-| ----------------------- | --------- | ------------- |
-| `keep` / `keepopen`          | visible   | stays open    |
-| `auto` / `autoclose`         | visible   | closes        |
-| `min` / `minimized`          | minimized | stays open    |
-| `minauto` / `minimizedauto`  | minimized | closes        |
-| `hidden`                     | none      | closes        |
-
-### Launch detection
-
-Launch detection determines when TRNSYS startup has completed, allowing the
-session-scoped launch mutex to be released so another simulation can start.
-
-| Option            | Type      | Default | Description                                               |
-| ----------------- | --------- | ------- | --------------------------------------------------------- |
-| `--waitForGui`    | `boolean` | `true`  | Wait for a recognized TRNSYS top-level window.                            |
-| `--waitForLst`    | `boolean` | `true`  | Wait for the component-order header in the `.lst` file.                   |
-| `--waitForTmp`    | `boolean` | `false` | Wait for the `.tmp` file to appear; requires Type3830.                    |
-| `--detectTimeout` | `integer` | `300000` | Shared readiness deadline in milliseconds. `0` means unlimited, which lets one wedged deck hold the session launch mutex. |
-| `--extraDelay`    | `integer` | `0`     | Additional delay in milliseconds after all readiness stages pass.        |
-
-### Runtime monitoring
-
-| Option            | Type      | Default | Description                                                                                                 |
-| ----------------- | --------- | ------- | ----------------------------------------------------------------------------------------------------------- |
-| `--pollMs`        | `integer` | `100`   | Polling interval in milliseconds for output files and the process.                                                   |
-| `--watchLog`      | `boolean` | `true`  | Stream `.log` entries as `LOG` events.                                                                               |
-| `--watchTmp`      | `boolean` | `false` | Stream Type3830 `.tmp` updates as `CONFIG` and `PROGRESS` events.                                                     |
-| `--watchTimeout`  | `integer` | `0`     | Maximum monitoring duration in milliseconds; `0` means unlimited.                                                    |
-| `--stallTimeout`  | `integer` | `0`     | Maximum time without progress; `0` disables it. Requires `--watchTmp:true` and a successful TMP snapshot.           |
-| `--killOnTimeout` | `boolean` | `false` | Kill TrnEXE on timeout. If false, detection continues into monitoring; after a watch timeout, the runner waits for process exit. |
-| `--killOnStall`   | `boolean` | `false` | Kill TrnEXE when a stall is detected. If false, the runner waits for it to exit.                                     |
-
-### Logging and cleanup
-
-| Option       | Type      | Default  | Description                                                         |
-| ------------ | --------- | -------- | ------------------------------------------------------------------- |
-| `--severity`    | `string`  | `Notice` | Minimum emitted log severity: `Notice`, `Warning`, or `Fatal`.                  |
-| `--writeEvents` | `boolean` | `false`  | Mirror events to `.jsonl`, replacing the deck extension and existing file.     |
-| `--clean`       | `boolean` | `false`  | Also delete `.tmp`, `.log`, `.lst`, and `.PTI` after success; stale copies are always removed before launch. |
-
-## Recipes
-
-### Batch runs
-
-Decks run one at a time in your current console, so output from each run appears
-in order and you only ever have one simulation competing for the machine. Each
-run gets its own runtime and stall monitoring and cleans up its temp artifacts on
-completion; a non-zero exit is reported as a warning and the loop continues to
-the next deck.
-
-```powershell
-$Exe      = 'C:\path\to\trnrun.exe'
-$DckFiles = Get-ChildItem 'C:\path\to\dck\*.dck' | ForEach-Object FullName
-
-foreach ($Deck in $DckFiles) {
-    $name = [IO.Path]::GetFileName($Deck)
-    Write-Host "Running $name"
-    & $Exe $Deck `
-        --watchTmp:true `
-        --watchTimeout:7200000 `
-        --killOnTimeout:true `
-        --stallTimeout:300000 `
-        --killOnStall:true `
-        --clean:true
-    if ($LASTEXITCODE) {
-        Write-Warning "$name failed with exit code $LASTEXITCODE"
-    }
-}
-```
-
-### Concurrent batch runs
-
-Each deck runs in its own `powershell.exe` window as an independent process, so
-runs proceed in parallel and one failure doesn't stop the rest. Every process
-gets its own runtime and stall monitoring, cleans up its temp artifacts on
-completion, and leaves its window open on non-zero exit so you can read the error.
-
-```powershell
-$Exe      = 'C:\path\to\trnrun.exe'
-$DckFiles = Get-ChildItem 'C:\path\to\dck\*.dck' | ForEach-Object FullName
-
-$worker = {
-    param($Exe, $Deck)
-    $name = [IO.Path]::GetFileName($Deck)
-    $host.UI.RawUI.WindowTitle = "trnrun - $name"
-    & $Exe $Deck `
-        --watchTmp:true `
-        --watchTimeout:7200000 `
-        --killOnTimeout:true `
-        --stallTimeout:300000 `
-        --killOnStall:true `
-        --clean:true
-    if ($LASTEXITCODE) {
-        Write-Warning "$name failed with exit code $LASTEXITCODE"
-        Read-Host 'Window kept open. Press Enter to close' | Out-Null
-    }
-}
-
-$DckFiles |
-    Where-Object { Test-Path -LiteralPath $_ } |
-    ForEach-Object {
-        $cmd     = "& {$worker} '$($Exe -replace "'","''")' '$($_ -replace "'","''")'"
-        $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($cmd))
-        Start-Process powershell.exe -ArgumentList '-NoProfile', '-EncodedCommand', $encoded
-        Write-Host "Launched $([IO.Path]::GetFileName($_))"
-    }
-```
+For bounded concurrent workloads with one merged event stream, use
+[TRNRun Queue](../trnrunq/) instead of managing independent runner processes
+directly.
