@@ -232,8 +232,8 @@ class Display:
 class NotebookDisplay:
     """Notebook view with one live region for active simulations.
 
-    Each completed result is printed once to stdout as an uncoloured status
-    line, never included in subsequent refreshes. Starts and
+    Each completed result is printed once to stdout with ANSI status colours,
+    never included in subsequent refreshes. Starts and
     completions update immediately; ordinary updates are throttled by
     ``refresh_interval`` and unchanged frames are not published. Rich exports
     unwrapped status lines as HTML without widgets.
@@ -246,6 +246,11 @@ class NotebookDisplay:
         html, display_html = _load_notebook_api()
         self._html: Callable[[str], object] = html
         self._display_html: Callable[..., object] = display_html
+        self._completed_console: Console = Console(
+            force_jupyter=False,
+            force_terminal=True,
+            color_system="standard",
+        )
         self._active: dict[int, Simulation] = {}
 
         self._refresh_interval: float = refresh_interval
@@ -261,7 +266,7 @@ class NotebookDisplay:
     def simulation_finished(self, simulation: Simulation) -> None:
         """Print a final line to stdout, then remove it from the live region."""
         _ = self._active.pop(simulation.id, None)
-        print(_render_line(simulation).plain)
+        self._completed_console.print(_render_line(simulation), soft_wrap=True)
         self._update()
 
     def refresh(self) -> None:

@@ -381,7 +381,7 @@ def test_notebook_display_throttles_progress_but_updates_lifecycle_promptly(
     assert len(handles) == 1
     assert display_html.call_args.kwargs == {"display_id": True}
     captured = capsys.readouterr()
-    assert captured.out == display_module._render_line(simulation).plain + "\n"
+    assert Text.from_ansi(captured.out).plain.rstrip() == display_module._render_line(simulation).plain.rstrip()
     assert captured.err == ""
     assert len(handle.updates) == 3
     assert "50%" in handle.updates[1].data
@@ -515,7 +515,9 @@ def test_notebook_unchanged_refreshes_advance_throttle_without_publishing(
     display.simulation_finished(simulation)
 
     display_html.assert_called_once()
-    assert capsys.readouterr().out == display_module._render_line(simulation).plain + "\n"
+    assert (
+        Text.from_ansi(capsys.readouterr().out).plain.rstrip() == display_module._render_line(simulation).plain.rstrip()
+    )
     assert len(handles) == 1
     assert len(handle.updates) == 2
     assert handle.html.data == ""
@@ -588,7 +590,9 @@ def test_notebook_progress_renders_only_five_active_after_one_hundred_completion
     display_html.assert_called_once()
     assert display_html.call_args.kwargs == {"display_id": True}
     captured = capsys.readouterr()
-    assert captured.out == "".join(display_module._render_line(simulation).plain + "\n" for simulation in completed)
+    assert [line.rstrip() for line in Text.from_ansi(captured.out).plain.splitlines()] == [
+        display_module._render_line(simulation).plain.rstrip() for simulation in completed
+    ]
     assert captured.err == ""
 
     active = [make_simulation(sim_id, f"active-{sim_id}.dck") for sim_id in range(101, 106)]
@@ -623,7 +627,7 @@ def test_notebook_reuses_live_handle_and_preserves_completed_output(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Completed lines are plain text and never reprinted when later batches start."""
+    """Completed lines are streamed text and never reprinted when later batches start."""
     display_html, handles = notebook_api
     display = NotebookDisplay()
     simulation = make_simulation(1, "first<script>&.dck")
@@ -634,9 +638,9 @@ def test_notebook_reuses_live_handle_and_preserves_completed_output(
 
     assert handle.html.data == ""
     captured = capsys.readouterr()
-    assert captured.out == display_module._render_line(simulation).plain + "\n"
+    assert Text.from_ansi(captured.out).plain.rstrip() == display_module._render_line(simulation).plain.rstrip()
     assert "first<script>&.dck" in captured.out
-    assert "\x1b" not in captured.out
+    assert "&lt;script&gt;" not in captured.out
     assert captured.err == ""
     display_html.assert_called_once()
     simulation.apply_event(StatusEvent("ERROR", TIMESTAMP))
@@ -652,13 +656,84 @@ def test_notebook_reuses_live_handle_and_preserves_completed_output(
     second.apply_event(StatusEvent("DONE", TIMESTAMP))
     display.simulation_finished(second)
     display_html.assert_called_once()
-    assert capsys.readouterr().out == display_module._render_line(second).plain + "\n"
+    assert Text.from_ansi(capsys.readouterr().out).plain.rstrip() == display_module._render_line(second).plain.rstrip()
     assert handle.html.data == ""
     assert display._active == {}
     monotonic = Mock()
     monkeypatch.setattr(display_module.time, "monotonic", monotonic)
     display.refresh()
     monotonic.assert_not_called()
+
+
+@pytest.mark.parametrize(("status", "ansi_code"), [("DONE", 32), ("ERROR", 31), ("CANCELLED", 33)])
+@pytest.mark.parametrize("width", [20, 300])
+def test_notebook_completed_lines_use_ansi_stdout_without_wrapping(
+    notebook_api: tuple[Mock, list[FakeDisplayHandle]],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    status: str,
+    ansi_code: int,
+    width: int,
+) -> None:
+    """One reused stdout console emits status colours, not HTML, at any output width."""
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setenv("COLUMNS", str(width))
+    display_html, handles = notebook_api
+    display = NotebookDisplay()
+    console = display._completed_console
+    simulation = make_simulation(1, "models/annual-load.dck")
+    simulation.apply_event(ConfigEvent(0.0, 2_000.0, 1.0, TIMESTAMP))
+    simulation.apply_event(ProgressEvent(2_000.0, 1.0, 3_723_000.0, 0.0, TIMESTAMP))
+    display.simulation_started(simulation)
+    simulation.apply_event(StatusEvent(status, TIMESTAMP))
+
+    display.simulation_finished(simulation)
+    captured = capsys.readouterr()
+    streamed = Text.from_ansi(captured.out)
+
+    assert f"\x1b[{ansi_code}m" in captured.out
+    assert "\x1b[0m" in captured.out
+    assert streamed.plain.rstrip() == display_module._render_line(simulation).plain.rstrip()
+    assert captured.out.count("\n") == 1
+    assert "(100%)" in streamed.plain
+    assert captured.err == ""
+    assert not console.is_jupyter
+    assert console.is_terminal
+    assert console.color_system == "standard"
+    assert not console.record
+    assert handles[0].html.data == ""
+
+    second = make_simulation(2)
+    display.simulation_started(second)
+    second.apply_event(StatusEvent(status, TIMESTAMP))
+    display.simulation_finished(second)
+
+    assert display._completed_console is console
+    assert capsys.readouterr().out.count("\n") == 1
+    display_html.assert_called_once()
+
+
+def test_notebook_completed_colours_respect_no_color(
+    notebook_api: tuple[Mock, list[FakeDisplayHandle]],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """NO_COLOR disables ANSI colour escapes without changing the stdout/live split."""
+    monkeypatch.setenv("NO_COLOR", "1")
+    display_html, _ = notebook_api
+    display = NotebookDisplay()
+    simulation = make_simulation()
+    display.simulation_started(simulation)
+    simulation.apply_event(StatusEvent("DONE", TIMESTAMP))
+
+    display.simulation_finished(simulation)
+    captured = capsys.readouterr()
+
+    assert "\x1b" not in captured.out
+    assert captured.out.rstrip() == display_module._render_line(simulation).plain.rstrip()
+    assert captured.out.count("\n") == 1
+    assert captured.err == ""
+    display_html.assert_called_once()
 
 
 def test_notebook_empty_render_does_not_export_a_blank_line(monkeypatch: pytest.MonkeyPatch) -> None:
