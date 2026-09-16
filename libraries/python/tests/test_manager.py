@@ -12,7 +12,7 @@ import pytest
 
 import trnrun.manager as manager_module
 from trnrun.config import SimulationConfig
-from trnrun.display import Display, NullDisplay
+from trnrun.display import Display
 from trnrun.events import StatusEvent
 from trnrun.manager import SimulationManager
 from trnrun.process import QueueProcess
@@ -30,7 +30,6 @@ class Harness:
     display: Mock
     queue_factory: Mock
     display_factory: Mock
-    null_display_factory: Mock
 
 
 @pytest.fixture
@@ -41,12 +40,10 @@ def harness(monkeypatch: pytest.MonkeyPatch) -> Harness:
     display = Mock(spec=Display)
     queue_factory = Mock(return_value=process)
     display_factory = Mock(return_value=display)
-    null_display_factory = Mock(return_value=Mock(spec=NullDisplay))
     monkeypatch.setattr(manager_module, "QueueProcess", queue_factory)
-    monkeypatch.setattr(manager_module, "Display", display_factory)
-    monkeypatch.setattr(manager_module, "NullDisplay", null_display_factory)
+    monkeypatch.setattr(manager_module, "create_display", display_factory)
     manager = SimulationManager(max_concurrent=3, refresh_interval=0.25, trnrunq_path="mock-queue.exe")
-    return Harness(manager, process, display, queue_factory, display_factory, null_display_factory)
+    return Harness(manager, process, display, queue_factory, display_factory)
 
 
 @pytest.fixture
@@ -75,24 +72,22 @@ def completed(run_id: str, exit_code: int | None = 0) -> str:
     return stream(run_id, "QUEUE", event="COMPLETED", exitCode=exit_code)
 
 
-def test_constructor_selects_display_and_starts_mocked_queue(
-    harness: Harness,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Positive refresh uses Rich while nonpositive refresh is headless."""
+def test_constructor_selects_display_and_starts_mocked_queue(harness: Harness) -> None:
+    """The manager delegates its refresh interval to automatic display selection."""
     harness.queue_factory.assert_called_once_with("mock-queue.exe", 3)
-    harness.display_factory.assert_called_once_with(refresh_interval=0.25)
-    harness.null_display_factory.assert_not_called()
+    harness.display_factory.assert_called_once_with(0.25)
 
-    headless_process = Mock(spec=QueueProcess)
-    harness.queue_factory.return_value = headless_process
-    headless = SimulationManager(max_concurrent=1, refresh_interval=0, trnrunq_path=Path("headless.exe"))
+    second_display = Mock(spec=Display)
+    harness.display_factory.return_value = second_display
+    second = SimulationManager(
+        max_concurrent=1,
+        refresh_interval=2.0,
+        trnrunq_path=Path("second.exe"),
+    )
 
-    assert isinstance(headless, SimulationManager)
-    assert headless._display is harness.null_display_factory.return_value
-    harness.queue_factory.assert_called_with(Path("headless.exe"), 1)
-    harness.null_display_factory.assert_called_once_with()
-    monkeypatch.undo()
+    assert second._display is second_display
+    harness.queue_factory.assert_called_with(Path("second.exe"), 1)
+    harness.display_factory.assert_called_with(2.0)
 
 
 def test_add_validates_copy_sends_request_and_routes_until_acceptance(

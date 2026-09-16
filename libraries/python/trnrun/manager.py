@@ -24,7 +24,7 @@ from types import TracebackType
 from typing import Final, Self
 
 from trnrun.config import BUNDLED_TRNRUNQ_PATH, SimulationConfig
-from trnrun.display import Display, NullDisplay
+from trnrun.display import DisplayCallback, create_display
 from trnrun.events import EventParseError, QueueEvent, parse_stream_line
 from trnrun.process import QueueProcess
 from trnrun.simulation import Simulation
@@ -45,9 +45,7 @@ class SimulationManager:
         trnrunq_path: str | Path = BUNDLED_TRNRUNQ_PATH,
     ) -> None:
         """Start the queue process."""
-        self._display: Display | NullDisplay = (
-            Display(refresh_interval=refresh_interval) if refresh_interval > 0 else NullDisplay()
-        )
+        self._display: DisplayCallback = create_display(refresh_interval)
         self._simulations: list[Simulation] = []
         self._active: dict[str, Simulation] = {}
         self._next_id: int = 1

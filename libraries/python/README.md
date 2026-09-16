@@ -199,7 +199,17 @@ config = SimulationConfig(
 `SimulationManager` owns one queue process and controls how simulations are
 submitted, monitored, and displayed. It is synchronous and intended for use
 from one thread. Simulation state advances only while `add()`, `wait()`,
-`follow()`, or `shutdown()` reads queue output. 
+`follow()`, or `shutdown()` reads queue output.
+
+Progress uses Rich's live display in terminals. In notebook kernels, the same
+Rich status lines are exported to HTML; `ipywidgets` is not required. One live
+output area shows only active simulations. Each completed result is published
+once as ordinary notebook output below it and is never rendered or sent again
+by progress refreshes. Completed output accumulates without a history cap, like
+terminal scrollback. When no runs remain active, only the live area is emptied;
+it is reused if more runs are added. Other cell output is never cleared.
+Unchanged live frames are not resent, and wide lines scroll horizontally
+instead of wrapping.
 
 ### Parameters
 
@@ -211,7 +221,8 @@ from one thread. Simulation state advances only while `add()`, `wait()`,
 
 - _`refresh_interval`_ (`float`, default: `1.0`)
 
-  Minimum seconds between terminal-display redraws while events are being read.
+  Minimum seconds between progress redraws while events are being read.
+  Notebook starts and completions update immediately.
   Set to `0` or a negative value to disable the built-in display.
 
 - _`trnrunq_path`_ (`str | Path`, default: bundled `trnrunq.exe`)
