@@ -1,60 +1,111 @@
 # TRNRun Queue
 
-`trnrunq.exe` is a standalone, bounded-concurrency launcher for `trnrun.exe`. It
-reads requests incrementally from stdin, so a wrapper can generate any number of
-simulations without building the complete workload in memory.
+`trnrunq.exe` is a Windows process supervisor for running batches of TRNSYS
+simulations through [TRNRun Runner](../trnrun/). It reads JSON Lines requests
+from stdin, dispatches them to a bounded worker pool, and writes all queue and
+simulation events to one stdout stream. Its responsibilities are to:
+
+- accept simulation requests incrementally without loading the full batch
+- limit the number of `trnrun.exe` processes running at the same time
+- report when each request is accepted and completed
+- forward runner events unchanged and identify each run by `runID`
+
+## Contents
+
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Quick start](#quick-start)
+- [Settings](#settings)
+- [Request protocol](#request-protocol)
+- [Output protocol](#output-protocol)
+- [Exit codes](#exit-codes)
+- [Examples](#examples)
 
 ## Requirements
 
-- Windows.
-- A compatible `trnrun.exe` executable.
+### Runtime
+
+- Windows x64
+- [`trnrun.exe`](../trnrun/) executable
+- TRNSYS 17 or 18 for actual simulation runs
+
+### Development
+
+- [Nim](https://nim-lang.org/install.html) 2.2.10 or newer
+- [Zig](https://ziglang.org/download/) as the Windows C compiler and resource
+  compiler
+- [just](https://github.com/casey/just) for repository-root recipes
 
 ## Installation
 
-The queue is written in [Nim](https://nim-lang.org/) and built as a standalone
-executable. To build it from source, install Nim 2.2.10 or newer and
-[Zig](https://ziglang.org/download/), then run from the `trnrunq` directory:
+Download and extract `trnrunq-v<version>-win_amd64.zip` from
+[GitHub Releases](https://github.com/NRCan/TRNRun/releases). The queue does not
+bundle the runner; install `trnrun.exe` separately and provide its path in each
+request.
+
+Or build from source, run the following from the repository root:
 
 ```powershell
+Set-Location components/trnrunq
 nimble bin
 ```
 
-Use `nimble dist` to also assemble the executable, README, and license under
-`dist/`.
+The executable is written to `components/trnrunq/build/trnrunq.exe` relative to
+the repository root.
 
-## Usage
+## Quick start
 
-```powershell
-trnrunq --maxConcurrent:4
-```
+### Single run
 
-When omitted, `--maxConcurrent` defaults to one fewer than the available logical
-processors, with a minimum of one. Requests pass through a fixed one-slot
-handoff channel; its capacity is not configurable. The queue input thread
-blocks when that slot is full.
-
-### PowerShell examples
-
-The repository includes two examples that expect both `trnrun.exe` and
-`trnrunq.exe` to be built in their sibling `build` directories:
+Create one request, serialize it as a JSON line, and pipe it into the queue:
 
 ```powershell
-cd ..\trnrun
-nimble bin
-cd ..\trnrunq
-nimble bin
+$Request = @{
+    runID = 'building-a'
+    deckFile = 'C:\models\building-a.dck'
+    runnerPath = 'C:\bin\trnrun.exe'
+    runnerArgs = @('--watchTmp:true')
+}
+$RequestJson = ConvertTo-Json -InputObject $Request -Compress
 
-# Stream the complete workload without an intentional delay.
-.\examples\example_concurrent.ps1
-
-# Submit one request every two seconds.
-.\examples\example_delayed.ps1
+$RequestJson | trnrunq
 ```
 
-Both scripts create ten temporary copies of the sample deck, allow up to five
-simultaneous runs, and pass `--guiVisibility=auto` and `--watchTmp=true` to
-`trnrun.exe`. Edit the constants at the top of each script to change the copy
-count, concurrency limit, or delayed submission interval.
+### Batch
+
+Generate one request per deck and limit the batch to four simultaneous runs:
+
+```powershell
+$Decks = Get-ChildItem 'C:\models\*.dck'
+
+$RequestsJson = foreach ($Deck in $Decks) {
+    $Request = @{
+        runID = $Deck.BaseName
+        deckFile = $Deck.FullName
+        runnerPath = 'C:\bin\trnrun.exe'
+        runnerArgs = @('--watchTmp:true')
+    }
+    ConvertTo-Json -InputObject $Request -Compress
+}
+
+$RequestsJson | trnrunq --maxConcurrent:4
+```
+
+For option and version information:
+
+```powershell
+trnrunq --help
+trnrunq --version
+```
+
+## Settings
+
+Options accept either `--name:value` or `--name=value`.
+
+- _`--maxConcurrent`_ (`integer`, default: `max(logical processors - 1, 1)`)
+
+  Maximum number of runner processes active at once. The value must be at least
+  `1`.
 
 ## Request protocol
 
@@ -64,138 +115,107 @@ Write one JSON object per line to queue stdin:
 {"runID":"building-a","deckFile":"C:\\models\\building-a.dck","runnerPath":"C:\\bin\\trnrun.exe","runnerArgs":["--guiVisibility:auto","--watchTmp:true"]}
 ```
 
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `runID` | string | yes | Caller-generated routing identifier passed to `trnrun`; must be unique. |
-| `deckFile` | string | yes | `.dck` or `.trd` file to run. |
-| `runnerPath` | string | yes | Runner executable for this request. |
-| `runnerArgs` | array of strings | no | Additional runner arguments. |
+- _`runID`_ (`string`, required)
 
-A request is acknowledged only when a worker picks it up, immediately before
-resolving and launching its runner. While all workers are busy, the fixed
-one-slot handoff channel can buffer one request, but that request remains
-unacknowledged until worker pickup. Sending another request into a full channel
-blocks the queue input thread. Stdin's OS pipe and input buffering may hold
-additional data, so a successful write or flush does not imply acceptance.
+  Non-empty caller-generated identifier used to route all events for the
+  request.
 
-EOF on stdin ends submission. All submitted requests, including the
-channel-buffered request, are picked up and run to completion before queue
-stdout closes.
+- _`deckFile`_ (`string`, required)
+
+  Path to an existing `.dck` or `.trd` file.
+
+- _`runnerPath`_ (`string`, required)
+
+  Path to the compatible runner executable used for this request.
+
+- _`runnerArgs`_ (`array of strings`, default: `[]`)
+
+  Additional command-line arguments forwarded to the runner.
+
+EOF on stdin ends submission. All successfully submitted requests, including the
+request waiting in the handoff slot, are picked up and run to completion before
+queue stdout closes.
+
+### Acceptance and backpressure
+
+A request is acknowledged only when a worker picks it up:
+
+```text
+stdin → one-slot handoff → QUEUE/ACCEPTED → runner → QUEUE/COMPLETED
+```
+
+`QUEUE/ACCEPTED` confirms worker pickup only. It does not confirm that the deck
+or runner exists, that the runner launched, or that the simulation started.
 
 ## Output protocol
 
-Queue stdout is a line-oriented JSON protocol: every non-empty line is one JSON
-object. Immediately after a worker receives a request from the handoff channel,
-the worker writes and flushes an acknowledgment:
+Queue lifecycle events and merged child output are written to stdout one complete
+line at a time and flushed immediately. Output from different runs may
+interleave, but lines are never mixed together and lines from a single runner
+retain their order.
+
+
+### `QUEUE` events
+
+The queue emits two lifecycle events for each request:
+
+- `ACCEPTED` when a worker picks up the request
+- `COMPLETED` after the runner exits or a pre-launch failure occurs
 
 ```json
-{"kind":"QUEUE","timestamp":"2026-06-19T19:37:15","event":"ACCEPTED","runID":"building-a"}
-```
-
-The acknowledgment means a worker has picked up the parsed request, not merely
-that the request entered the channel. `QUEUE/ACCEPTED` always precedes runner
-output and `QUEUE/COMPLETED` for that request, including resolution or launch
-failures. Only after acknowledgment does that worker resolve and start the
-runner, which owns deck validation. Acceptance does not mean runner launch or
-deck validation has succeeded.
-
-Every merged child stdout/stderr line is forwarded unchanged. `runnerPath` must
-therefore reference a compatible `trnrun` executable that emits the documented
-JSONL protocol and attaches the requested `runID`. For example:
-
-```json
-{"kind":"STATUS","timestamp":"2026-06-19T19:37:15","status":"RUNNING","message":"","seq":4,"runID":"building-a"}
-```
-
-`trnrunq` does not parse or reinterpret child output. This keeps the queue a thin
-transport and leaves simulation-event ownership with `trnrun`.
-
-After the child exits and its output has been forwarded, every accepted request
-receives exactly one completion event (also emitted if resolution or launch
-fails):
-
-```json
+{"kind":"QUEUE","event":"ACCEPTED","timestamp":"2026-06-19T19:37:15","runID":"building-a"}
 {"kind":"QUEUE","event":"COMPLETED","timestamp":"2026-06-19T19:37:17","runID":"building-a","exitCode":0}
 ```
 
-`exitCode` is an integer when a child was launched and JSON `null` when runner
-resolution or launch failed first. The queue does not interpret runner statuses;
-wrappers
-must verify that a valid terminal `STATUS` preceded completion. A silent child or
-native crash therefore still completes, with its exit code available for wrapper
-policy.
+Both events contain `kind`, `event`, `timestamp`, and `runID`. `COMPLETED` also
+contains the runner's `exitCode`, or `null` if the runner could not be launched.
+A completed request is not necessarily a successful simulation; use the runner's
+terminal `STATUS` and [exit code](../trnrun/#exit-codes) to determine the outcome.
 
-Output from different runs may be interleaved, but complete lines are never
-mixed together and lines from one run retain their order. If validation or launch
-fails, the queue emits a terminal `STATUS/ERROR` followed by `QUEUE/COMPLETED`.
-The queue does not track identifiers; wrappers must provide a unique `runID` for
-each request so interleaved events remain unambiguous.
+### Runner events
 
-There is no queue stderr protocol. Command-line and fatal process diagnostics may
-be written there for humans, but wrappers must not parse stderr or use it as run
-state.
+Between `ACCEPTED` and `COMPLETED`, child output is forwarded unchanged. Valid
+runner events use the schemas documented by
+[TRNRun Runner](../trnrun/#output-protocol) and include the request's `runID`.
+If validation or launch fails, the queue emits a synthetic `STATUS/ERROR` event
+and completes the request with `exitCode:null`.
 
-## Wrapper responsibilities
+### Example stream
 
-A wrapper should:
+Events for concurrent requests may interleave:
 
-1. Start one dedicated queue-stdout reader before submitting work.
-2. Generate a unique `runID`, register it before writing the request, route all
-   events by `runID`, and resolve submission waiters from `QUEUE/ACCEPTED`.
-3. Generate and write requests incrementally rather than retaining the complete
-   workload.
-4. Await `QUEUE/ACCEPTED` for pickup-based submission backpressure, rather than
-   treating a successful stdin write as acceptance. Keep reading stdout while
-   submitting work or waiting for acknowledgment.
-5. Treat queue EOF before acknowledgment or completion as a run failure.
-6. Close queue stdin after generating the final request.
-7. Finalize each accepted run from its `QUEUE/COMPLETED` metadata, applying
-   wrapper policy when no terminal status was observed.
-
-## Concurrency model
-
-`serve(maxConcurrent)` creates a fixed pool of worker threads. Requests cross a
-`Channel` with capacity `1`, a single handoff slot independent of the worker
-count. Sending into a full channel blocks the input thread. The channel-buffered
-request is not yet accepted: each worker emits `QUEUE/ACCEPTED` immediately after
-`recv`, before resolving or launching the runner. Each worker emits
-`QUEUE/COMPLETED` after runner exit and output forwarding, before picking up its
-next request.
-
-Workers write complete lines under one output lock. At stdin EOF, one stop
-sentinel is queued after all submitted requests and passed from worker to
-worker; channel order guarantees every pending request is picked up before any
-worker stops. Shutdown joins all workers so every submitted run completes.
-Circulating one sentinel also prevents shutdown from filling the one-slot
-channel.
-
-One thread per concurrent run is required rather than chosen: `osproc` exposes
-child stdout as a blocking read on an anonymous pipe, which supports neither
-`select` nor Windows IOCP, so following N children concurrently needs N blocked
-readers.
-
-The channel is deliberately not closed explicitly. Nim 2.2 with ORC can crash
-when closing a `Channel` that transported moved strings, so process teardown
-reclaims this process-lifetime channel.
-
-## Validation
-
-Run the automated tests:
-
-```powershell
-nimble test
+```json
+{"kind":"QUEUE","event":"ACCEPTED","timestamp":"2026-06-19T19:37:13","runID":"building-a"}
+{"kind":"QUEUE","event":"ACCEPTED","timestamp":"2026-06-19T19:37:13","runID":"building-b"}
+{"kind":"STATUS","timestamp":"2026-06-19T19:37:14","status":"RUNNING","message":"","seq":4,"runID":"building-a"}
+{"kind":"STATUS","timestamp":"2026-06-19T19:37:14","status":"RUNNING","message":"","seq":4,"runID":"building-b"}
+{"kind":"STATUS","timestamp":"2026-06-19T19:37:16","status":"DONE","message":"","seq":8,"runID":"building-b"}
+{"kind":"QUEUE","event":"COMPLETED","timestamp":"2026-06-19T19:37:16","runID":"building-b","exitCode":0}
+{"kind":"STATUS","timestamp":"2026-06-19T19:37:17","status":"DONE","message":"","seq":9,"runID":"building-a"}
+{"kind":"QUEUE","event":"COMPLETED","timestamp":"2026-06-19T19:37:17","runID":"building-a","exitCode":0}
 ```
 
-For a manual integration run against installed TRNSYS, build both executables
-and run 50 staged copies of the slow deck with a concurrency limit of 5:
+## Exit codes
 
-```powershell
-cd ..\trnrun
-nimble bin
-cd ..\trnrunq
-nimble bin
-nim r tests/manual_queue.nim
-```
+| Exit code | Meaning |
+| --- | --- |
+| `0` | The queue read stdin to EOF and drained all submitted requests. Help and version also return `0`. Individual runners may still have failed. |
+| `1` | Queue infrastructure or another unexpected fatal failure. |
+| `2` | Invalid queue option, invalid concurrency, positional argument, or malformed request input. |
 
-Edit the constants at the top of `tests/manual_queue.nim` to change the TRNSYS
-executable, source deck, copy count, concurrency, or runner settings.
+Runner exit codes do not become the queue process exit code. Inspect each
+`QUEUE/COMPLETED.exitCode` and terminal runner `STATUS` instead.
+
+## Examples
+
+PowerShell examples are available in [`examples`](examples). They expect
+`build/trnrunq.exe` and `../trnrun/build/trnrun.exe` to exist and use the default
+TRNSYS 18 executable path.
+
+- [`example_concurrent.ps1`](examples/example_concurrent.ps1) submits the full
+  batch immediately.
+- [`example_delayed.ps1`](examples/example_delayed.ps1) submits one request every
+  two seconds.
+
+Both scripts create ten temporary deck copies, allow up to five simultaneous
+runs.
