@@ -10,7 +10,7 @@ simulation events to one stdout stream. Its responsibilities are to:
 - report when each request is accepted and completed
 - forward runner events unchanged and identify each run by `runID`
 
-## Contents
+## Table of Contents
 
 - [Requirements](#requirements)
 - [Installation](#installation)

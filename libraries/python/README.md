@@ -1,14 +1,25 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="../../assets/trnrun-white.svg">
-    <source media="(prefers-color-scheme: light)" srcset="../..assets/trnrun-black.svg">
-    <img alt="TRNRun" src="./assets/trnrun-black.svg">
+    <source media="(prefers-color-scheme: light)" srcset="../../assets/trnrun-black.svg">
+    <img alt="TRNRun" src="../../assets/trnrun-black.svg">
   </picture>
 </p>
 
 Thin Python wrapper for running and monitoring
 [TRNSYS](https://www.trnsys.com/) batch simulations. The
 package includes the `trnrun.exe` runner and `trnrunq.exe` queue.
+
+## Contents
+
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Quick start](#quick-start)
+- [Run a batch](#run-a-batch)
+- [`SimulationConfig`](#simulationconfig)
+- [`SimulationManager`](#simulationmanager)
+- [`Simulation`](#simulation)
+- [Examples](#examples)
 
 ## Requirements
 
@@ -428,6 +439,8 @@ print(f"Notices: {simulation.notices}")
 print(f"Warnings: {simulation.warnings}")
 print(f"Fatals: {simulation.fatals}")
 ```
+
+## Examples
 
 Runnable examples are available
 in the [TRNRun repository](https://github.com/NRCan/TRNRun/tree/main/libraries/python/examples).

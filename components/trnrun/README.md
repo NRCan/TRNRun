@@ -8,7 +8,7 @@ systems that need reliable lifecycle signals:
 - monitors TRNSYS sidecar files for logs and optional Type3830 progress
 - emits a machine-readable JSON Lines event stream
 
-## Contents
+## Table of Contents
 
 - [Requirements](#requirements)
 - [Installation](#installation)

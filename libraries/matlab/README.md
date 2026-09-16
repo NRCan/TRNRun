@@ -1,8 +1,8 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="../../assets/trnrun-white.svg">
-    <source media="(prefers-color-scheme: light)" srcset="../..assets/trnrun-black.svg">
-    <img alt="TRNRun" src="./assets/trnrun-black.svg">
+    <source media="(prefers-color-scheme: light)" srcset="../../assets/trnrun-black.svg">
+    <img alt="TRNRun" src="../../assets/trnrun-black.svg">
   </picture>
 </p>
 
@@ -10,6 +10,17 @@ Thin MATLAB wrapper for running and monitoring
 [TRNSYS](https://www.trnsys.com/) batch simulations. The
 library uses the `trnrun.exe` runner and `trnrunq.exe` queue included in
 the distributed toolbox.
+
+## Contents
+
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Quick start](#quick-start)
+- [Run a batch](#run-a-batch)
+- [`trnrun.SimulationConfig`](#trnrunsimulationconfig)
+- [`trnrun.SimulationManager`](#trnrunsimulationmanager)
+- [`trnrun.Simulation`](#trnrunsimulation)
+- [Examples](#examples)
 
 ## Requirements
 
