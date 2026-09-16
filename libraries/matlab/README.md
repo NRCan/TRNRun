@@ -1,8 +1,8 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="../../assets/trnrun-white.svg">
-    <source media="(prefers-color-scheme: light)" srcset="../../assets/trnrun-black.svg">
-    <img alt="TRNRun" src="../../assets/trnrun-black.svg">
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/NRCan/TRNRun/main/assets/trnrun-white.svg">
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/NRCan/TRNRun/main/assets/trnrun-black.svg">
+    <img alt="TRNRun" src="https://raw.githubusercontent.com/NRCan/TRNRun/main/assets/trnrun-black.svg">
   </picture>
 </p>
 
@@ -25,9 +25,9 @@ the distributed toolbox.
 ## Requirements
 
 - Windows x64
-- MATLAB R2021a or newer as a provisional release floor
+- MATLAB R2021a or newer
 - TRNSYS 17 or 18
-- Optional: [Type3830 Progress Tracker](../../components/type3830/) for
+- Optional: [Type3830 Progress Tracker](https://github.com/NRCan/TRNRun/tree/main/components/type3830) for
   progress and stall monitoring
 
 ## Installation
@@ -48,7 +48,6 @@ matlab.addons.toolbox.installToolbox("C:\path\to\trnrun-v<version>-win_amd64.mlt
 ## Quick start
 
 ```matlab
-
 function simulation = run_deck(deck_path)
     config = trnrun.SimulationConfig(watch_tmp=true);
     manager = trnrun.SimulationManager(maxConcurrent=1);
@@ -473,12 +472,13 @@ end
 
 ## Examples
 
-Runnable examples are available in [`toolbox/examples`](toolbox/examples) or [TRNRun repository](https://github.com/NRCan/TRNRun/tree/main/libraries/matlab/toolbox/examples).:
+Runnable examples are available in the
+[TRNRun repository](https://github.com/NRCan/TRNRun/tree/main/libraries/matlab/toolbox/examples).
 
-- [`example_single.m`](toolbox/examples/example_single.m) runs one deck with
-  Type3830 progress reporting.
-- [`example_manager.m`](toolbox/examples/example_manager.m) runs copied decks
-  with bounded concurrency.
+- [`example_single.m`](https://github.com/NRCan/TRNRun/blob/main/libraries/matlab/toolbox/examples/example_single.m)
+  runs one deck with Type3830 progress reporting.
+- [`example_manager.m`](https://github.com/NRCan/TRNRun/blob/main/libraries/matlab/toolbox/examples/example_manager.m)
+  runs copied decks with bounded concurrency.
 
 Set `toolbox/examples` as the current folder, then run:
 

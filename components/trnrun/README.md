@@ -24,8 +24,8 @@ systems that need reliable lifecycle signals:
 
 - Windows x64
 - TRNSYS 17 or 18
-- Optional: [Type3830 Progress Tracker](../type3830/) for progress, ETA,
-  cancellation, and stall detection
+- Optional: [Type3830 Progress Tracker](https://github.com/NRCan/TRNRun/tree/main/components/type3830)
+  for progress, ETA, cancellation, and stall detection
 
 ### Development
 
@@ -363,17 +363,18 @@ Reports a lifecycle transition or terminal outcome.
 | `PENDING`   | Waiting to acquire the launch mutex.                                                                                       |
 | `LAUNCHING` | Launch mutex acquired; stale cleanup, process creation, readiness, extra delay, and optional minimization are in progress. |
 | `RUNNING`   | Runtime monitoring has started. The child may already have exited if it finished during readiness detection.               |
-| `DONE`      | Process exited without a detected fatal condition or incomplete valid TMP snapshot.                                        |
-| `CANCELLED` | File selection was cancelled, or the process exited with a valid TMP snapshot below 100%.                                  |
+| `DONE`      | Process exited without a detected fatal condition or incomplete valid `.tmp` snapshot.                                     |
+| `CANCELLED` | File selection was cancelled, or the process exited with a valid `.tmp` snapshot below 100%.                               |
 | `ERROR`     | Usage, validation, launch, mutex, Job Object, readiness, monitoring, or fatal-log failure.                                 |
 | `TIMEOUT`   | Readiness detection timed out with `killOnTimeout` enabled, or runtime monitoring timed out.                               |
 | `STALLED`   | Simulation time failed to advance for longer than `stallTimeout`.                                                          |
 
 > [!IMPORTANT]
-> `CANCELLED` and `STALLED` require `--watchTmp:true` and at least one valid
-> Type3830 snapshot. Without a valid snapshot, a non-fatal early process exit is
-> reported as `DONE`; in that configuration, `DONE` means no failure was
-> detected, not that 100% completion was independently verified.
+> Incomplete-simulation `CANCELLED` and `STALLED` require `--watchTmp:true` and
+> at least one valid Type3830 `.tmp` snapshot. File-picker `CANCELLED` does not.
+> Without a valid snapshot, a non-fatal early process exit is reported as `DONE`;
+> in that configuration, `DONE` means no failure was detected, not that 100%
+> completion was independently verified.
 
 - _`message`_ (`string`)
 
@@ -479,15 +480,19 @@ Optional fields are omitted when unavailable; they are not emitted as `null`.
 
 ## Examples
 
-PowerShell examples are available in [`examples`](examples). They expect
+PowerShell examples are available in
+[`examples`](https://github.com/NRCan/TRNRun/tree/main/components/trnrun/examples).
+They expect
 `build/trnrun.exe` to exist and use the default TRNSYS 18 executable path.
 
-- [`example_single.ps1`](examples/example_single.ps1) runs one deck.
-- [`example_sequential.ps1`](examples/example_sequential.ps1) runs decks one at
-  a time.
-- [`example_concurrent.ps1`](examples/example_concurrent.ps1) launches
-  independent runners concurrently.
+- [`example_single.ps1`](https://github.com/NRCan/TRNRun/blob/main/components/trnrun/examples/example_single.ps1)
+  runs one deck.
+- [`example_sequential.ps1`](https://github.com/NRCan/TRNRun/blob/main/components/trnrun/examples/example_sequential.ps1)
+  runs decks one at a time.
+- [`example_concurrent.ps1`](https://github.com/NRCan/TRNRun/blob/main/components/trnrun/examples/example_concurrent.ps1)
+  launches independent runners concurrently.
 
 For bounded concurrent workloads with one merged event stream, use
-[TRNRun Queue](../trnrunq/) instead of managing independent runner processes
+[TRNRun Queue](https://github.com/NRCan/TRNRun/tree/main/components/trnrunq)
+instead of managing independent runner processes
 directly.

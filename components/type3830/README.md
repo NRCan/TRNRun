@@ -9,8 +9,10 @@ are to:
 - provide the start time, stop time, and timestep needed to calculate completion
 - leave a final progress snapshot when the simulation ends
 
-The component is designed for [TRNRun Runner](../trnrun/), which converts these
-snapshots into `CONFIG` and `PROGRESS` events and uses them for cancellation and
+The component is designed for
+[TRNRun Runner](https://github.com/NRCan/TRNRun/tree/main/components/trnrun),
+which converts these snapshots into `CONFIG` and `PROGRESS` events and uses them
+for cancellation and
 stall detection. Other applications can read the same text format directly.
 
 ## Table of Contents
@@ -93,7 +95,8 @@ Type3830 has two parameters and no inputs or outputs.
 
 - _`Printing interval`_ (`number`, default: `1` hour)
 
-  Simulation-time interval between progress updates. It must be greater than `0`.
+  Simulation-time interval between progress updates. It must be greater than `0`
+  and at least as long as the simulation timestep.
 
 Use a printing interval of one hour or longer when fine-grained progress is not
 needed. Shorter intervals increase file I/O without changing the simulation
@@ -133,10 +136,11 @@ Each value is written with six digits after the decimal point:
 
 ## Examples
 
-Example decks are available in [`examples`](examples). They expect Type3830 to
-be installed for the corresponding TRNSYS version.
+Example decks are available in
+[`examples`](https://github.com/NRCan/TRNRun/tree/main/components/type3830/examples).
+They expect Type3830 to be installed for the corresponding TRNSYS version.
 
-- [`type3830-trnsys17.dck`](examples/type3830-trnsys17.dck) demonstrates the
-  TRNSYS 17 component.
-- [`type3830-trnsys18.dck`](examples/type3830-trnsys18.dck) demonstrates the
-  TRNSYS 18 component.
+- [`type3830-trnsys17.dck`](https://github.com/NRCan/TRNRun/blob/main/components/type3830/examples/type3830-trnsys17.dck)
+  demonstrates the TRNSYS 17 component.
+- [`type3830-trnsys18.dck`](https://github.com/NRCan/TRNRun/blob/main/components/type3830/examples/type3830-trnsys18.dck)
+  demonstrates the TRNSYS 18 component.

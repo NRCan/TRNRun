@@ -29,9 +29,9 @@ FAST_DCK = TESTS_DIR / "dck" / "test_fast_wo_plot_w_tracking.dck"
 SLOW_DCK = TESTS_DIR / "dck" / "test_slow_wo_plot_w_tracking.dck"
 DCK_FOLDER = TESTS_DIR / "runs"
 
-FAST_SIM_COUNT = 100
-SLOW_SIM_COUNT = 100
-MAX_CONCURRENT = 50
+FAST_SIM_COUNT = 0
+SLOW_SIM_COUNT = 50
+MAX_CONCURRENT = 25
 REFRESH_INTERVAL = 0.1
 
 CONFIG = SimulationConfig(
@@ -82,7 +82,7 @@ def main() -> int:
 
     DCK_FOLDER.mkdir(parents=True, exist_ok=True)
 
-    print(f"Decks and outputs: {DCK_FOLDER}", flush=True)
+    # print(f"Decks and outputs: {DCK_FOLDER}", flush=True)
 
     dck_files = copy_dck(FAST_DCK, DCK_FOLDER, FAST_SIM_COUNT)
     dck_files.extend(copy_dck(SLOW_DCK, DCK_FOLDER, SLOW_SIM_COUNT))

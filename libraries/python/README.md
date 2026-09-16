@@ -1,8 +1,8 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="../../assets/trnrun-white.svg">
-    <source media="(prefers-color-scheme: light)" srcset="../../assets/trnrun-black.svg">
-    <img alt="TRNRun" src="../../assets/trnrun-black.svg">
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/NRCan/TRNRun/main/assets/trnrun-white.svg">
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/NRCan/TRNRun/main/assets/trnrun-black.svg">
+    <img alt="TRNRun" src="https://raw.githubusercontent.com/NRCan/TRNRun/main/assets/trnrun-black.svg">
   </picture>
 </p>
 
@@ -26,7 +26,7 @@ package includes the `trnrun.exe` runner and `trnrunq.exe` queue.
 - Windows x64
 - Python 3.12 or newer
 - TRNSYS 17 or 18
-- Optional: [Type3830 Progress Tracker](../../components/type3830/) for
+- Optional: [Type3830 Progress Tracker](https://github.com/NRCan/TRNRun/tree/main/components/type3830) for
   progress and stall monitoring
 
 ## Installation
@@ -67,7 +67,7 @@ from pathlib import Path
 
 from trnrun import SimulationConfig, SimulationManager
 
-config = SimulationConfig(watch_tmp=true)
+config = SimulationConfig(watch_tmp=True)
 decks = sorted(Path(r"C:\path\to\decks").glob("*.dck"))
 
 with SimulationManager(max_concurrent=4) as manager:
@@ -161,8 +161,8 @@ print(f"{len(manager.succeeded)} succeeded, {len(manager.failed)} failed")
 
 - _`kill_on_stall`_ (`bool`, default: `False`)
 
-  Terminate the owned TRNSYS process after detecting a stall. Without it, 
-  the `trnrun.exe` waits for process exit.
+  Terminate the owned TRNSYS process after detecting a stall. Without it,
+  `trnrun.exe` waits for the process to exit.
 
 ### Output and cleanup
 
@@ -215,7 +215,7 @@ config = SimulationConfig(
 `SimulationManager` owns one queue process and controls how simulations are
 submitted, monitored, and displayed. It is synchronous and intended for use
 from one thread. Simulation state advances only while `add()`, `wait()`,
-`follow()`, or `shutdown()` reads queue output. 
+`follow()`, or `shutdown()` reads queue output.
 
 ### Parameters
 
@@ -227,7 +227,7 @@ from one thread. Simulation state advances only while `add()`, `wait()`,
 
 - _`refresh_interval`_ (`float`, default: `1.0`)
 
-  Minimum seconds between terminal-display redraws while events are being read. 
+  Minimum seconds between terminal-display redraws while events are being read.
   Set to `0` or a negative value to disable the built-in display.
 
 - _`trnrunq_path`_ (`str | Path`, default: bundled `trnrunq.exe`)
@@ -294,7 +294,7 @@ Example manager workflow with every method and property:
 ```python
 from trnrun import SimulationConfig, SimulationManager
 
-config = SimulationConfig(watch_tmp=true)
+config = SimulationConfig(watch_tmp=True)
 manager = SimulationManager(max_concurrent=2)
 
 try:
@@ -417,7 +417,7 @@ An example inspecting every property:
 from trnrun import SimulationConfig, SimulationManager
 
 with SimulationManager(max_concurrent=1) as manager:
-    simulation = manager.add(r"C:\path\to\deck.dck", SimulationConfig(watch_tmp=true))
+    simulation = manager.add(r"C:\path\to\deck.dck", SimulationConfig(watch_tmp=True))
     manager.wait(simulation)
 
 print(f"ID: {simulation.id}")

@@ -68,7 +68,7 @@ monitoring, and configuration.
 
 ## MATLAB quick start
 
-Install the TRNRun toolbox from the MATLAB Add-On Explorer
+Install the TRNRun toolbox from the MATLAB Add-On Explorer.
 
 Run a deck:
 

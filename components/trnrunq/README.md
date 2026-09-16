@@ -1,7 +1,9 @@
 # TRNRun Queue
 
 `trnrunq.exe` is a Windows process supervisor for running batches of TRNSYS
-simulations through [TRNRun Runner](../trnrun/). It reads JSON Lines requests
+simulations through
+[TRNRun Runner](https://github.com/NRCan/TRNRun/tree/main/components/trnrun). It
+reads JSON Lines requests
 from stdin, dispatches them to a bounded worker pool, and writes all queue and
 simulation events to one stdout stream. Its responsibilities are to:
 
@@ -26,7 +28,8 @@ simulation events to one stdout stream. Its responsibilities are to:
 ### Runtime
 
 - Windows x64
-- [`trnrun.exe`](../trnrun/) executable
+- [`trnrun.exe`](https://github.com/NRCan/TRNRun/tree/main/components/trnrun)
+  executable
 - TRNSYS 17 or 18 for actual simulation runs
 
 ### Development
@@ -154,7 +157,6 @@ line at a time and flushed immediately. Output from different runs may
 interleave, but lines are never mixed together and lines from a single runner
 retain their order.
 
-
 ### `QUEUE` events
 
 The queue emits two lifecycle events for each request:
@@ -170,13 +172,16 @@ The queue emits two lifecycle events for each request:
 Both events contain `kind`, `event`, `timestamp`, and `runID`. `COMPLETED` also
 contains the runner's `exitCode`, or `null` if the runner could not be launched.
 A completed request is not necessarily a successful simulation; use the runner's
-terminal `STATUS` and [exit code](../trnrun/#exit-codes) to determine the outcome.
+terminal `STATUS` and
+[exit code](https://github.com/NRCan/TRNRun/tree/main/components/trnrun#exit-codes)
+to determine the outcome.
 
 ### Runner events
 
 Between `ACCEPTED` and `COMPLETED`, child output is forwarded unchanged. Valid
 runner events use the schemas documented by
-[TRNRun Runner](../trnrun/#output-protocol) and include the request's `runID`.
+[TRNRun Runner](https://github.com/NRCan/TRNRun/tree/main/components/trnrun#output-protocol)
+and include the request's `runID`.
 If validation or launch fails, the queue emits a synthetic `STATUS/ERROR` event
 and completes the request with `exitCode:null`.
 
@@ -208,14 +213,16 @@ Runner exit codes do not become the queue process exit code. Inspect each
 
 ## Examples
 
-PowerShell examples are available in [`examples`](examples). They expect
+PowerShell examples are available in
+[`examples`](https://github.com/NRCan/TRNRun/tree/main/components/trnrunq/examples).
+They expect
 `build/trnrunq.exe` and `../trnrun/build/trnrun.exe` to exist and use the default
 TRNSYS 18 executable path.
 
-- [`example_concurrent.ps1`](examples/example_concurrent.ps1) submits the full
-  batch immediately.
-- [`example_delayed.ps1`](examples/example_delayed.ps1) submits one request every
-  two seconds.
+- [`example_concurrent.ps1`](https://github.com/NRCan/TRNRun/blob/main/components/trnrunq/examples/example_concurrent.ps1)
+  submits the full batch immediately.
+- [`example_delayed.ps1`](https://github.com/NRCan/TRNRun/blob/main/components/trnrunq/examples/example_delayed.ps1)
+  submits one request every two seconds.
 
-Both scripts create ten temporary deck copies, allow up to five simultaneous
+Both scripts create ten temporary deck copies and allow up to five simultaneous
 runs.
