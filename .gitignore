@@ -50,6 +50,12 @@ dist
 runs/
 bin
 
+# .NET
+libraries/dotnet/**/obj/
+libraries/dotnet/.vs/
+*.nupkg
+*.snupkg
+
 # Python
 # Byte-compiled / optimized / DLL files
 __pycache__/

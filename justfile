@@ -17,6 +17,7 @@ dist:
     just type3830-dist
     just python-dist
     just matlab-dist
+    just dotnet-pack
 
 # Run every component test suite
 test:
@@ -34,6 +35,7 @@ deploy:
     just trnrunq-deploy
     just python-dist
     just matlab-dist
+    just dotnet-pack
     Copy-Item components/type3830/dist/* dist -Recurse -Force
     Copy-Item components/trnrun/dist/* dist -Recurse -Force
     Copy-Item components/trnrunq/dist/* dist -Recurse -Force
@@ -64,6 +66,17 @@ matlab-dist:
 # Run the MATLAB test suite
 matlab-test:
     Set-Location libraries/matlab -ErrorAction Stop; matlab -batch "buildtool test"
+
+# Build both native runners for .NET without deploying to the other libraries
+dotnet-native: trnrun-bin trnrunq-bin
+
+# Build the .NET library and executable examples with their native runners
+dotnet-build: dotnet-native
+    Set-Location libraries/dotnet -ErrorAction Stop; dotnet build TRNRun.DotNet.sln --configuration Release
+
+# Build and pack the .NET client, verifying both native versions against the package
+dotnet-pack: dotnet-build
+    Set-Location libraries/dotnet -ErrorAction Stop; dotnet pack src/TRNRun/TRNRun.csproj --configuration Release --no-build --output ../../dist
 
 # Build the Python wheel
 python-dist:

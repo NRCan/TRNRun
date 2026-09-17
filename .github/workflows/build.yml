@@ -27,6 +27,11 @@ jobs:
           enable-cache: true
           cache-dependency-glob: libraries/python/uv.lock
 
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: "10.0.x"
+
       - name: Set up MATLAB
         uses: matlab-actions/setup-matlab@v3
         with:
@@ -53,9 +58,18 @@ jobs:
           nimble --version
           zig version
           just --version
+          dotnet --version
 
       - name: Build and test native and Python clients
         run: just clients-ci-prepare
+
+      - name: Build .NET library and examples
+        working-directory: libraries/dotnet
+        run: dotnet build TRNRun.DotNet.sln --configuration Release
+
+      - name: Pack .NET client and validate bundled native runners
+        working-directory: libraries/dotnet
+        run: dotnet pack src/TRNRun/TRNRun.csproj --configuration Release --no-build --output ../../dist
 
       - name: Test MATLAB toolbox
         uses: matlab-actions/run-build@v3
@@ -79,5 +93,6 @@ jobs:
           path: |
             dist/*.whl
             dist/*.mltbx
+            dist/*.nupkg
             dist/*.zip
           if-no-files-found: error

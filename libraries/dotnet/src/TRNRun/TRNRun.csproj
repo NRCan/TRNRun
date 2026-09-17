@@ -1,0 +1,45 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <IsPackable>true</IsPackable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <PackageId>TRNRun</PackageId>
+    <Version>0.6.1</Version>
+    <Authors>Natural Resources Canada / Ressources naturelles Canada;CanmetENERGY in Varennes / CanmetÉNERGIE à Varennes;Alex Lachance</Authors>
+    <Description>Run, monitor, and orchestrate TRNSYS simulations on Windows using the bundled native TRNRun runners.</Description>
+    <PackageTags>TRNSYS;simulation;Windows</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageLicenseFile>LICENSE</PackageLicenseFile>
+    <PackageProjectUrl>https://github.com/NRCan/TRNRun</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/NRCan/TRNRun</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <_NativeRunnerPath>$(MSBuildThisFileDirectory)../../../../components/trnrun/build/trnrun.exe</_NativeRunnerPath>
+    <_NativeQueuePath>$(MSBuildThisFileDirectory)../../../../components/trnrunq/build/trnrunq.exe</_NativeQueuePath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="../../README.md" Pack="true" PackagePath="/" />
+    <None Include="../../../../LICENSE" Pack="true" PackagePath="/" />
+    <None Include="../../../../THIRD-PARTY-NOTICES.md" Pack="true" PackagePath="/" />
+    <!-- Link the real native build outputs; do not maintain a second staged copy. -->
+    <None Include="$(_NativeRunnerPath)" Link="runtimes/win-x64/native/trnrun.exe"
+          Pack="true" PackagePath="runtimes/win-x64/native/"
+          CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <None Include="$(_NativeQueuePath)" Link="runtimes/win-x64/native/trnrunq.exe"
+          Pack="true" PackagePath="runtimes/win-x64/native/"
+          CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <Target Name="RequireNativeRunners" BeforeTargets="PrepareForBuild">
+    <Error Condition="!Exists('$(_NativeRunnerPath)')"
+           Text="Missing trnrun.exe. Run 'just dotnet-native' from the repository root before building or packing the .NET library." />
+    <Error Condition="!Exists('$(_NativeQueuePath)')"
+           Text="Missing trnrunq.exe. Run 'just dotnet-native' from the repository root before building or packing the .NET library." />
+  </Target>
+
+  <!-- GenerateNuspec is reached by pack even with --no-build. -->
+  <Target Name="ValidateNativeRunnersForPack" BeforeTargets="GenerateNuspec" DependsOnTargets="RequireNativeRunners">
+    <Error Condition="'$(OS)' != 'Windows_NT'"
+           Text="Pack TRNRun on Windows so both native executables can be checked with --version." />
+    <Exec Command="powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;$(MSBuildThisFileDirectory)../../packaging/Validate-NativeRunners.ps1&quot; -RunnerPath &quot;$(_NativeRunnerPath)&quot; -QueuePath &quot;$(_NativeQueuePath)&quot; -PackageVersion &quot;$(PackageVersion)&quot;" />
+  </Target>
+</Project>

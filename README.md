@@ -8,7 +8,7 @@
 
 TRNRun is a tool for running [TRNSYS](https://www.trnsys.com/) simulations,
 designed to make batch runs easy to automate, monitor, and orchestrate from
-Python, MATLAB, or the command line.
+Python, MATLAB, C#/.NET, or the command line.
 
 ## Components
 
@@ -24,8 +24,9 @@ Python, MATLAB, or the command line.
 | --- | --- |
 | [Python](libraries/python/) | Automating concurrent simulation batches from Python. |
 | [MATLAB](libraries/matlab/) | Running and inspecting concurrent simulations from MATLAB. |
+| [C#/.NET](libraries/dotnet/) | Running concurrent batches from synchronous .NET applications. |
 
-Both libraries bundle the `trnrun` and `trnrunq` executables.
+All three library packages bundle the `trnrun` and `trnrunq` executables.
 
 ## Requirements
 
@@ -33,6 +34,7 @@ Both libraries bundle the `trnrun` and `trnrunq` executables.
 - TRNSYS 17 or 18
 - Python 3.12 or newer for the Python library
 - MATLAB R2021a or newer for the MATLAB library
+- .NET 10 for the C# library (`net10.0-windows`, bundled `win-x64` runners)
 
 Progress reporting requires the optional
 [Type3830 Progress Tracker](components/type3830/) in each deck.
@@ -83,6 +85,24 @@ manager.shutdown();
 
 See the [MATLAB documentation](libraries/matlab/) for installation, concurrent
 batches, and result inspection.
+
+## C#/.NET quick start
+
+Build the library, executable examples, and local NuGet package from source on
+Windows with the .NET 10 SDK, Nim, Zig, and just installed:
+
+```powershell
+just dotnet-pack
+```
+
+This builds both native runners, verifies their versions against the NuGet
+package version, and writes the package to `dist/`. It does not run simulations
+or add .NET tests. TRNSYS must be installed separately to run a deck.
+
+See the [.NET documentation](libraries/dotnet/) for local package installation,
+single-run and batch examples, configuration, and progress handling. The API is
+synchronous and single-threaded: call `Shutdown()` explicitly in a `finally`
+block; `SimulationManager` is not `IDisposable`.
 
 ## Demo
 
