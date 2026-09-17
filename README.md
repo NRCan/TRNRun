@@ -12,18 +12,18 @@ Python, MATLAB, or the command line.
 
 ## Components
 
-| Component | Role |
-| --- | --- |
-| [TRNRun Runner](components/trnrun/) | Runs and monitors one deck, emitting JSON Lines events. |
+| Component                           | Role                                                                  |
+| ----------------------------------- | --------------------------------------------------------------------- |
+| [TRNRun Runner](components/trnrun/) | Runs and monitors one deck, emitting JSON Lines events.               |
 | [TRNRun Queue](components/trnrunq/) | Runs multiple decks with bounded concurrency and merges their events. |
-| [Type3830](components/type3830/) | Reports simulation progress for monitoring and stall detection. |
+| [Type3830](components/type3830/)    | Reports simulation progress for monitoring and stall detection.       |
 
 ## Libraries
 
-| Client | Use it for |
-| --- | --- |
-| [Python](libraries/python/) | Automating concurrent simulation batches from Python. |
-| [MATLAB](libraries/matlab/) | Running and inspecting concurrent simulations from MATLAB. |
+| Client                      | Role                                                        |
+| --------------------------- | ----------------------------------------------------------- |
+| [Python](libraries/python/) | Python interface for running concurrent simulation batches. |
+| [MATLAB](libraries/matlab/) | MATLAB interface for running concurrent simulation batches. |
 
 Both libraries bundle the `trnrun` and `trnrunq` executables.
 
