@@ -8,8 +8,9 @@
 
 Thin MATLAB wrapper for running and monitoring
 [TRNSYS](https://www.trnsys.com/) batch simulations. The
-library uses the `trnrun.exe` runner and `trnrunq.exe` queue included in
-the distributed toolbox.
+library uses the `trnrun.exe` runner and `trnrunq.exe` queue. MATLAB downloads
+and installs both native clients from the matching GitHub release when the
+toolbox is installed.
 
 ## Contents
 
@@ -38,12 +39,10 @@ Install with MATLAB's Add-On Explorer:
 Home > Add-Ons > Get Add-Ons > Search "TRNRun" > Install
 ```
 
-Or with a package downloaded from
-[GitHub Releases](https://github.com/NRCan/TRNRun/releases):
-
-```matlab
-matlab.addons.toolbox.installToolbox("C:\path\to\trnrun-v<version>-win_amd64.mltbx");
-```
+Or download the package from
+[GitHub Releases](https://github.com/NRCan/TRNRun/releases), navigate to it in
+MATLAB's Current Folder browser, and double-click the `.mltbx` file. Follow the
+installer prompts to install the toolbox and both native clients.
 
 ## Quick start
 
@@ -93,9 +92,9 @@ end
 
 ### Executables and window
 
-- _`trnrun_path`_ (`string`, default: bundled `trnrun.exe`)
+- _`trnrun_path`_ (`string`, default: MATLAB-managed `trnrun.exe`)
 
-  Path to the `trnrun.exe` executable.
+  Path to the `trnrun.exe` executable downloaded with the toolbox.
 
 - _`trnexe_path`_ (`string`, default:
   `C:\TRNSYS18\Exe\TrnEXE64.exe`)
@@ -238,9 +237,9 @@ from one thread. Simulation state advances only while `add()`, `wait()`,
   Minimum seconds between progress-window updates while events are being read.
   Set to `0` or a negative value to disable all built-in display output.
 
-- _`trnrunqPath`_ (`string`, default: bundled `trnrunq.exe`)
+- _`trnrunqPath`_ (`string`, default: MATLAB-managed `trnrunq.exe`)
 
-  Path to the `trnrunq.exe` executable.
+  Path to the `trnrunq.exe` executable downloaded with the toolbox.
 
 A manager with every parameter set explicitly:
 

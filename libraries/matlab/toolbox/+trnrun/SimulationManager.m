@@ -35,8 +35,8 @@ classdef SimulationManager < handle
             %       of one; missing or invalid processor counts use one.
             %   refreshInterval - Real, finite display refresh interval in
             %       seconds (default 1). Values at or below zero disable output.
-            %   trnrunqPath - Path to the queue executable. Defaults to
-            %       bin/trnrunq.exe beneath the trnrun package directory.
+            %   trnrunqPath - Path to the queue executable. Defaults to the
+            %       MATLAB-managed TRNRunQ installation.
             %
             %   Use add to submit runs, wait to process updates until completion,
             %   or follow to receive callbacks as updates are applied. Call
@@ -56,9 +56,8 @@ classdef SimulationManager < handle
                     {mustBeInteger, mustBePositive, mustBeFinite} = defaultConcurrency()
                 options.refreshInterval (1,1) double ...
                     {mustBeReal, mustBeFinite} = 1.0
-                options.trnrunqPath (1,1) string = fullfile( ...
-                    fileparts(fileparts(mfilename('fullpath'))), ...
-                    'bin', 'trnrunq.exe')
+                options.trnrunqPath (1,1) string = ...
+                    trnrun.internal.additionalSoftwareExecutable("TRNRunQ", "trnrunq.exe")
             end
 
             obj.display = trnrun.internal.Display(options.refreshInterval);

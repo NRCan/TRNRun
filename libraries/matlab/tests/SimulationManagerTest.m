@@ -81,15 +81,15 @@ classdef SimulationManagerTest < matlab.unittest.TestCase
             testCase.verifyEqual(testCase.Queue.executable, "custom-queue.exe");
         end
 
-        function constructorDefaultsToBundledQueuePath(testCase)
-            %CONSTRUCTORDEFAULTSTOBUNDLEDQUEUEPATH bin/trnrunq.exe ships with the toolbox.
+        function sourceDefaultQueuePathUsesDeployedExecutable(testCase)
+            %SOURCEDEFAULTQUEUEPATHUSESDEPLOYEDEXECUTABLE Source tests use toolbox/bin.
 
             testCase.makeManager();
             expected = fullfile(toolboxFolder(), 'bin', 'trnrunq.exe');
 
             testCase.verifyEqual(testCase.Queue.executable, string(expected));
             testCase.verifyTrue(isfile(expected), ...
-                'The toolbox must ship the queue it defaults to.');
+                'Native client deployment must stage the queue for source tests.');
         end
 
         function defaultConcurrencyReservesOneProcessor(testCase)
