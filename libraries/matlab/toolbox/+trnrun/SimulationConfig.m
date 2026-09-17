@@ -10,9 +10,9 @@ classdef SimulationConfig
     %   Property types and validators apply at construction and assignment.
 
     properties
-        % Runner executable; defaults to the copy bundled with this package.
+        % Runner executable; defaults to the MATLAB-managed TRNRun installation.
         trnrun_path (1,1) string {mustBeNonmissing, mustBeNonzeroLengthText} = ...
-            fullfile(fileparts(fileparts(mfilename('fullpath'))), "bin", "trnrun.exe")
+            trnrun.internal.additionalSoftwareExecutable("TRNRun", "trnrun.exe")
 
         % TRNSYS executable (--trnexePath).
         trnexe_path (1,1) string {mustBeNonmissing, mustBeNonzeroLengthText} = ...

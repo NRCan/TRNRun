@@ -61,15 +61,15 @@ classdef SimulationConfigTest < matlab.unittest.TestCase
             testCase.verifyFalse(config.write_events);
         end
 
-        function defaultRunnerPathPointsAtBundledExecutable(testCase)
-            %DEFAULTRUNNERPATHPOINTSATBUNDLEDEXECUTABLE bin/trnrun.exe ships with the toolbox.
+        function sourceDefaultRunnerPathUsesDeployedExecutable(testCase)
+            %SOURCEDEFAULTRUNNERPATHUSESDEPLOYEDEXECUTABLE Source tests use toolbox/bin.
 
             config = trnrun.SimulationConfig();
             expected = fullfile(toolboxFolder(), 'bin', 'trnrun.exe');
 
             testCase.verifyEqual(config.trnrun_path, string(expected));
             testCase.verifyTrue(isfile(config.trnrun_path), ...
-                'The toolbox must ship the runner it defaults to.');
+                'Native client deployment must stage the runner for source tests.');
         end
 
         % -----------------------------------------------------------------
