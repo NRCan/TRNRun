@@ -23,11 +23,12 @@ from trnrun import SimulationConfig, SimulationManager
 # -----------------------------------------------------------------------------
 # Configuration
 # -----------------------------------------------------------------------------
+__root__ = Path(__file__).resolve().parent
+
 TRNEXE_PATH = Path(r"C:\TRNSYS18\Exe\TrnEXE64.exe")
-TESTS_DIR = Path(__file__).resolve().parent
-FAST_DCK = TESTS_DIR / "dck" / "test_fast_wo_plot_w_tracking.dck"
-SLOW_DCK = TESTS_DIR / "dck" / "test_slow_wo_plot_w_tracking.dck"
-DCK_FOLDER = TESTS_DIR / "runs"
+FAST_DCK = __root__ / "dck" / "test_fast_wo_plot_w_tracking.dck"
+SLOW_DCK = __root__ / "dck" / "test_slow_wo_plot_w_tracking.dck"
+DCK_FOLDER = __root__ / "runs"
 
 FAST_SIM_COUNT = 0
 SLOW_SIM_COUNT = 50
