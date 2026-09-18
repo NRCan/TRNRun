@@ -86,7 +86,7 @@ batches, and result inspection.
 
 ## Demo
 
-https://github.com/user-attachments/assets/a3599f98-c011-4ccd-8f6d-2f819b6f493d
+https://github.com/user-attachments/assets/389631b0-c986-4733-9cee-1efe2100246e
 
 ## License
 
