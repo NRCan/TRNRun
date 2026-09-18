@@ -25,7 +25,7 @@ function options = toolboxOptions()
 
     % Keep this identifier stable after publication so MATLAB recognises
     % subsequent releases as upgrades rather than separate toolboxes.
-    identifier = "ca-nrcan-trnrun";
+    identifier = "trnrun";
 
     options = matlab.addons.toolbox.ToolboxOptions(toolboxFolder(), identifier, ...
         ToolboxName="TRNRun", ...
