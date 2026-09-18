@@ -5,6 +5,7 @@ function plan = buildfile()
     %       buildtool           % Package dist/trnrun-v<version>-win_amd64.mltbx
     %       buildtool test      % Run the unit tests in tests/
     %       buildtool verify    % Stage and validate package inputs
+    %       buildtool links     % Check the release assets the toolbox cites
     %       buildtool clean     % Remove dist/
     %
     %   The archive is named for the version and platform it carries, so
@@ -14,6 +15,9 @@ function plan = buildfile()
     %
     %   Packaging does not depend on the tests, so a release archive never
     %   waits on a full suite run. Run both with: buildtool test package
+    %
+    %   The links task needs the GitHub release to exist, so it runs on its
+    %   own after publishing rather than as part of packaging.
 
     plan = buildplan(localfunctions);
     plan("package").Dependencies = "verify";
@@ -25,7 +29,7 @@ function options = toolboxOptions()
 
     % Keep this identifier stable after publication so MATLAB recognises
     % subsequent releases as upgrades rather than separate toolboxes.
-    identifier = "ca-nrcan-trnrun";
+    identifier = "trnrun";
 
     options = matlab.addons.toolbox.ToolboxOptions(toolboxFolder(), identifier, ...
         ToolboxName="TRNRun", ...
@@ -36,9 +40,11 @@ function options = toolboxOptions()
             "Requires a separate installation of TRNSYS 17 or 18 on 64-bit Windows. " + ...
             "MATLAB R2021a compatibility is a target, not a runtime-verified guarantee.", ...
         AuthorName="Alex Lachance", ...
+        AuthorEmail="alex.lachance@nrcan-rncan.gc.ca", ...
         AuthorCompany="Natural Resources Canada / Ressources naturelles Canada; " + ...
             "CanmetENERGY in Varennes / CanmetÉNERGIE à Varennes", ...
         ToolboxImageFile=fullfile(rootFolder(), "images", "trnrun-black-below.png"), ...
+        ToolboxFiles=toolboxFiles(), ...
         ToolboxMatlabPath=toolboxFolder(), ...
         RequiredAdditionalSoftware=requiredAdditionalSoftware(), ...
         MinimumMatlabRelease="R2021a", ...
@@ -65,7 +71,7 @@ function packageTask(~)
     end
 
     % Make trnrun.version available when evaluating toolbox options.
-    addpath(toolboxFolder());
+    pathCleanup = usingToolboxPath(); %#ok<NASGU>
 
     matlab.addons.toolbox.packageToolbox(toolboxOptions());
 end
@@ -89,6 +95,37 @@ function verifyTask(~)
             newline + "  - " + strjoin(missing, newline + "  - ");
         error("trnrun:MissingPackageFiles", "%s", message);
     end
+
+    packaged = toolboxFiles();
+    if isempty(packaged)
+        error("trnrun:EmptyPackageFileList", ...
+            "Package verification failed. No files selected from %s.", ...
+            toolboxFolder());
+    end
+end
+
+function linksTask(~)
+    %LINKSTASK Confirm the release assets cited by the toolbox resolve.
+    %   Packaging bakes version-specific GitHub URLs into the toolbox, but
+    %   those assets exist only once the release is published. Failing the
+    %   package task on them would make the first build of a new version
+    %   impossible, so this task stays out of the dependency chain. Run it
+    %   after publishing a release to catch a bad tag or a missed upload
+    %   before an install does.
+
+    pathCleanup = usingToolboxPath(); %#ok<NASGU>
+
+    software = requiredAdditionalSoftware();
+    urls = unique([string({software.DownloadURL}), string({software.LicenseURL})])';
+
+    unreachable = urls(~arrayfun(@isReachableURL, urls));
+    if ~isempty(unreachable)
+        message = "Release assets cited by the toolbox are unreachable:" + ...
+            newline + "  - " + strjoin(unreachable, newline + "  - ");
+        error("trnrun:UnreachableReleaseAssets", "%s", message);
+    end
+
+    disp("Resolved " + numel(urls) + " release asset URLs.");
 end
 
 function testTask(~)
@@ -112,24 +149,45 @@ end
 function software = requiredAdditionalSoftware()
     %REQUIREDADDITIONALSOFTWARE Describe native clients downloaded at install time.
 
-    version = string(trnrun.version());
+    toolboxVersion = string(trnrun.version());
     releaseURL = "https://github.com/NRCan/TRNRun/releases/download/" + ...
-        version + "/";
+        toolboxVersion + "/";
     licenseURL = "https://raw.githubusercontent.com/NRCan/TRNRun/" + ...
-        version + "/LICENSE";
+        toolboxVersion + "/LICENSE";
 
     software = [ ...
         struct( ...
             "Name", "TRNRun", ...
             "Platform", "win64", ...
-            "DownloadURL", releaseURL + "trnrun-v" + version + "-win_amd64.zip", ...
+            "DownloadURL", releaseURL + "trnrun-v" + toolboxVersion + "-win_amd64.zip", ...
             "LicenseURL", licenseURL); ...
         struct( ...
             "Name", "TRNRunQ", ...
             "Platform", "win64", ...
-            "DownloadURL", releaseURL + "trnrunq-v" + version + "-win_amd64.zip", ...
+            "DownloadURL", releaseURL + "trnrunq-v" + toolboxVersion + "-win_amd64.zip", ...
             "LicenseURL", licenseURL) ...
     ];
+end
+
+function tf = isReachableURL(url)
+    %ISREACHABLEURL Report whether a HEAD request for URL succeeds.
+
+    request = matlab.net.http.RequestMessage(matlab.net.http.RequestMethod.HEAD);
+    try
+        response = request.send(matlab.net.URI(url));
+        tf = response.StatusCode == matlab.net.http.StatusCode.OK;
+    catch
+        tf = false;
+    end
+end
+
+function cleanup = usingToolboxPath()
+    %USINGTOOLBOXPATH Put the toolbox folder on the path for the caller's scope.
+    %   The caller must keep the returned object alive; the path is restored
+    %   when it goes out of scope, so a build never leaves the path dirty.
+
+    addpath(toolboxFolder());
+    cleanup = onCleanup(@() rmpath(toolboxFolder()));
 end
 
 function stagePackageFiles()
@@ -154,6 +212,32 @@ function stagePackageFiles()
     for index = 1:numel(sources)
         copyfile(sources(index), destinations(index), "f");
     end
+end
+
+function files = toolboxFiles()
+    %TOOLBOXFILES List the files packaged as the toolbox.
+    %   ToolboxOptions otherwise defaults to every file under the toolbox
+    %   folder, so the exclusions are applied here rather than through an
+    %   ignore file the packager may not honour. The native executables are
+    %   installed separately from the URLs in the toolbox metadata, and the
+    %   remaining exclusions are artifacts left behind by running examples.
+
+    excludedFolders = ["bin", fullfile("examples", "runs")] + filesep;
+    excludedExtensions = [".log", ".lst", ".tmp", ".pti"];
+
+    entries = dir(fullfile(toolboxFolder(), "**", "*"));
+    entries = entries(~[entries.isdir]);
+    if isempty(entries)
+        files = strings(0, 1);
+        return
+    end
+
+    absolute = string(fullfile({entries.folder}, {entries.name}))';
+    relative = extractAfter(absolute, strlength(toolboxFolder()) + 1);
+
+    keep = ~startsWith(relative, excludedFolders) & ...
+        ~endsWith(lower(relative), excludedExtensions);
+    files = absolute(keep);
 end
 
 function folder = rootFolder()
