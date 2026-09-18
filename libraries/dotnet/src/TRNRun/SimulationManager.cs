@@ -36,6 +36,7 @@ public sealed class SimulationManager
     /// <param name="trnRunQueuePath">An unquoted queue executable path, or null to locate the bundled win-x64 executable.</param>
     /// <exception cref="PlatformNotSupportedException">The host is not Windows.</exception>
     /// <exception cref="ArgumentOutOfRangeException">Concurrency or the refresh interval is not positive.</exception>
+    /// <exception cref="ArgumentException">The queue executable path is empty or blank.</exception>
     /// <exception cref="FileNotFoundException">The queue executable cannot be found.</exception>
     public SimulationManager(
         int? maxConcurrent = null,
@@ -50,7 +51,18 @@ public sealed class SimulationManager
         int concurrency = maxConcurrent ?? Math.Max(Environment.ProcessorCount - 1, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(concurrency, 1, nameof(maxConcurrent));
         _display = new ConsoleDisplay(refreshInterval ?? TimeSpan.FromSeconds(1));
-        string executable = ExecutableResolver.Resolve(trnRunQueuePath, "trnrunq.exe");
+
+        // An explicit path never falls back to the executable bundled in native/.
+        string executable =
+            trnRunQueuePath ?? Path.Combine(AppContext.BaseDirectory, "native", "trnrunq.exe");
+        ArgumentException.ThrowIfNullOrWhiteSpace(executable, nameof(trnRunQueuePath));
+
+        executable = Path.GetFullPath(executable);
+        if (!File.Exists(executable))
+        {
+            throw new FileNotFoundException($"Queue executable not found: '{executable}'.", executable);
+        }
+
         _queue = new QueueProcess(executable, concurrency);
     }
 
@@ -77,6 +89,9 @@ public sealed class SimulationManager
     /// workers are occupied, and processes other simulations' events while awaiting acceptance.
     /// Failed writes are not retried because the queue may already have received the request.
     /// </remarks>
+    /// <exception cref="ArgumentException">The deck or an executable path is empty, or the deck is not a .dck or .trd file.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">A configuration enum value or duration is invalid.</exception>
+    /// <exception cref="FileNotFoundException">The deck or a required executable cannot be found.</exception>
     /// <exception cref="IOException">Submission fails or stdout closes with outstanding requests.</exception>
     /// <exception cref="InvalidOperationException">The manager is closed, used from another thread, or already reading output.</exception>
     public Simulation Add(string deckPath, SimulationConfig config)
@@ -91,11 +106,6 @@ public sealed class SimulationManager
 
             ArgumentNullException.ThrowIfNull(config);
             ArgumentException.ThrowIfNullOrWhiteSpace(deckPath);
-            if (deckPath.IndexOfAny(Path.GetInvalidPathChars()) >= 0)
-            {
-                throw new ArgumentException("Expected an unquoted deck path without invalid characters.", nameof(deckPath));
-            }
-
             string fullDeckPath = Path.GetFullPath(deckPath);
             if (!File.Exists(fullDeckPath))
             {
@@ -109,8 +119,7 @@ public sealed class SimulationManager
                 throw new ArgumentException("The deck must be a .dck or .trd file.", nameof(deckPath));
             }
 
-            string[] arguments = config.ToCliArgs();
-            string runnerPath = ExecutableResolver.Resolve(config.TrnRunPath, "trnrun.exe");
+            string[] arguments = config.ToCliArgs(out string runnerPath);
             string id = _nextId.ToString(CultureInfo.InvariantCulture);
             _nextId = checked(_nextId + 1);
             var simulation = new Simulation(id, fullDeckPath, config);

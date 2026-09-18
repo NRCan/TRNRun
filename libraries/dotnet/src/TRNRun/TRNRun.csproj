@@ -21,12 +21,14 @@
     <None Include="../../../../LICENSE" Pack="true" PackagePath="/" />
     <None Include="../../../../THIRD-PARTY-NOTICES.md" Pack="true" PackagePath="/" />
     <!-- Link the real native build outputs; do not maintain a second staged copy. -->
-    <None Include="$(_NativeRunnerPath)" Link="runtimes/win-x64/native/trnrun.exe"
-          Pack="true" PackagePath="runtimes/win-x64/native/"
+    <None Include="$(_NativeRunnerPath)" Link="native/trnrun.exe"
+          Pack="true" PackagePath="native/" ExcludeFromSingleFile="true"
           CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
-    <None Include="$(_NativeQueuePath)" Link="runtimes/win-x64/native/trnrunq.exe"
-          Pack="true" PackagePath="runtimes/win-x64/native/"
+    <None Include="$(_NativeQueuePath)" Link="native/trnrunq.exe"
+          Pack="true" PackagePath="native/" ExcludeFromSingleFile="true"
           CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <None Include="../../packaging/TRNRun.targets"
+          Pack="true" PackagePath="buildTransitive/TRNRun.targets" />
   </ItemGroup>
 
   <Target Name="RequireNativeRunners" BeforeTargets="PrepareForBuild">
@@ -36,7 +38,7 @@
            Text="Missing trnrunq.exe. Run 'just dotnet-native' from the repository root before building or packing the .NET library." />
   </Target>
 
-  <!-- GenerateNuspec is reached by pack even with --no-build. -->
+  <!-- GenerateNuspec is reached even when packing without a build. -->
   <Target Name="ValidateNativeRunnersForPack" BeforeTargets="GenerateNuspec" DependsOnTargets="RequireNativeRunners">
     <Error Condition="'$(OS)' != 'Windows_NT'"
            Text="Pack TRNRun on Windows so both native executables can be checked with --version." />

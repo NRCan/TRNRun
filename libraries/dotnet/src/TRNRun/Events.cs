@@ -1,17 +1,13 @@
 namespace TRNRun;
 
-/// <summary>Immutable native message associated with one simulation.</summary>
+/// <summary>Immutable native message for one simulation.</summary>
 /// <param name="RunId">Opaque, case-sensitive queue request identifier.</param>
-/// <param name="Timestamp">Native timestamp string, without an inferred time zone.</param>
+/// <param name="Timestamp">Native timestamp string; no time zone inferred.</param>
 /// <remarks>
-/// Events describe individual messages, not simulation snapshots. The manager routes them by
-/// <see cref="RunId"/> and updates the associated <see cref="Simulation"/> while reading queue output.
-/// Native sequence numbers are omitted; timestamps and unknown status/severity strings are preserved.
+/// Events are individual messages, not simulation snapshots. Native sequence numbers are omitted;
+/// timestamps and unknown status/severity strings are preserved.
 /// </remarks>
-public abstract record TrnRunEvent(
-    string RunId,
-    string Timestamp
-);
+public abstract record TrnRunEvent(string RunId, string Timestamp);
 
 /// <summary>Runner status and optional outcome detail.</summary>
 /// <param name="RunId">Queue request identifier.</param>
@@ -41,7 +37,7 @@ public sealed record ProgressEvent(
     double Eta
 ) : TrnRunEvent(RunId, Timestamp);
 
-/// <summary>Simulation time bounds and step reported by the runner.</summary>
+/// <summary>Runner-reported simulation bounds and time step.</summary>
 /// <param name="RunId">Queue request identifier.</param>
 /// <param name="Timestamp">Native timestamp.</param>
 /// <param name="Start">Start time in deck units.</param>
@@ -55,31 +51,26 @@ public sealed record ConfigEvent(
     double Step
 ) : TrnRunEvent(RunId, Timestamp);
 
-/// <summary>Effective settings reported by the native runner.</summary>
+/// <summary>Effective settings; may differ from the submitted <see cref="SimulationConfig"/>.</summary>
 /// <param name="RunId">Queue request identifier.</param>
 /// <param name="Timestamp">Native timestamp.</param>
 /// <param name="TrnExePath">Reported TRNSYS executable path.</param>
 /// <param name="GuiVisibility">Native window-visibility string.</param>
-/// <param name="WaitForGui">Whether launch detection waits for the TRNSYS GUI.</param>
-/// <param name="WaitForLst">Whether launch detection waits for the listing file.</param>
-/// <param name="WaitForTmp">Whether launch detection waits for the Type3830 progress file.</param>
+/// <param name="WaitForGui">Waits for the TRNSYS window during launch.</param>
+/// <param name="WaitForLst">Waits for the component-order header in the deck's .lst file.</param>
+/// <param name="WaitForTmp">Waits for the Type3830 .tmp file to exist.</param>
 /// <param name="DetectTimeoutMs">Readiness timeout in milliseconds; 0 means unlimited.</param>
 /// <param name="ExtraDelayMs">Post-detection delay in milliseconds.</param>
-/// <param name="WatchLog">Whether to monitor the TRNSYS log.</param>
-/// <param name="WatchTmp">Whether to monitor Type3830 progress.</param>
+/// <param name="WatchLog">Streams TRNSYS log events.</param>
+/// <param name="WatchTmp">Monitors Type3830 progress.</param>
 /// <param name="WatchTimeoutMs">Monitoring timeout in milliseconds; 0 means unlimited.</param>
 /// <param name="StallTimeoutMs">Stall timeout in milliseconds; 0 disables detection.</param>
 /// <param name="PollMs">Monitoring poll interval in milliseconds.</param>
-/// <param name="CleanOnSuccess">Whether to clean intermediate files after success.</param>
-/// <param name="KillOnTimeout">Whether to terminate TRNSYS on timeout.</param>
-/// <param name="KillOnStall">Whether to terminate TRNSYS on a stall.</param>
+/// <param name="CleanOnSuccess">Deletes .tmp, .log, .lst, and .PTI files after success.</param>
+/// <param name="KillOnTimeout">Terminates TRNSYS on a readiness or monitoring timeout.</param>
+/// <param name="KillOnStall">Terminates TRNSYS on a stall.</param>
 /// <param name="Severity">Native log-severity threshold string.</param>
-/// <param name="WriteEvents">Whether to write an event JSON Lines file.</param>
-/// <remarks>
-/// Reports what the runner applied, which may differ from the submitted <see cref="SimulationConfig"/>.
-/// Native strings and integer milliseconds are retained without conversion to enums or TimeSpan,
-/// preserving normalized settings and unknown future values.
-/// </remarks>
+/// <param name="WriteEvents">Writes runner events to the deck's .jsonl file.</param>
 public sealed record SettingEvent(
     string RunId,
     string Timestamp,
@@ -102,7 +93,7 @@ public sealed record SettingEvent(
     bool WriteEvents
 ) : TrnRunEvent(RunId, Timestamp);
 
-/// <summary>Severity-tagged TRNSYS log entry.</summary>
+/// <summary>TRNSYS log entry; missing optional fields stay null.</summary>
 /// <param name="RunId">Queue request identifier.</param>
 /// <param name="Timestamp">Native timestamp.</param>
 /// <param name="Severity">Native severity string, normally Notice, Warning, or Fatal.</param>
@@ -112,7 +103,6 @@ public sealed record SettingEvent(
 /// <param name="MessageCode">Native message code.</param>
 /// <param name="Message">Message text.</param>
 /// <param name="Information">Additional detail.</param>
-/// <remarks>Absent optional fields remain <see langword="null"/>.</remarks>
 public sealed record LogEvent(
     string RunId,
     string Timestamp,
@@ -125,16 +115,11 @@ public sealed record LogEvent(
     string? Information = null
 ) : TrnRunEvent(RunId, Timestamp);
 
-/// <summary>Worker acceptance or queue completion for one run.</summary>
+/// <summary>Worker acceptance or queue completion; completion alone does not imply <see cref="Simulation.Succeeded"/>.</summary>
 /// <param name="RunId">Queue request identifier.</param>
 /// <param name="Timestamp">Native timestamp.</param>
-/// <param name="Status">Native event field, normally ACCEPTED or COMPLETED.</param>
+/// <param name="Status">Native event field: ACCEPTED on worker pickup before launch; COMPLETED after exit and output drain, or pre-launch failure.</param>
 /// <param name="ExitCode">Runner exit code, or null when unavailable.</param>
-/// <remarks>
-/// ACCEPTED marks worker pickup, before launch. COMPLETED follows runner exit and output draining,
-/// or a pre-launch failure. A null exit code is not zero; completion alone does not establish success.
-/// <see cref="Simulation.Succeeded"/> also requires the latest runner status to be exactly DONE.
-/// </remarks>
 public sealed record QueueEvent(
     string RunId,
     string Timestamp,

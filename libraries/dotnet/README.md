@@ -13,9 +13,9 @@ third-party runtime package dependencies.
   in each deck for simulation progress and stall detection. Enable `WatchTmp`
   when using it; neither Type3830 nor TRNSYS is installed by this package.
 
-NuGet packages include both native executables under
-`runtimes/win-x64/native/`. No separate native download, Python installation, or
-Nim installation is needed by package consumers. Framework-dependent
+NuGet packages include both native executables under `native/` and copy them
+to that directory beside the application. No separate native download, Python
+installation, or Nim installation is needed by package consumers. Framework-dependent
 applications still require the .NET 10 runtime.
 
 ## Build and package from source
@@ -56,18 +56,21 @@ The library project links the real build outputs directly:
 
 | Source file, relative to repository root | NuGet asset |
 | --- | --- |
-| `components/trnrun/build/trnrun.exe` | `runtimes/win-x64/native/trnrun.exe` |
-| `components/trnrunq/build/trnrunq.exe` | `runtimes/win-x64/native/trnrunq.exe` |
+| `components/trnrun/build/trnrun.exe` | `native/trnrun.exe` |
+| `components/trnrunq/build/trnrunq.exe` | `native/trnrunq.exe` |
 
 There is no checked-in binary, placeholder, staged duplicate, or automatic
 executable download. A managed build fails with instructions to run
-`just dotnet-native` if either output is missing. Source/project-reference
-builds copy the linked files to `runtimes/win-x64/native/` beneath the application
-output and publish directories. NuGet consumers use the SDK's native runtime
-asset handling; a `win-x64` build/publish can place the executables beside the
-application. The client must resolve both layouts relative to the application
-base directory, not the current working directory. Keep both executables when
-deploying; the package does not embed them in the managed assembly.
+`just dotnet-native` if either output is missing. Project-reference builds and
+NuGet consumers copy both executables to `native/` beneath the application's
+build and publish directories. The package's `buildTransitive/TRNRun.targets`
+keeps this layout for direct and transitive NuGet consumers.
+
+Bundled executable paths resolve only against `AppContext.BaseDirectory/native/`,
+not the working directory, assembly location, or older runtime/flat layouts.
+Keep the `native/` directory when deploying, including with single-file publish:
+the child executables remain external files. For custom locations, set
+`TrnRunPath` and the manager's `trnRunQueuePath` explicitly.
 
 Before NuGet's `GenerateNuspec` target, including with `--no-build`,
 `packaging/Validate-NativeRunners.ps1` checks **both** actual source executables:
@@ -275,12 +278,10 @@ be whole milliseconds from zero through 2,147,483,647 (about 24.8 days), with
 `PollInterval` at least one millisecond. Invalid enum values, unsupported deck
 extensions, and missing deck/executable files are rejected before submission.
 
-Call `config.Validate()` to check settings and runner/TRNSYS executable paths
-without creating a manager or launching a process. It throws on invalid input
-and does not modify the record. Submission validates automatically through
-`SimulationConfig.ToCliArgs()`, an internal method that produces unquoted native
-arguments. The manager validates the deck separately; the queue supplies its
-path and run ID. Executable discovery is shared through `ExecutableResolver`.
+Submission validates automatically: `SimulationManager.Add` checks the deck,
+then validates the configuration while building unquoted native arguments and
+resolving the runner executable. Invalid input throws without modifying the
+record, and the queue supplies the deck path and run ID.
 
 | Property | Default | Purpose |
 | --- | --- | --- |
@@ -307,14 +308,23 @@ Use the constructor's `trnRunQueuePath` to override the bundled queue separately
 from `SimulationConfig.TrnRunPath`. Supply paths as ordinary strings without
 embedded shell quotes; the client constructs native arguments and JSON requests.
 
+## Native layout check
+
+After `just dotnet-native`, run from `libraries/dotnet/`:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File packaging/Test-NativeLayout.ps1
+```
+
+This dependency-free check packs the library and uses a temporary local NuGet
+feed and isolated package cache. It verifies bundled and explicit executable
+resolution from project-reference, direct NuGet, and transitive NuGet consumers
+in build and publish output, including single-file publish. No TRNSYS simulation
+is launched. Temporary consumer projects and packages are removed afterward.
+
 ## Manual integration follow-up
 
-The initial migration intentionally adds no automated .NET tests. With the SDK
-and TRNSYS available, manually build and pack, run one deck and a concurrent
-batch, check Type3830 progress, failures and logs, and verify that explicit
-shutdown drains accepted work without leaving queue/runner processes behind.
-Also install the `.nupkg` into a separate `net10.0-windows` application and check
-native asset discovery in both its build and `win-x64` publish output. The
-project-reference examples alone do not exercise NuGet asset selection.
-
-These are follow-up instructions, not a statement that validation has run.
+With TRNSYS available, run one deck and a concurrent batch, check Type3830
+progress, failures and logs, and verify that explicit shutdown drains accepted
+work without leaving queue/runner processes behind. The layout check does not
+exercise simulation behavior.

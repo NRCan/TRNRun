@@ -1,5 +1,5 @@
 using System.Globalization;
-using TRNRun.Internal;
+using System.Runtime.CompilerServices;
 
 namespace TRNRun;
 
@@ -29,116 +29,104 @@ public enum LogSeverity
     Fatal,
 }
 
-/// <summary>
-/// Immutable launch, monitoring, and output settings for TRNSYS simulations.
-/// </summary>
+/// <summary>Immutable launch, monitoring, and output settings for TRNSYS simulations.</summary>
 /// <remarks>
 /// <para>
-/// Reuse an instance across runs; use a <c>with</c> expression to create a modified copy.
-/// Settings are validated by <see cref="SimulationManager.Add"/> or explicitly with
-/// <see cref="Validate"/>. Supply unquoted paths; relative paths resolve against the
-/// working directory at validation.
+/// Validated and serialized by <see cref="SimulationManager.Add"/>.
+/// Executable paths must be unquoted; relative paths resolve against the current working directory.
 /// </para>
 /// <para>
-/// Durations must be whole milliseconds from 0 through 2,147,483,647, with
-/// <see cref="PollInterval"/> at least 1 millisecond. Null or zero timeouts mean
-/// unlimited detection or monitoring, or disabled stall detection.
+/// Durations must be whole milliseconds from 0 through 2,147,483,647;
+/// <see cref="PollInterval"/> must be at least 1 millisecond.
 /// </para>
 /// <para>
-/// Stall detection requires <see cref="WatchTmp"/> and valid Type3830 progress.
-/// Enable <see cref="KillOnTimeout"/> or <see cref="KillOnStall"/> to terminate TRNSYS
-/// on the corresponding condition; otherwise, waiting and shutdown can block indefinitely.
+/// Without <see cref="KillOnTimeout"/>, a readiness timeout proceeds to runtime monitoring.
+/// A runtime timeout or stall stops monitoring; without the corresponding kill option,
+/// the runner waits for process exit, potentially indefinitely.
 /// </para>
 /// </remarks>
 public sealed record SimulationConfig
 {
-    /// <summary>Runner executable path, or null to use bundled trnrun.exe.</summary>
+    /// <summary>Runner executable path, or <see langword="null"/> to discover bundled <c>trnrun.exe</c>.</summary>
     public string? TrnRunPath { get; init; }
+
     /// <summary>Installed TRNSYS executable path.</summary>
     public string TrnExePath { get; init; } = @"C:\TRNSYS18\Exe\TrnEXE64.exe";
+
     /// <summary>TRNSYS window visibility and automatic closing behavior.</summary>
     public GuiVisibility GuiVisibility { get; init; } = GuiVisibility.Hidden;
-    /// <summary>Whether to wait for the TRNSYS GUI, even when hidden.</summary>
+
+    /// <summary>Waits for the TRNSYS window during launch, including in hidden mode.</summary>
     public bool WaitForGui { get; init; } = true;
-    /// <summary>Whether to wait for the component-order header in the listing file.</summary>
+
+    /// <summary>Waits for the component-order header in the deck's <c>.lst</c> file during launch.</summary>
     public bool WaitForLst { get; init; } = true;
-    /// <summary>Whether to wait for the Type3830 progress file.</summary>
+
+    /// <summary>Waits for the Type3830 <c>.tmp</c> file to exist during launch; does not enable progress monitoring.</summary>
     public bool WaitForTmp { get; init; }
-    /// <summary>Readiness timeout, excluding launch-mutex waiting and extra delay.</summary>
+
+    /// <summary>Shared readiness timeout, excluding mutex waiting and extra delay; <see langword="null"/> or zero means unlimited.</summary>
     public TimeSpan? DetectionTimeout { get; init; } = TimeSpan.FromMinutes(5);
-    /// <summary>Delay after readiness detection, while the launch mutex remains held.</summary>
+
+    /// <summary>Delay after readiness succeeds, while the launch mutex remains held.</summary>
     public TimeSpan ExtraDelay { get; init; } = TimeSpan.Zero;
-    /// <summary>Runtime-monitoring poll interval, independent of readiness detection.</summary>
+
+    /// <summary>Runtime poll interval and minimum positive watch/stall timeout; independent of readiness checks.</summary>
     public TimeSpan PollInterval { get; init; } = TimeSpan.FromMilliseconds(100);
-    /// <summary>Whether to stream log events; the final fatal-error check always runs.</summary>
+
+    /// <summary>Streams TRNSYS log events; when disabled, fatal checks still run at process exit unless monitoring has already stopped.</summary>
     public bool WatchLog { get; init; } = true;
-    /// <summary>Whether to monitor Type3830 progress for updates, stalls, and cancellation.</summary>
+
+    /// <summary>Reads Type3830 <c>.tmp</c> snapshots for progress events, stall detection, and incomplete-run detection.</summary>
     public bool WatchTmp { get; init; }
-    /// <summary>Timeout measured from the start of runtime monitoring.</summary>
+
+    /// <summary>Timeout from the start of runtime monitoring; <see langword="null"/> or zero means unlimited.</summary>
     public TimeSpan? WatchTimeout { get; init; }
-    /// <summary>Maximum wall-clock duration without simulation-time progress.</summary>
+
+    /// <summary>No-progress timeout requiring <see cref="WatchTmp"/> and valid, incomplete Type3830 progress; null or zero disables it.</summary>
     public TimeSpan? StallTimeout { get; init; }
-    /// <summary>Whether successful runs delete their .tmp, .log, .lst, and .PTI artifacts.</summary>
+
+    /// <summary>Deletes .tmp, .log, .lst, and .PTI files after success; stale copies are always removed before launch.</summary>
     public bool CleanOnSuccess { get; init; }
-    /// <summary>Whether to terminate TRNSYS on a detection or monitoring timeout.</summary>
+
+    /// <summary>Terminates TRNSYS on a launch-readiness or runtime-monitoring timeout.</summary>
     public bool KillOnTimeout { get; init; }
-    /// <summary>Whether to terminate TRNSYS when a stall is detected.</summary>
+
+    /// <summary>Terminates TRNSYS when a stall is detected.</summary>
     public bool KillOnStall { get; init; }
-    /// <summary>Minimum emitted log severity.</summary>
+
+    /// <summary>Minimum severity for emitted log events; does not affect fatal-error detection.</summary>
     public LogSeverity Severity { get; init; } = LogSeverity.Notice;
-    /// <summary>Whether to write events to the deck's .jsonl file, replacing any existing file.</summary>
+
+    /// <summary>Writes runner events to the deck's <c>.jsonl</c> file, truncating any existing file at run start.</summary>
     public bool WriteEvents { get; init; }
 
-    /// <summary>Validates settings and executable paths without modifying the configuration or launching a process.</summary>
-    /// <remarks>
-    /// Checks enum values, whole-millisecond duration limits, and existing TRNSYS and runner executables.
-    /// A null runner path uses bundled discovery. Deck validation is handled separately by the manager.
-    /// </remarks>
-    /// <exception cref="ArgumentException">An executable path is empty, malformed, or not an .exe.</exception>
+    /// <summary>Validates and serializes the configuration as unquoted native runner arguments, excluding the deck path and run ID.</summary>
+    /// <param name="runnerPath">Receives the resolved absolute runner executable path.</param>
+    /// <exception cref="ArgumentException">An executable path is empty or blank.</exception>
     /// <exception cref="ArgumentOutOfRangeException">An enum value or duration is invalid.</exception>
     /// <exception cref="FileNotFoundException">A required executable cannot be found.</exception>
-    public void Validate()
+    internal string[] ToCliArgs(out string runnerPath)
     {
-        ValidateEnum(GuiVisibility, nameof(GuiVisibility), "Unknown GUI visibility.");
-        ValidateEnum(Severity, nameof(Severity), "Unknown log severity.");
         ValidateDuration(DetectionTimeout, nameof(DetectionTimeout));
         ValidateDuration(ExtraDelay, nameof(ExtraDelay));
         ValidateDuration(PollInterval, nameof(PollInterval), requirePositive: true);
         ValidateDuration(WatchTimeout, nameof(WatchTimeout));
         ValidateDuration(StallTimeout, nameof(StallTimeout));
 
-        _ = ExecutableResolver.Validate(TrnExePath, nameof(TrnExePath));
-        _ = ExecutableResolver.Resolve(TrnRunPath, "trnrun.exe");
-    }
+        string trnExePath = ResolveExecutable(TrnExePath, "TRNSYS", nameof(TrnExePath));
 
-    /// <summary>Validates the configuration and converts it to native runner arguments.</summary>
-    /// <returns>Unquoted argument strings for the queue request's runnerArgs array.</returns>
-    /// <remarks>
-    /// Uses invariant whole milliseconds and native enum/boolean spellings. The manager supplies
-    /// the runner executable separately; the queue adds the deck path and run ID.
-    /// </remarks>
-    internal string[] ToCliArgs()
-    {
-        Validate();
-
-        string visibility = GuiVisibility switch
-        {
-            GuiVisibility.KeepOpen => "keepOpen",
-            GuiVisibility.AutoClose => "autoClose",
-            GuiVisibility.Minimized => "minimized",
-            GuiVisibility.MinimizedAuto => "minimizedAuto",
-            GuiVisibility.Hidden => "hidden",
-            _ => throw new ArgumentOutOfRangeException(
-                nameof(GuiVisibility),
-                GuiVisibility,
-                "Unknown GUI visibility."
-            ),
-        };
+        // An explicit path never falls back to the executable bundled in native/.
+        runnerPath = ResolveExecutable(
+            TrnRunPath ?? Path.Combine(AppContext.BaseDirectory, "native", "trnrun.exe"),
+            "Runner",
+            nameof(TrnRunPath)
+        );
 
         return
         [
-            "--trnexePath:" + Path.GetFullPath(TrnExePath),
-            "--guiVisibility:" + visibility,
+            "--trnexePath:" + trnExePath,
+            "--guiVisibility:" + ToCliValue(GuiVisibility),
             "--waitForGui:" + ToBoolean(WaitForGui),
             "--waitForLst:" + ToBoolean(WaitForLst),
             "--waitForTmp:" + ToBoolean(WaitForTmp),
@@ -152,20 +140,29 @@ public sealed record SimulationConfig
             "--clean:" + ToBoolean(CleanOnSuccess),
             "--killOnTimeout:" + ToBoolean(KillOnTimeout),
             "--killOnStall:" + ToBoolean(KillOnStall),
-            "--severity:" + Severity.ToString(),
+            "--severity:" + ToCliValue(Severity),
             "--writeEvents:" + ToBoolean(WriteEvents),
         ];
     }
 
-    private static void ValidateEnum<TEnum>(TEnum value, string paramName, string message)
-        where TEnum : struct, Enum
+    /// <summary>Validates an executable path and returns its absolute form.</summary>
+    private static string ResolveExecutable(string path, string name, string paramName)
     {
-        if (!Enum.IsDefined(value))
+        ArgumentException.ThrowIfNullOrWhiteSpace(path, paramName);
+
+        string fullPath = Path.GetFullPath(path);
+        if (!File.Exists(fullPath))
         {
-            throw new ArgumentOutOfRangeException(paramName, value, message);
+            throw new FileNotFoundException(
+                $"{name} executable not found: '{fullPath}'.",
+                fullPath
+            );
         }
+
+        return fullPath;
     }
 
+    /// <summary>Validates whole-millisecond native wait limits, treating null as zero.</summary>
     private static void ValidateDuration(
         TimeSpan? value,
         string paramName,
@@ -185,13 +182,42 @@ public sealed record SimulationConfig
             throw new ArgumentOutOfRangeException(
                 paramName,
                 value,
-                $"Must be a whole number of milliseconds from {minimumMs} through 2,147,483,647."
+                $"Must be a whole number of milliseconds from {minimumMs} through {int.MaxValue:N0}."
             );
         }
     }
 
-    private static string ToMilliseconds(TimeSpan? value) =>
-        ((value?.Ticks ?? 0) / TimeSpan.TicksPerMillisecond).ToString(CultureInfo.InvariantCulture);
+    /// <summary>Converts GUI visibility to its native CLI value.</summary>
+    private static string ToCliValue(
+        GuiVisibility value,
+        [CallerArgumentExpression(nameof(value))] string? paramName = null
+    ) => value switch
+    {
+        GuiVisibility.KeepOpen => "keepOpen",
+        GuiVisibility.AutoClose => "autoClose",
+        GuiVisibility.Minimized => "minimized",
+        GuiVisibility.MinimizedAuto => "minimizedAuto",
+        GuiVisibility.Hidden => "hidden",
+        _ => throw new ArgumentOutOfRangeException(paramName, value, "Unknown GUI visibility."),
+    };
 
+    /// <summary>Converts log severity to its native CLI value.</summary>
+    private static string ToCliValue(
+        LogSeverity value,
+        [CallerArgumentExpression(nameof(value))] string? paramName = null
+    ) => value switch
+    {
+        LogSeverity.Notice => "Notice",
+        LogSeverity.Warning => "Warning",
+        LogSeverity.Fatal => "Fatal",
+        _ => throw new ArgumentOutOfRangeException(paramName, value, "Unknown log severity."),
+    };
+
+    /// <summary>Formats invariant whole milliseconds; null is zero.</summary>
+    private static string ToMilliseconds(TimeSpan? value) =>
+        ((value?.Ticks ?? 0) / TimeSpan.TicksPerMillisecond)
+            .ToString(CultureInfo.InvariantCulture);
+
+    /// <summary>Formats lowercase CLI booleans.</summary>
     private static string ToBoolean(bool value) => value ? "true" : "false";
 }
