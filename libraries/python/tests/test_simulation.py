@@ -70,6 +70,7 @@ def test_initial_state_is_pending_and_exposes_input(config: SimulationConfig) ->
     assert not simulation.succeeded
     assert simulation.completion_event is None
     assert simulation.status is None
+    assert simulation.status_event is None
     assert simulation.progress is None
     assert simulation.config_event is None
     assert simulation.setting_event is None
@@ -95,7 +96,8 @@ def test_apply_event_folds_latest_runner_state(config: SimulationConfig) -> None
     for event in (old_status, old_progress, old_config, old_setting, status, progress, config_event, setting):
         simulation.apply_event(event)
 
-    assert simulation.status is status
+    assert simulation.status is SimulationStatus.RUNNING
+    assert simulation.status_event is status
     assert simulation.progress is progress
     assert simulation.config_event is config_event
     assert simulation.setting_event is setting
@@ -210,7 +212,8 @@ def test_completion_freezes_state_and_first_completion_metadata(config: Simulati
     simulation.apply_event(LogEvent("Fatal", TIMESTAMP))
     simulation.mark_completed(completion(exit_code=0))
 
-    assert simulation.status is running
+    assert simulation.status is SimulationStatus.RUNNING
+    assert simulation.status_event is running
     assert simulation.logs == []
     assert simulation.log_count == 0
     assert simulation.completion_event is first_completion

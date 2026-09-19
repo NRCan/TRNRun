@@ -103,8 +103,13 @@ class Simulation:
         return self._completion_event
 
     @property
-    def status(self) -> StatusEvent | None:
-        """Return the latest status event."""
+    def status(self) -> SimulationStatus | None:
+        """Return the latest runner status."""
+        return self._status_event.status if self._status_event is not None else None
+
+    @property
+    def status_event(self) -> StatusEvent | None:
+        """Return the latest status event, including its metadata."""
         return self._status_event
 
     @property

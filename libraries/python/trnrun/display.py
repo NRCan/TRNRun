@@ -76,7 +76,7 @@ def _render_line(sim: Simulation) -> Text:
     """Render one simulation as a shared Rich status line."""
     path = truncate_left(str(sim.deck_path), PATH_WIDTH)
 
-    status = sim.status.status if sim.status is not None else None
+    status = sim.status
     status_text = status.value if status is not None else ""
     status_style = COLOR_MAP.get(status) if status is not None else None
 

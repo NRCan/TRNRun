@@ -115,9 +115,8 @@ def test_add_validates_copy_sends_request_and_routes_until_acceptance(
     assert simulation.id == 1
     assert simulation.deck_path == deck.absolute()
     assert simulation.config is not original_config
-    assert simulation.status == StatusEvent(SimulationStatus.RUNNING, TIMESTAMP, "launched")
-    assert simulation.status is not None
-    assert simulation.status.status is SimulationStatus.RUNNING
+    assert simulation.status is SimulationStatus.RUNNING
+    assert simulation.status_event == StatusEvent(SimulationStatus.RUNNING, TIMESTAMP, "launched")
     assert simulation.is_accepted
     assert harness.manager.simulations == [simulation]
     assert harness.manager._active == {"1": simulation}
@@ -155,8 +154,7 @@ def test_follow_routes_updates_deduplicates_acceptance_and_completes(
     assert updates == [simulation, simulation, simulation]
     assert simulation.progress is not None
     assert simulation.progress.percent == 0.5
-    assert simulation.status is not None
-    assert simulation.status.status is SimulationStatus.DONE
+    assert simulation.status is SimulationStatus.DONE
     assert simulation.completion_event is not None
     assert simulation.completion_event.exit_code == 9
     assert simulation.succeeded
@@ -191,8 +189,7 @@ def test_follow_for_one_filters_yields_but_updates_other_runs(
     assert updates == [first, first]
     assert first.is_finished
     assert not second.is_finished
-    assert second.status is not None
-    assert second.status.status is SimulationStatus.RUNNING
+    assert second.status is SimulationStatus.RUNNING
     assert second.progress is not None
     assert second.progress.percent == 0.2
 
@@ -248,8 +245,7 @@ def test_wait_for_one_processes_other_runs_and_returns_at_target(
 
     assert first.is_finished
     assert not second.is_finished
-    assert second.status is not None
-    assert second.status.status is SimulationStatus.RUNNING
+    assert second.status is SimulationStatus.RUNNING
     assert harness.manager._active == {"2": second}
 
     harness.manager.wait(first)

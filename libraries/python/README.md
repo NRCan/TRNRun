@@ -18,7 +18,6 @@ package includes the `trnrun.exe` runner and `trnrunq.exe` queue.
 - [Run a batch](#run-a-batch)
 - [`SimulationConfig`](#simulationconfig)
 - [`SimulationManager`](#simulationmanager)
-- [`SimulationStatus`](#simulationstatus)
 - [`Simulation`](#simulation)
 - [Examples](#examples)
 
@@ -305,7 +304,7 @@ try:
 
     for updated in manager.follow(first):
         if updated.status is not None:
-            print(f"{updated.deck_path}: {updated.status.status.value}")
+            print(f"{updated.deck_path}: {updated.status}")
 
     manager.wait()
     print(f"Simulations: {len(manager.simulations)}")
@@ -316,26 +315,6 @@ try:
 finally:
     manager.shutdown()
 ```
-
-## `SimulationStatus`
-
-`SimulationStatus` is a string enum containing the native runner status values:
-`PENDING`, `LAUNCHING`, `RUNNING`, `DONE`, `CANCELLED`, `ERROR`, `TIMEOUT`,
-and `STALLED`. Import it from the top-level package when comparing a status:
-
-```python
-from trnrun import SimulationStatus
-
-if (
-    simulation.status is not None
-    and simulation.status.status is SimulationStatus.ERROR
-):
-    print(simulation.status.message)
-```
-
-The terminal statuses are `DONE`, `CANCELLED`, `ERROR`, `TIMEOUT`, and
-`STALLED`. Unknown, lowercase, or whitespace-padded status values are invalid
-runner events and are not folded into simulation state.
 
 ## `Simulation`
 
@@ -361,12 +340,14 @@ directly.
 
 ### Events
 
-- _`status`_ (`StatusEvent | None`)
+- _`status`_ (`SimulationStatus | None`)
 
-  Latest runner status, or `None` before the first status event. Its `status`
-  field is a `SimulationStatus`. Terminal values are `SimulationStatus.DONE`,
-  `SimulationStatus.CANCELLED`, `SimulationStatus.ERROR`,
-  `SimulationStatus.TIMEOUT`, and `SimulationStatus.STALLED`.
+  Latest runner status, or `None` before the first status event.
+
+- _`status_event`_ (`StatusEvent | None`)
+
+  Latest status event, including its `timestamp` and optional `message`, or
+  `None` before the first status event.
 
 - _`progress`_ (`ProgressEvent | None`)
 
@@ -452,8 +433,8 @@ print(f"Accepted: {simulation.is_accepted}")
 print(f"Finished: {simulation.is_finished}")
 print(f"Terminal status received: {simulation.has_terminal_status}")
 print(f"Succeeded: {simulation.succeeded}")
-status = simulation.status.status.value if simulation.status is not None else None
-print(f"Status: {status}")
+print(f"Status: {simulation.status}")
+print(f"Status event: {simulation.status_event}")
 print(f"Progress: {simulation.progress}")
 print(f"Simulation config event: {simulation.config_event}")
 print(f"Runner settings: {simulation.setting_event}")
