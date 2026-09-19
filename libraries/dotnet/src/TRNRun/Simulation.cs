@@ -88,8 +88,23 @@ public sealed class Simulation
     /// <summary>Gets the number of fatal events.</summary>
     public long Fatals { get; private set; }
 
-    /// <summary>Applies a routed event to the simulation state.</summary>
-    internal void Apply(TrnRunEvent runEvent)
+    /// <summary>Records that a queue worker accepted the simulation.</summary>
+    internal void MarkAccepted() => IsAccepted = true;
+
+    /// <summary>Records queue completion for the simulation.</summary>
+    internal void MarkCompleted(QueueEvent completion)
+    {
+        ArgumentNullException.ThrowIfNull(completion);
+        if (IsFinished || !string.Equals(completion.RunId, Id, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        CompletionEvent = completion;
+    }
+
+    /// <summary>Applies a routed runner event to the simulation state.</summary>
+    internal void ApplyRunnerEvent(TrnRunEvent runEvent)
     {
         ArgumentNullException.ThrowIfNull(runEvent);
         if (IsFinished || !string.Equals(runEvent.RunId, Id, StringComparison.Ordinal))
@@ -99,14 +114,6 @@ public sealed class Simulation
 
         switch (runEvent)
         {
-            case QueueEvent { Status: "ACCEPTED" }:
-                IsAccepted = true;
-                break;
-
-            case QueueEvent { Status: "COMPLETED" } completion:
-                CompletionEvent = completion;
-                break;
-
             case StatusEvent status:
                 Status = status;
                 break;

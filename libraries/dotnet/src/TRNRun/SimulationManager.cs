@@ -345,22 +345,26 @@ public sealed class SimulationManager
                 continue;
             }
 
-            if (runEvent is QueueEvent queueEvent)
+            switch (runEvent)
             {
-                switch (queueEvent.Status)
-                {
-                    case "ACCEPTED" when !simulation.IsAccepted:
-                        _simulations.Add(simulation);
-                        break;
-                    case "COMPLETED":
-                        _active.Remove(simulation.Id);
-                        break;
-                    default:
-                        continue;
-                }
+                case QueueEvent { Status: "ACCEPTED" } when !simulation.IsAccepted:
+                    simulation.MarkAccepted();
+                    _simulations.Add(simulation);
+                    break;
+
+                case QueueEvent { Status: "COMPLETED" } completion:
+                    _active.Remove(simulation.Id);
+                    simulation.MarkCompleted(completion);
+                    break;
+
+                case QueueEvent:
+                    continue;
+
+                default:
+                    simulation.ApplyRunnerEvent(runEvent);
+                    break;
             }
 
-            simulation.Apply(runEvent);
             if (render)
             {
                 Render(force: simulation.IsFinished);
