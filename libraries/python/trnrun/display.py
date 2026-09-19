@@ -20,21 +20,22 @@ from rich.console import Console, Group
 from rich.live import Live
 from rich.text import Text
 
+from trnrun.events import SimulationStatus
 from trnrun.simulation import Simulation
 from trnrun.utils import format_hhmmss, truncate_left
 
 # -----------------------------------------------------------------
 # Constants
 # -----------------------------------------------------------------
-COLOR_MAP: dict[str, str | None] = {
-    "PENDING": None,
-    "LAUNCHING": None,
-    "RUNNING": None,
-    "DONE": "green",
-    "ERROR": "red",
-    "TIMEOUT": "red",
-    "STALLED": "red",
-    "CANCELLED": "yellow",
+COLOR_MAP: dict[SimulationStatus, str | None] = {
+    SimulationStatus.PENDING: None,
+    SimulationStatus.LAUNCHING: None,
+    SimulationStatus.RUNNING: None,
+    SimulationStatus.DONE: "green",
+    SimulationStatus.ERROR: "red",
+    SimulationStatus.TIMEOUT: "red",
+    SimulationStatus.STALLED: "red",
+    SimulationStatus.CANCELLED: "yellow",
 }
 
 PATH_WIDTH = 32
@@ -75,8 +76,9 @@ def _render_line(sim: Simulation) -> Text:
     """Render one simulation as a shared Rich status line."""
     path = truncate_left(str(sim.deck_path), PATH_WIDTH)
 
-    status = sim.status.status if sim.status is not None else ""
-    status_style = COLOR_MAP.get(status.upper())
+    status = sim.status.status if sim.status is not None else None
+    status_text = status.value if status is not None else ""
+    status_style = COLOR_MAP.get(status) if status is not None else None
 
     logs = f"N:{sim.notices} W:{sim.warnings} F:{sim.fatals}"
 
@@ -100,7 +102,7 @@ def _render_line(sim: Simulation) -> Text:
     text.append(f"[{sim.id}] ")
     text.append(f"{path} │ ")
     text.append("Status: ")
-    text.append(f"{status:<10}", style=status_style)
+    text.append(f"{status_text:<10}", style=status_style)
     text.append(" │ ")
     text.append(f"Logs: {logs:<12} │ ")
     text.append(f"Elapsed: {elapsed:<8} │ ETA: {eta:<8} │ ")

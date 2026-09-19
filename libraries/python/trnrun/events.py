@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Final
 
 
@@ -26,13 +27,26 @@ class EventParseError(ValueError):
 # -----------------------------------------------------------------
 # Events
 # -----------------------------------------------------------------
+class SimulationStatus(StrEnum):
+    """Runner-reported simulation status."""
+
+    PENDING = "PENDING"
+    LAUNCHING = "LAUNCHING"
+    RUNNING = "RUNNING"
+    DONE = "DONE"
+    CANCELLED = "CANCELLED"
+    ERROR = "ERROR"
+    TIMEOUT = "TIMEOUT"
+    STALLED = "STALLED"
+
+
 @dataclass(frozen=True)
 class StatusEvent:
     """A STATUS event reporting the run's current state.
 
     Attributes
     ----------
-    status : str
+    status : SimulationStatus
         State reported by TRNRun.
     timestamp : str
         Timestamp attached to the event by TRNRun.
@@ -40,7 +54,7 @@ class StatusEvent:
         Optional outcome or failure detail reported by TRNRun.
     """
 
-    status: str
+    status: SimulationStatus
     timestamp: str
     message: str = ""
 
@@ -173,13 +187,19 @@ class QueueEvent:
 
 type TrnRunEvent = StatusEvent | ProgressEvent | ConfigEvent | SettingEvent | LogEvent | QueueEvent
 
-TERMINAL_STATUSES: Final[frozenset[str]] = frozenset(
-    {"DONE", "ERROR", "CANCELLED", "TIMEOUT", "STALLED"},
+TERMINAL_STATUSES: Final[frozenset[SimulationStatus]] = frozenset(
+    {
+        SimulationStatus.DONE,
+        SimulationStatus.CANCELLED,
+        SimulationStatus.ERROR,
+        SimulationStatus.TIMEOUT,
+        SimulationStatus.STALLED,
+    },
 )
 
 
-def is_terminal_status(status: str) -> bool:
-    """Return whether a status is an exact canonical terminal value."""
+def is_terminal_status(status: SimulationStatus) -> bool:
+    """Return whether a simulation status is terminal."""
     return status in TERMINAL_STATUSES
 
 
@@ -195,6 +215,16 @@ def _require_str(data: dict[str, object], key: str) -> str:
         raise EventParseError(f"field '{key}' must be a string")
 
     return value
+
+
+def _require_status(data: dict[str, object], key: str) -> SimulationStatus:
+    """Return a required simulation status."""
+    value = _require_str(data, key)
+
+    try:
+        return SimulationStatus(value)
+    except ValueError as error:
+        raise EventParseError(f"unknown simulation status '{value}'") from error
 
 
 def _require_bool(data: dict[str, object], key: str) -> bool:
@@ -248,7 +278,7 @@ def _optional_int(data: dict[str, object], key: str) -> int | None:
 def _parse_status(data: dict[str, object]) -> StatusEvent:
     """Parse a STATUS event."""
     return StatusEvent(
-        status=_require_str(data, "status"),
+        status=_require_status(data, "status"),
         timestamp=_require_str(data, "timestamp"),
         message=_optional_str(data, "message") or "",
     )

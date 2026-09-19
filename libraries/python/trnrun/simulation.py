@@ -18,6 +18,7 @@ from trnrun.events import (
     ProgressEvent,
     QueueEvent,
     SettingEvent,
+    SimulationStatus,
     StatusEvent,
     TrnRunEvent,
     is_terminal_status,
@@ -149,7 +150,11 @@ class Simulation:
     @property
     def succeeded(self) -> bool:
         """Return whether a completed run has the terminal status `DONE`."""
-        return self.is_finished and self._status_event is not None and self._status_event.status == "DONE"
+        return (
+            self.is_finished
+            and self._status_event is not None
+            and self._status_event.status is SimulationStatus.DONE
+        )
 
     @property
     def log_count(self) -> int:

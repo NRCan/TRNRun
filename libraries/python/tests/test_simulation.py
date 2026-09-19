@@ -7,7 +7,15 @@ from pathlib import Path
 import pytest
 
 from trnrun.config import SimulationConfig
-from trnrun.events import ConfigEvent, LogEvent, ProgressEvent, QueueEvent, SettingEvent, StatusEvent
+from trnrun.events import (
+    ConfigEvent,
+    LogEvent,
+    ProgressEvent,
+    QueueEvent,
+    SettingEvent,
+    SimulationStatus,
+    StatusEvent,
+)
 from trnrun.simulation import Simulation
 
 TIMESTAMP = "2026-01-02T03:04:05Z"
@@ -75,8 +83,8 @@ def test_initial_state_is_pending_and_exposes_input(config: SimulationConfig) ->
 def test_apply_event_folds_latest_runner_state(config: SimulationConfig) -> None:
     """Each singleton runner event replaces only its matching state."""
     simulation = Simulation("deck.dck", config, sim_id=7)
-    old_status = StatusEvent("LAUNCHING", TIMESTAMP)
-    status = StatusEvent("RUNNING", TIMESTAMP, "started")
+    old_status = StatusEvent(SimulationStatus.LAUNCHING, TIMESTAMP)
+    status = StatusEvent(SimulationStatus.RUNNING, TIMESTAMP, "started")
     old_progress = ProgressEvent(1.0, 0.1, 100.0, 900.0, TIMESTAMP)
     progress = ProgressEvent(5.0, 0.5, 500.0, 500.0, TIMESTAMP)
     old_config = ConfigEvent(0.0, 10.0, 1.0, TIMESTAMP)
@@ -155,19 +163,20 @@ def test_negative_log_capacity_is_rejected(config: SimulationConfig) -> None:
     ("status", "terminal", "succeeded"),
     [
         (None, False, False),
-        ("RUNNING", False, False),
-        ("done", False, False),
-        ("DONE", True, True),
-        ("ERROR", True, False),
-        ("CANCELLED", True, False),
-        ("TIMEOUT", True, False),
-        ("STALLED", True, False),
+        (SimulationStatus.PENDING, False, False),
+        (SimulationStatus.LAUNCHING, False, False),
+        (SimulationStatus.RUNNING, False, False),
+        (SimulationStatus.DONE, True, True),
+        (SimulationStatus.ERROR, True, False),
+        (SimulationStatus.CANCELLED, True, False),
+        (SimulationStatus.TIMEOUT, True, False),
+        (SimulationStatus.STALLED, True, False),
     ],
 )
 def test_completed_result_classification(
     config: SimulationConfig,
     *,
-    status: str | None,
+    status: SimulationStatus | None,
     terminal: bool,
     succeeded: bool,
 ) -> None:
@@ -179,7 +188,7 @@ def test_completed_result_classification(
     assert simulation.has_terminal_status is terminal
     assert not simulation.succeeded
 
-    event = completion(exit_code=9 if status == "DONE" else 0)
+    event = completion(exit_code=9 if status is SimulationStatus.DONE else 0)
     simulation.mark_completed(event)
 
     assert simulation.completion_event is event
@@ -192,12 +201,12 @@ def test_completed_result_classification(
 def test_completion_freezes_state_and_first_completion_metadata(config: SimulationConfig) -> None:
     """No runner event or duplicate completion mutates a finished simulation."""
     simulation = Simulation("deck.dck", config, sim_id=7)
-    running = StatusEvent("RUNNING", TIMESTAMP)
+    running = StatusEvent(SimulationStatus.RUNNING, TIMESTAMP)
     first_completion = completion(exit_code=None)
     simulation.apply_event(running)
     simulation.mark_completed(first_completion)
 
-    simulation.apply_event(StatusEvent("DONE", TIMESTAMP))
+    simulation.apply_event(StatusEvent(SimulationStatus.DONE, TIMESTAMP))
     simulation.apply_event(LogEvent("Fatal", TIMESTAMP))
     simulation.mark_completed(completion(exit_code=0))
 

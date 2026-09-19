@@ -5,6 +5,7 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
+from trnrun import SimulationStatus as ExportedSimulationStatus
 from trnrun.events import (
     TERMINAL_STATUSES,
     ConfigEvent,
@@ -13,6 +14,7 @@ from trnrun.events import (
     ProgressEvent,
     QueueEvent,
     SettingEvent,
+    SimulationStatus,
     StatusEvent,
     is_terminal_status,
     parse_event,
@@ -55,7 +57,7 @@ SETTING_PAYLOAD: dict[str, object] = {
                 "message": "Simulation started",
                 "seq": 1,
             },
-            StatusEvent("RUNNING", TIMESTAMP, "Simulation started"),
+            StatusEvent(SimulationStatus.RUNNING, TIMESTAMP, "Simulation started"),
         ),
         (
             {
@@ -122,7 +124,11 @@ SETTING_PAYLOAD: dict[str, object] = {
     ],
 )
 def test_parse_event_creates_typed_events(payload: dict[str, object], expected: object) -> None:
-    assert parse_event(json.dumps(payload)) == expected
+    event = parse_event(json.dumps(payload))
+
+    assert event == expected
+    if isinstance(event, StatusEvent):
+        assert event.status is SimulationStatus.RUNNING
 
 
 @pytest.mark.parametrize("message", [None, ""])
@@ -134,7 +140,11 @@ def test_status_message_defaults_to_empty_string(message: str | None) -> None:
         "message": message,
     }
 
-    assert parse_event_data(payload) == StatusEvent("DONE", TIMESTAMP)
+    event = parse_event_data(payload)
+
+    assert event == StatusEvent(SimulationStatus.DONE, TIMESTAMP)
+    assert isinstance(event, StatusEvent)
+    assert event.status is SimulationStatus.DONE
 
 
 def test_log_optional_fields_default_to_none() -> None:
@@ -171,6 +181,10 @@ def test_parse_event_rejects_invalid_json_or_non_objects(line: str) -> None:
         ({"kind": "future"}, "unknown event kind 'FUTURE'"),
         ({"kind": "STATUS", "timestamp": TIMESTAMP}, "field 'status' must be a string"),
         (
+            {"kind": "STATUS", "status": "FUTURE", "timestamp": TIMESTAMP},
+            "unknown simulation status 'FUTURE'",
+        ),
+        (
             {"kind": "PROGRESS", "time": True, "percent": 0, "elapsed": 0, "eta": 0, "timestamp": TIMESTAMP},
             "field 'time' must be a number",
         ),
@@ -199,14 +213,40 @@ def test_parse_event_data_rejects_invalid_fields(payload: dict[str, object], mes
         _ = parse_event_data(payload)
 
 
+def test_simulation_status_has_exact_native_values_and_is_exported() -> None:
+    expected = [
+        "PENDING",
+        "LAUNCHING",
+        "RUNNING",
+        "DONE",
+        "CANCELLED",
+        "ERROR",
+        "TIMEOUT",
+        "STALLED",
+    ]
+
+    assert [status.name for status in SimulationStatus] == expected
+    assert [status.value for status in SimulationStatus] == expected
+    assert all(isinstance(status, SimulationStatus) for status in TERMINAL_STATUSES)
+    assert ExportedSimulationStatus is SimulationStatus
+
+
 @pytest.mark.parametrize("status", sorted(TERMINAL_STATUSES))
-def test_terminal_statuses_are_recognized(status: str) -> None:
+def test_terminal_statuses_are_recognized(status: SimulationStatus) -> None:
     assert is_terminal_status(status)
 
 
-@pytest.mark.parametrize("status", ["RUNNING", "done", " DONE", "DONE ", ""])
-def test_noncanonical_statuses_are_not_terminal(status: str) -> None:
+@pytest.mark.parametrize("status", [SimulationStatus.PENDING, SimulationStatus.LAUNCHING, SimulationStatus.RUNNING])
+def test_nonterminal_statuses_are_not_terminal(status: SimulationStatus) -> None:
     assert not is_terminal_status(status)
+
+
+@pytest.mark.parametrize("status", ["done", " DONE", "DONE ", "", "FUTURE"])
+def test_parse_event_data_rejects_unknown_statuses(status: str) -> None:
+    payload: dict[str, object] = {"kind": "STATUS", "status": status, "timestamp": TIMESTAMP}
+
+    with pytest.raises(EventParseError, match=f"unknown simulation status '{status}'"):
+        _ = parse_event_data(payload)
 
 
 @pytest.mark.parametrize(
@@ -229,7 +269,13 @@ def test_parse_stream_line_routes_runner_event() -> None:
         {"kind": "STATUS", "runID": "run-9", "status": "RUNNING", "timestamp": TIMESTAMP},
     )
 
-    assert parse_stream_line(line) == ("run-9", StatusEvent("RUNNING", TIMESTAMP))
+    parsed = parse_stream_line(line)
+
+    assert parsed == ("run-9", StatusEvent(SimulationStatus.RUNNING, TIMESTAMP))
+    assert parsed is not None
+    event = parsed[1]
+    assert isinstance(event, StatusEvent)
+    assert event.status is SimulationStatus.RUNNING
 
 
 def test_parse_stream_line_routes_queue_event() -> None:
@@ -248,7 +294,7 @@ def test_parse_stream_line_rejects_malformed_routable_event() -> None:
 
 
 def test_events_are_immutable() -> None:
-    event = StatusEvent("RUNNING", TIMESTAMP)
+    event = StatusEvent(SimulationStatus.RUNNING, TIMESTAMP)
 
     with pytest.raises(FrozenInstanceError):
-        type(event).__setattr__(event, "status", "DONE")
+        type(event).__setattr__(event, "status", SimulationStatus.DONE)

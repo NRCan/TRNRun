@@ -18,6 +18,7 @@ package includes the `trnrun.exe` runner and `trnrunq.exe` queue.
 - [Run a batch](#run-a-batch)
 - [`SimulationConfig`](#simulationconfig)
 - [`SimulationManager`](#simulationmanager)
+- [`SimulationStatus`](#simulationstatus)
 - [`Simulation`](#simulation)
 - [Examples](#examples)
 
@@ -141,7 +142,8 @@ print(f"{len(manager.succeeded)} succeeded, {len(manager.failed)} failed")
 - _`watch_tmp`_ (`bool`, default: `False`)
 
   Read Type3830 `.tmp` updates and emit configuration and progress events.
-  Required for progress-based `CANCELLED` and `STALLED` outcomes.
+  Required for progress-based `SimulationStatus.CANCELLED` and
+  `SimulationStatus.STALLED` outcomes.
 
 - _`watch_timeout_ms`_ (`int`, default: `0`)
 
@@ -303,7 +305,7 @@ try:
 
     for updated in manager.follow(first):
         if updated.status is not None:
-            print(f"{updated.deck_path}: {updated.status.status}")
+            print(f"{updated.deck_path}: {updated.status.status.value}")
 
     manager.wait()
     print(f"Simulations: {len(manager.simulations)}")
@@ -314,6 +316,26 @@ try:
 finally:
     manager.shutdown()
 ```
+
+## `SimulationStatus`
+
+`SimulationStatus` is a string enum containing the native runner status values:
+`PENDING`, `LAUNCHING`, `RUNNING`, `DONE`, `CANCELLED`, `ERROR`, `TIMEOUT`,
+and `STALLED`. Import it from the top-level package when comparing a status:
+
+```python
+from trnrun import SimulationStatus
+
+if (
+    simulation.status is not None
+    and simulation.status.status is SimulationStatus.ERROR
+):
+    print(simulation.status.message)
+```
+
+The terminal statuses are `DONE`, `CANCELLED`, `ERROR`, `TIMEOUT`, and
+`STALLED`. Unknown, lowercase, or whitespace-padded status values are invalid
+runner events and are not folded into simulation state.
 
 ## `Simulation`
 
@@ -341,8 +363,10 @@ directly.
 
 - _`status`_ (`StatusEvent | None`)
 
-  Latest runner status, or `None` before the first status event. Terminal status
-  values are `DONE`, `ERROR`, `CANCELLED`, `TIMEOUT`, and `STALLED`.
+  Latest runner status, or `None` before the first status event. Its `status`
+  field is a `SimulationStatus`. Terminal values are `SimulationStatus.DONE`,
+  `SimulationStatus.CANCELLED`, `SimulationStatus.ERROR`,
+  `SimulationStatus.TIMEOUT`, and `SimulationStatus.STALLED`.
 
 - _`progress`_ (`ProgressEvent | None`)
 
@@ -386,12 +410,12 @@ directly.
 
 - _`has_terminal_status`_ (`bool`)
 
-  Whether the runner has reported one of the canonical terminal statuses.
+  Whether the runner has reported a terminal `SimulationStatus`.
 
 - _`succeeded`_ (`bool`)
 
   Whether the queue completed the request and the latest runner status is
-  exactly `DONE`.
+  `SimulationStatus.DONE`.
 
 ### Log counters
 
@@ -428,7 +452,8 @@ print(f"Accepted: {simulation.is_accepted}")
 print(f"Finished: {simulation.is_finished}")
 print(f"Terminal status received: {simulation.has_terminal_status}")
 print(f"Succeeded: {simulation.succeeded}")
-print(f"Status: {simulation.status}")
+status = simulation.status.status.value if simulation.status is not None else None
+print(f"Status: {status}")
 print(f"Progress: {simulation.progress}")
 print(f"Simulation config event: {simulation.config_event}")
 print(f"Runner settings: {simulation.setting_event}")
