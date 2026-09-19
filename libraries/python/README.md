@@ -141,7 +141,8 @@ print(f"{len(manager.succeeded)} succeeded, {len(manager.failed)} failed")
 - _`watch_tmp`_ (`bool`, default: `False`)
 
   Read Type3830 `.tmp` updates and emit configuration and progress events.
-  Required for progress-based `CANCELLED` and `STALLED` outcomes.
+  Required for progress-based `SimulationStatus.CANCELLED` and
+  `SimulationStatus.STALLED` outcomes.
 
 - _`watch_timeout_ms`_ (`int`, default: `0`)
 
@@ -303,7 +304,7 @@ try:
 
     for updated in manager.follow(first):
         if updated.status is not None:
-            print(f"{updated.deck_path}: {updated.status.status}")
+            print(f"{updated.deck_path}: {updated.status}")
 
     manager.wait()
     print(f"Simulations: {len(manager.simulations)}")
@@ -339,10 +340,14 @@ directly.
 
 ### Events
 
-- _`status`_ (`StatusEvent | None`)
+- _`status`_ (`SimulationStatus | None`)
 
-  Latest runner status, or `None` before the first status event. Terminal status
-  values are `DONE`, `ERROR`, `CANCELLED`, `TIMEOUT`, and `STALLED`.
+  Latest runner status, or `None` before the first status event.
+
+- _`status_event`_ (`StatusEvent | None`)
+
+  Latest status event, including its `timestamp` and optional `message`, or
+  `None` before the first status event.
 
 - _`progress`_ (`ProgressEvent | None`)
 
@@ -386,12 +391,12 @@ directly.
 
 - _`has_terminal_status`_ (`bool`)
 
-  Whether the runner has reported one of the canonical terminal statuses.
+  Whether the runner has reported a terminal `SimulationStatus`.
 
 - _`succeeded`_ (`bool`)
 
   Whether the queue completed the request and the latest runner status is
-  exactly `DONE`.
+  `SimulationStatus.DONE`.
 
 ### Log counters
 
@@ -429,6 +434,7 @@ print(f"Finished: {simulation.is_finished}")
 print(f"Terminal status received: {simulation.has_terminal_status}")
 print(f"Succeeded: {simulation.succeeded}")
 print(f"Status: {simulation.status}")
+print(f"Status event: {simulation.status_event}")
 print(f"Progress: {simulation.progress}")
 print(f"Simulation config event: {simulation.config_event}")
 print(f"Runner settings: {simulation.setting_event}")

@@ -18,6 +18,7 @@ from trnrun.events import (
     ProgressEvent,
     QueueEvent,
     SettingEvent,
+    SimulationStatus,
     StatusEvent,
     TrnRunEvent,
     is_terminal_status,
@@ -102,8 +103,13 @@ class Simulation:
         return self._completion_event
 
     @property
-    def status(self) -> StatusEvent | None:
-        """Return the latest status event."""
+    def status(self) -> SimulationStatus | None:
+        """Return the latest runner status."""
+        return self._status_event.status if self._status_event is not None else None
+
+    @property
+    def status_event(self) -> StatusEvent | None:
+        """Return the latest status event, including its metadata."""
         return self._status_event
 
     @property
@@ -149,7 +155,11 @@ class Simulation:
     @property
     def succeeded(self) -> bool:
         """Return whether a completed run has the terminal status `DONE`."""
-        return self.is_finished and self._status_event is not None and self._status_event.status == "DONE"
+        return (
+            self.is_finished
+            and self._status_event is not None
+            and self._status_event.status is SimulationStatus.DONE
+        )
 
     @property
     def log_count(self) -> int:

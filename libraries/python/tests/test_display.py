@@ -18,7 +18,7 @@ from rich.text import Text
 import trnrun.display as display_module
 from trnrun.config import SimulationConfig
 from trnrun.display import Display, NotebookDisplay, NullDisplay
-from trnrun.events import ConfigEvent, LogEvent, ProgressEvent, StatusEvent
+from trnrun.events import ConfigEvent, LogEvent, ProgressEvent, SimulationStatus, StatusEvent
 from trnrun.simulation import Simulation
 
 TIMESTAMP = "2026-01-02T03:04:05Z"
@@ -263,10 +263,25 @@ def test_render_line_shows_placeholders_without_runner_updates() -> None:
     assert "[--------------------] - / -" in line.plain
 
 
+def test_color_map_covers_every_simulation_status() -> None:
+    """Every native status has one explicit terminal and notebook display style."""
+    assert all(isinstance(status, SimulationStatus) for status in display_module.COLOR_MAP)
+    assert display_module.COLOR_MAP == {
+        SimulationStatus.PENDING: None,
+        SimulationStatus.LAUNCHING: None,
+        SimulationStatus.RUNNING: None,
+        SimulationStatus.DONE: "green",
+        SimulationStatus.ERROR: "red",
+        SimulationStatus.TIMEOUT: "red",
+        SimulationStatus.STALLED: "red",
+        SimulationStatus.CANCELLED: "yellow",
+    }
+
+
 def test_render_line_formats_complete_state_and_status_style() -> None:
     """Runner state is folded into counts, timing, progress, and status color."""
     simulation = make_simulation(sim_id=7, deck_path="models/annual-load.dck")
-    simulation.apply_event(StatusEvent("DONE", TIMESTAMP))
+    simulation.apply_event(StatusEvent(SimulationStatus.DONE, TIMESTAMP))
     simulation.apply_event(ConfigEvent(0.0, 2_000.0, 1.0, TIMESTAMP))
     simulation.apply_event(ProgressEvent(1_234.0, 0.25, 3_723_000.0, 65_000.0, TIMESTAMP))
     for severity in ("Notice", "Warning", "Fatal"):
@@ -374,7 +389,7 @@ def test_notebook_display_throttles_progress_but_updates_lifecycle_promptly(
     assert len(handle.updates) == 1
     simulation.apply_event(ProgressEvent(200.0, 0.5, 1_000.0, 1_000.0, TIMESTAMP))
     display.refresh()
-    simulation.apply_event(StatusEvent("DONE", TIMESTAMP))
+    simulation.apply_event(StatusEvent(SimulationStatus.DONE, TIMESTAMP))
     display.simulation_finished(simulation)
 
     display_html.assert_called_once()
@@ -404,7 +419,7 @@ def test_notebook_html_matches_terminal_lines_at_narrow_width(
     """HTML preserves the shared row's spacing and tail instead of wrapping or cropping."""
     monkeypatch.setenv("COLUMNS", "20")
     simulation = make_simulation(7, deck_path)
-    simulation.apply_event(StatusEvent("DONE", TIMESTAMP))
+    simulation.apply_event(StatusEvent(SimulationStatus.DONE, TIMESTAMP))
     simulation.apply_event(ConfigEvent(0.0, 2_000.0, 1.0, TIMESTAMP))
     simulation.apply_event(ProgressEvent(1_234.0, 0.25, 3_723_000.0, 65_000.0, TIMESTAMP))
     for severity in ("Notice", "Warning", "Fatal"):
@@ -431,27 +446,31 @@ def test_notebook_html_matches_terminal_lines_at_narrow_width(
 
 @pytest.mark.parametrize(
     ("status", "color"),
-    [("DONE", "green"), ("ERROR", "red"), ("TIMEOUT", "red"), ("STALLED", "red"), ("CANCELLED", "yellow")],
+    [
+        (SimulationStatus.DONE, "green"),
+        (SimulationStatus.ERROR, "red"),
+        (SimulationStatus.TIMEOUT, "red"),
+        (SimulationStatus.STALLED, "red"),
+        (SimulationStatus.CANCELLED, "yellow"),
+    ],
 )
 def test_notebook_html_is_an_escaped_inline_styled_fragment(
-    status: str,
+    status: SimulationStatus,
     color: str,
 ) -> None:
     """Only status spans add color; notebook themes supply the fragment's base colors."""
     simulation = make_simulation(1, "deck<script>&.dck")
     simulation.apply_event(StatusEvent(status, TIMESTAMP))
-    escaped_status = make_simulation(2)
-    escaped_status.apply_event(StatusEvent('<script>alert("x")</script>&', TIMESTAMP))
 
-    html = NotebookDisplay._render_html((simulation, escaped_status))
+    html = NotebookDisplay._render_html((simulation,))
     parsed = ParsedHTML(html)
 
-    expected = [display_module._render_line(sim).plain.rstrip() for sim in (simulation, escaped_status)]
+    expected = [display_module._render_line(simulation).plain.rstrip()]
     assert parsed.lines == expected
     assert "&lt;script&gt;" in html
     assert "&amp;" in html
     expected_style = Style.parse(color).get_html_style()
-    assert any(text.strip() == status and expected_style in style for text, style in parsed.spans)
+    assert any(text.strip() == status.value and expected_style in style for text, style in parsed.spans)
     tags = {tag for tag, _ in parsed.elements}
     assert not tags.intersection({"html", "head", "body", "style", "script", "table"})
     assert "<!doctype" not in html.lower()
@@ -542,10 +561,10 @@ def test_notebook_renders_use_fresh_silent_recording_consoles(
     console_factory = Mock(wraps=Console)
     monkeypatch.setattr(display_module, "Console", console_factory)
     simulation = make_simulation()
-    simulation.apply_event(StatusEvent("RUNNING", TIMESTAMP))
+    simulation.apply_event(StatusEvent(SimulationStatus.RUNNING, TIMESTAMP))
 
     old_html = NotebookDisplay._render_html((simulation,))
-    simulation.apply_event(StatusEvent("DONE", TIMESTAMP))
+    simulation.apply_event(StatusEvent(SimulationStatus.DONE, TIMESTAMP))
     new_html = NotebookDisplay._render_html((simulation,))
     repeated_html = NotebookDisplay._render_html((simulation,))
 
@@ -581,7 +600,7 @@ def test_notebook_progress_renders_only_five_active_after_one_hundred_completion
 
     for simulation in completed:
         display.simulation_started(simulation)
-        simulation.apply_event(StatusEvent("DONE", TIMESTAMP))
+        simulation.apply_event(StatusEvent(SimulationStatus.DONE, TIMESTAMP))
         render_line.reset_mock()
         display.simulation_finished(simulation)
         render_line.assert_called_once_with(simulation)
@@ -633,7 +652,7 @@ def test_notebook_reuses_live_handle_and_preserves_completed_output(
     simulation = make_simulation(1, "first<script>&.dck")
     display.simulation_started(simulation)
     handle = handles[0]
-    simulation.apply_event(StatusEvent("DONE", TIMESTAMP))
+    simulation.apply_event(StatusEvent(SimulationStatus.DONE, TIMESTAMP))
     display.simulation_finished(simulation)
 
     assert handle.html.data == ""
@@ -643,7 +662,7 @@ def test_notebook_reuses_live_handle_and_preserves_completed_output(
     assert "&lt;script&gt;" not in captured.out
     assert captured.err == ""
     display_html.assert_called_once()
-    simulation.apply_event(StatusEvent("ERROR", TIMESTAMP))
+    simulation.apply_event(StatusEvent(SimulationStatus.ERROR, TIMESTAMP))
     second = make_simulation(2)
     display.simulation_started(second)
 
@@ -653,7 +672,7 @@ def test_notebook_reuses_live_handle_and_preserves_completed_output(
     assert ParsedHTML(handle.html.data).lines == [display_module._render_line(second).plain.rstrip()]
     assert capsys.readouterr().out == ""
 
-    second.apply_event(StatusEvent("DONE", TIMESTAMP))
+    second.apply_event(StatusEvent(SimulationStatus.DONE, TIMESTAMP))
     display.simulation_finished(second)
     display_html.assert_called_once()
     assert Text.from_ansi(capsys.readouterr().out).plain.rstrip() == display_module._render_line(second).plain.rstrip()
@@ -665,13 +684,16 @@ def test_notebook_reuses_live_handle_and_preserves_completed_output(
     monotonic.assert_not_called()
 
 
-@pytest.mark.parametrize(("status", "ansi_code"), [("DONE", 32), ("ERROR", 31), ("CANCELLED", 33)])
+@pytest.mark.parametrize(
+    ("status", "ansi_code"),
+    [(SimulationStatus.DONE, 32), (SimulationStatus.ERROR, 31), (SimulationStatus.CANCELLED, 33)],
+)
 @pytest.mark.parametrize("width", [20, 300])
 def test_notebook_completed_lines_use_ansi_stdout_without_wrapping(
     notebook_api: tuple[Mock, list[FakeDisplayHandle]],
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
-    status: str,
+    status: SimulationStatus,
     ansi_code: int,
     width: int,
 ) -> None:
@@ -724,7 +746,7 @@ def test_notebook_completed_colours_respect_no_color(
     display = NotebookDisplay()
     simulation = make_simulation()
     display.simulation_started(simulation)
-    simulation.apply_event(StatusEvent("DONE", TIMESTAMP))
+    simulation.apply_event(StatusEvent(SimulationStatus.DONE, TIMESTAMP))
 
     display.simulation_finished(simulation)
     captured = capsys.readouterr()

@@ -13,7 +13,7 @@ import pytest
 import trnrun.manager as manager_module
 from trnrun.config import SimulationConfig
 from trnrun.display import Display
-from trnrun.events import StatusEvent
+from trnrun.events import SimulationStatus, StatusEvent
 from trnrun.manager import SimulationManager
 from trnrun.process import QueueProcess
 from trnrun.simulation import Simulation
@@ -98,9 +98,11 @@ def test_add_validates_copy_sends_request_and_routes_until_acceptance(
     """Submission ignores noise and unrelated lifecycle while folding runner updates."""
     deck, original_config = valid_inputs
     malformed = stream("1", "STATUS")
+    unknown_status = stream("1", "STATUS", status="FUTURE")
     harness.process.read_line.side_effect = [
         "native diagnostic output\n",
         malformed,
+        unknown_status,
         accepted("999"),
         stream("1", "QUEUE", event="ENQUEUED"),
         stream("1", "STATUS", status="RUNNING", message="launched"),
@@ -113,7 +115,8 @@ def test_add_validates_copy_sends_request_and_routes_until_acceptance(
     assert simulation.id == 1
     assert simulation.deck_path == deck.absolute()
     assert simulation.config is not original_config
-    assert simulation.status == StatusEvent("RUNNING", TIMESTAMP, "launched")
+    assert simulation.status is SimulationStatus.RUNNING
+    assert simulation.status_event == StatusEvent(SimulationStatus.RUNNING, TIMESTAMP, "launched")
     assert simulation.is_accepted
     assert harness.manager.simulations == [simulation]
     assert harness.manager._active == {"1": simulation}
@@ -127,7 +130,8 @@ def test_add_validates_copy_sends_request_and_routes_until_acceptance(
     )
     harness.display.refresh.assert_called_once_with()
     harness.display.simulation_started.assert_called_once_with(simulation)
-    assert "dropped malformed queue line" in caplog.text
+    assert caplog.text.count("dropped malformed queue line") == 2
+    assert "unknown simulation status 'FUTURE'" in caplog.text
 
 
 def test_follow_routes_updates_deduplicates_acceptance_and_completes(
@@ -150,8 +154,7 @@ def test_follow_routes_updates_deduplicates_acceptance_and_completes(
     assert updates == [simulation, simulation, simulation]
     assert simulation.progress is not None
     assert simulation.progress.percent == 0.5
-    assert simulation.status is not None
-    assert simulation.status.status == "DONE"
+    assert simulation.status is SimulationStatus.DONE
     assert simulation.completion_event is not None
     assert simulation.completion_event.exit_code == 9
     assert simulation.succeeded
@@ -186,8 +189,7 @@ def test_follow_for_one_filters_yields_but_updates_other_runs(
     assert updates == [first, first]
     assert first.is_finished
     assert not second.is_finished
-    assert second.status is not None
-    assert second.status.status == "RUNNING"
+    assert second.status is SimulationStatus.RUNNING
     assert second.progress is not None
     assert second.progress.percent == 0.2
 
@@ -243,8 +245,7 @@ def test_wait_for_one_processes_other_runs_and_returns_at_target(
 
     assert first.is_finished
     assert not second.is_finished
-    assert second.status is not None
-    assert second.status.status == "RUNNING"
+    assert second.status is SimulationStatus.RUNNING
     assert harness.manager._active == {"2": second}
 
     harness.manager.wait(first)
