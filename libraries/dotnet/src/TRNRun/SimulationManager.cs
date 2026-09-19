@@ -73,7 +73,7 @@ public sealed class SimulationManager
     /// <summary>Gets a copy of the accepted simulations in acceptance order.</summary>
     public IReadOnlyList<Simulation> Simulations => _simulations.ToArray();
 
-    /// <summary>Gets a copy of finished simulations whose latest runner status is exactly DONE.</summary>
+    /// <summary>Gets finished simulations whose latest status is <see cref="SimulationStatus.Done"/>.</summary>
     public IReadOnlyList<Simulation> Succeeded => _simulations.Where(simulation => simulation.Succeeded).ToArray();
 
     /// <summary>Gets a copy of finished simulations that did not succeed.</summary>

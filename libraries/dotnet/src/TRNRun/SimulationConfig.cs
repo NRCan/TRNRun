@@ -29,21 +29,10 @@ public enum LogSeverity
     Fatal,
 }
 
-/// <summary>Immutable launch, monitoring, and output settings for TRNSYS simulations.</summary>
+/// <summary>Launch, monitoring, and output settings for a simulation.</summary>
 /// <remarks>
-/// <para>
-/// Validated and serialized by <see cref="SimulationManager.Add"/>.
-/// Executable paths must be unquoted; relative paths resolve against the current working directory.
-/// </para>
-/// <para>
-/// Durations must be whole milliseconds from 0 through 2,147,483,647;
-/// <see cref="PollInterval"/> must be at least 1 millisecond.
-/// </para>
-/// <para>
-/// Without <see cref="KillOnTimeout"/>, a readiness timeout proceeds to runtime monitoring.
-/// A runtime timeout or stall stops monitoring; without the corresponding kill option,
-/// the runner waits for process exit, potentially indefinitely.
-/// </para>
+/// Settings are validated when submitted. Paths must be unquoted, and durations must be whole
+/// milliseconds. Timeout and stall handling can wait indefinitely when process termination is disabled.
 /// </remarks>
 public sealed record SimulationConfig
 {
@@ -101,11 +90,7 @@ public sealed record SimulationConfig
     /// <summary>Writes runner events to the deck's <c>.jsonl</c> file, truncating any existing file at run start.</summary>
     public bool WriteEvents { get; init; }
 
-    /// <summary>Validates and serializes the configuration as unquoted native runner arguments, excluding the deck path and run ID.</summary>
-    /// <param name="runnerPath">Receives the resolved absolute runner executable path.</param>
-    /// <exception cref="ArgumentException">An executable path is empty or blank.</exception>
-    /// <exception cref="ArgumentOutOfRangeException">An enum value or duration is invalid.</exception>
-    /// <exception cref="FileNotFoundException">A required executable cannot be found.</exception>
+    /// <summary>Validates and converts the settings to native command-line arguments.</summary>
     internal string[] ToCliArgs(out string runnerPath)
     {
         ValidateDuration(DetectionTimeout, nameof(DetectionTimeout));
@@ -145,7 +130,7 @@ public sealed record SimulationConfig
         ];
     }
 
-    /// <summary>Validates an executable path and returns its absolute form.</summary>
+    /// <summary>Resolves and validates an executable path.</summary>
     private static string ResolveExecutable(string path, string name, string paramName)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path, paramName);
@@ -162,7 +147,7 @@ public sealed record SimulationConfig
         return fullPath;
     }
 
-    /// <summary>Validates whole-millisecond native wait limits, treating null as zero.</summary>
+    /// <summary>Validates a duration against native millisecond limits.</summary>
     private static void ValidateDuration(
         TimeSpan? value,
         string paramName,
@@ -187,7 +172,7 @@ public sealed record SimulationConfig
         }
     }
 
-    /// <summary>Converts GUI visibility to its native CLI value.</summary>
+    /// <summary>Converts GUI visibility to its native value.</summary>
     private static string ToCliValue(
         GuiVisibility value,
         [CallerArgumentExpression(nameof(value))] string? paramName = null
@@ -201,7 +186,7 @@ public sealed record SimulationConfig
         _ => throw new ArgumentOutOfRangeException(paramName, value, "Unknown GUI visibility."),
     };
 
-    /// <summary>Converts log severity to its native CLI value.</summary>
+    /// <summary>Converts log severity to its native value.</summary>
     private static string ToCliValue(
         LogSeverity value,
         [CallerArgumentExpression(nameof(value))] string? paramName = null
@@ -213,11 +198,11 @@ public sealed record SimulationConfig
         _ => throw new ArgumentOutOfRangeException(paramName, value, "Unknown log severity."),
     };
 
-    /// <summary>Formats invariant whole milliseconds; null is zero.</summary>
+    /// <summary>Formats a duration as whole milliseconds.</summary>
     private static string ToMilliseconds(TimeSpan? value) =>
         ((value?.Ticks ?? 0) / TimeSpan.TicksPerMillisecond)
             .ToString(CultureInfo.InvariantCulture);
 
-    /// <summary>Formats lowercase CLI booleans.</summary>
+    /// <summary>Formats a Boolean as a lowercase native value.</summary>
     private static string ToBoolean(bool value) => value ? "true" : "false";
 }

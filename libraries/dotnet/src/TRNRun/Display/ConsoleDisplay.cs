@@ -59,7 +59,9 @@ internal sealed class ConsoleDisplay
     {
         string id = SingleLine(simulation.Id);
         string path = FormatPath(simulation.DeckPath);
-        string status = SingleLine(simulation.Status?.Status ?? "-");
+        string status = SingleLine(
+            simulation.Status?.Status.ToString().ToUpperInvariant() ?? "-"
+        );
         ProgressEvent? progress = simulation.Progress;
         ConfigEvent? config = simulation.ConfigEvent;
 

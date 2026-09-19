@@ -1,109 +1,94 @@
-using System;
-using System.Collections.Generic;
-
 namespace TRNRun;
 
-/// <summary>Holds the current event state of one simulation submitted through the native queue.</summary>
+/// <summary>Tracks state and events for one queued simulation.</summary>
 /// <remarks>
-/// State changes only while the owning manager pumps queue output on the calling thread. This type
-/// is not thread-safe. Individual events are immutable, and log history is returned as a copy.
-/// A terminal runner status does not finish a simulation until queue completion is received.
+/// State is updated synchronously by the owning manager and is not thread-safe.
+/// Queue completion, rather than terminal runner status, finishes the simulation.
 /// </remarks>
 public sealed class Simulation
 {
-    /// <summary>The default maximum number of retained log entries.</summary>
-    public const int DefaultMaxLogEvents = 5000;
+    private readonly List<LogEvent> _logs = [];
 
-    private readonly Queue<LogEvent> _logs = new();
-    private readonly Dictionary<string, long> _severityCounts = new(StringComparer.OrdinalIgnoreCase);
-
+    /// <summary>Creates pending state for one submitted simulation.</summary>
     internal Simulation(string id, string deckPath, SimulationConfig config)
-        : this(id, deckPath, config, DefaultMaxLogEvents)
     {
-    }
-
-    internal Simulation(string id, string deckPath, SimulationConfig config, int maxLogEvents)
-    {
-        ArgumentException.ThrowIfNullOrEmpty(id);
-        ArgumentException.ThrowIfNullOrEmpty(deckPath);
+        ArgumentException.ThrowIfNullOrWhiteSpace(id);
+        ArgumentException.ThrowIfNullOrWhiteSpace(deckPath);
         ArgumentNullException.ThrowIfNull(config);
-        ArgumentOutOfRangeException.ThrowIfNegative(maxLogEvents);
 
         Id = id;
         DeckPath = deckPath;
         Config = config;
-        MaxLogEvents = maxLogEvents;
     }
 
-    /// <summary>Gets the opaque, case-sensitive queue request identifier.</summary>
+    /// <summary>Gets the case-sensitive queue request identifier.</summary>
     public string Id { get; }
 
-    /// <summary>Gets the deck path submitted by the manager.</summary>
+    /// <summary>Gets the submitted deck path.</summary>
     public string DeckPath { get; }
 
-    /// <summary>Gets the immutable configuration submitted for this simulation.</summary>
+    /// <summary>Gets the submitted simulation configuration.</summary>
     public SimulationConfig Config { get; }
 
-    /// <summary>Gets whether a queue worker has accepted this simulation.</summary>
+    /// <summary>Gets whether a queue worker has accepted the simulation.</summary>
     public bool IsAccepted { get; private set; }
 
-    /// <summary>Gets whether the queue has reported COMPLETED after all runner output.</summary>
+    /// <summary>Gets whether the queue has completed the simulation.</summary>
     public bool IsFinished => CompletionEvent is not null;
 
-    /// <summary>Gets whether the simulation is still waiting or running, including before acceptance.</summary>
+    /// <summary>Gets whether the simulation is waiting or running.</summary>
     public bool IsRunning => !IsFinished;
 
-    /// <summary>Gets whether the latest runner status is an exact canonical terminal value.</summary>
-    /// <remarks>The recognized values are DONE, ERROR, CANCELLED, TIMEOUT, and STALLED.</remarks>
-    public bool HasTerminalStatus => Status?.Status is "DONE" or "ERROR" or "CANCELLED" or "TIMEOUT" or "STALLED";
+    /// <summary>Gets whether the latest runner status is terminal.</summary>
+    public bool HasTerminalStatus =>
+        Status?.Status is
+            SimulationStatus.Done
+            or SimulationStatus.Cancelled
+            or SimulationStatus.Error
+            or SimulationStatus.Timeout
+            or SimulationStatus.Stalled;
 
-    /// <summary>Gets whether queue completion was received and the latest runner status is exactly DONE.</summary>
-    /// <remarks>
-    /// Exit codes and progress do not determine success. Missing or differently cased status strings
-    /// do not count as DONE, even when the runner exits with code zero.
-    /// </remarks>
-    public bool Succeeded => IsFinished && Status?.Status == "DONE";
+    /// <summary>
+    /// Gets whether the queue completed the simulation with status <see cref="SimulationStatus.Done"/>.
+    /// </summary>
+    /// <remarks>Exit codes and progress do not determine success.</remarks>
+    public bool Succeeded => IsFinished && Status?.Status is SimulationStatus.Done;
 
-    /// <summary>Gets the latest runner status event, or <see langword="null"/> before one is received.</summary>
+    /// <summary>Gets the latest runner status event.</summary>
     public StatusEvent? Status { get; private set; }
 
-    /// <summary>Gets the latest progress event, or <see langword="null"/> before one is received.</summary>
+    /// <summary>Gets the latest progress event.</summary>
     public ProgressEvent? Progress { get; private set; }
 
-    /// <summary>Gets the latest native simulation bounds, or <see langword="null"/> before they are received.</summary>
+    /// <summary>Gets the latest native simulation configuration event.</summary>
     public ConfigEvent? ConfigEvent { get; private set; }
 
-    /// <summary>Gets the latest effective runner settings, or <see langword="null"/> before they are received.</summary>
+    /// <summary>Gets the latest effective runner settings event.</summary>
     public SettingEvent? SettingEvent { get; private set; }
 
-    /// <summary>Gets the queue's COMPLETED event, or <see langword="null"/> while the run is unfinished.</summary>
+    /// <summary>Gets the queue completion event.</summary>
     /// <remarks>
-    /// A missing completion event differs from a completion event whose exit code is
-    /// <see langword="null"/>: the latter can indicate that the runner could not be launched.
+    /// A null event means the run is unfinished. A null exit code can indicate
+    /// that the runner could not be launched.
     /// </remarks>
     public QueueEvent? CompletionEvent { get; private set; }
 
-    /// <summary>Gets the maximum retained log count; zero retains no log history.</summary>
-    /// <remarks>This limit does not affect cumulative log counters.</remarks>
-    public int MaxLogEvents { get; }
-
-    /// <summary>Gets a copy of retained log entries in oldest-first order.</summary>
-    /// <remarks>Changing or retaining the returned collection does not change this simulation's history.</remarks>
+    /// <summary>Gets a copy of all log events in oldest-first order.</summary>
     public IReadOnlyList<LogEvent> Logs => _logs.ToArray();
 
-    /// <summary>Gets the total received log count, including unknown severities and evicted entries.</summary>
+    /// <summary>Gets the total number of received log events.</summary>
     public long LogCount { get; private set; }
 
-    /// <summary>Gets the cumulative notice count, matching severity names case-insensitively.</summary>
-    public long Notices => _severityCounts.GetValueOrDefault("notice");
+    /// <summary>Gets the number of notice events.</summary>
+    public long Notices { get; private set; }
 
-    /// <summary>Gets the cumulative warning count, matching severity names case-insensitively.</summary>
-    public long Warnings => _severityCounts.GetValueOrDefault("warning");
+    /// <summary>Gets the number of warning events.</summary>
+    public long Warnings { get; private set; }
 
-    /// <summary>Gets the cumulative fatal count, matching severity names case-insensitively.</summary>
-    public long Fatals => _severityCounts.GetValueOrDefault("fatal");
+    /// <summary>Gets the number of fatal events.</summary>
+    public long Fatals { get; private set; }
 
-    /// <summary>Folds a routed event into the state without synthesizing runner outcomes.</summary>
+    /// <summary>Applies a routed event to the simulation state.</summary>
     internal void Apply(TrnRunEvent runEvent)
     {
         ArgumentNullException.ThrowIfNull(runEvent);
@@ -117,35 +102,51 @@ public sealed class Simulation
             case QueueEvent { Status: "ACCEPTED" }:
                 IsAccepted = true;
                 break;
+
             case QueueEvent { Status: "COMPLETED" } completion:
                 CompletionEvent = completion;
                 break;
+
             case StatusEvent status:
                 Status = status;
                 break;
+
             case ProgressEvent progress:
                 Progress = progress;
                 break;
+
             case ConfigEvent config:
                 ConfigEvent = config;
                 break;
+
             case SettingEvent setting:
                 SettingEvent = setting;
                 break;
+
             case LogEvent log:
-                if (MaxLogEvents > 0)
-                {
-                    if (_logs.Count == MaxLogEvents)
-                    {
-                        _logs.Dequeue();
-                    }
-
-                    _logs.Enqueue(log);
-                }
-
-                _severityCounts[log.Severity] = _severityCounts.GetValueOrDefault(log.Severity) + 1;
-                LogCount++;
+                ApplyLog(log);
                 break;
         }
+    }
+
+    /// <summary>Retains a log event and updates severity counters.</summary>
+    private void ApplyLog(LogEvent log)
+    {
+        LogCount++;
+
+        if (string.Equals(log.Severity, "Notice", StringComparison.OrdinalIgnoreCase))
+        {
+            Notices++;
+        }
+        else if (string.Equals(log.Severity, "Warning", StringComparison.OrdinalIgnoreCase))
+        {
+            Warnings++;
+        }
+        else if (string.Equals(log.Severity, "Fatal", StringComparison.OrdinalIgnoreCase))
+        {
+            Fatals++;
+        }
+
+        _logs.Add(log);
     }
 }
