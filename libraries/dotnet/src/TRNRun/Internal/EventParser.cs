@@ -7,8 +7,13 @@ internal static class EventParser
 {
     /// <summary>Parses one queue output line into a typed event.</summary>
     /// <param name="line">One line from queue standard output.</param>
-    /// <returns>The parsed event, or null for blank, invalid JSON, or unrouted lines lacking string-valued runID and kind fields.</returns>
-    /// <exception cref="JsonException">A routed event has an unknown kind or a missing or invalid field.</exception>
+    /// <returns>
+    /// The parsed event, or null for blank, invalid JSON, or unrouted lines
+    /// lacking string-valued runID and kind fields.
+    /// </returns>
+    /// <exception cref="JsonException">
+    /// A routed event has an unknown kind or a missing or invalid field.
+    /// </exception>
     /// <remarks>Kind matching is case-insensitive; native status, severity, and timestamp strings are preserved.</remarks>
     internal static TrnRunEvent? Parse(string line)
     {
@@ -18,6 +23,7 @@ internal static class EventParser
         }
 
         JsonDocument document;
+
         try
         {
             document = JsonDocument.Parse(line);
@@ -31,9 +37,12 @@ internal static class EventParser
         using (document)
         {
             JsonElement data = document.RootElement;
-            if (data.ValueKind != JsonValueKind.Object
+
+            if (
+                data.ValueKind != JsonValueKind.Object
                 || !IsString(data, "runID")
-                || !IsString(data, "kind"))
+                || !IsString(data, "kind")
+            )
             {
                 return null;
             }
@@ -44,7 +53,8 @@ internal static class EventParser
 
     /// <summary>Checks for a string-valued field.</summary>
     private static bool IsString(JsonElement data, string name) =>
-        data.TryGetProperty(name, out JsonElement value) && value.ValueKind == JsonValueKind.String;
+        data.TryGetProperty(name, out JsonElement value)
+        && value.ValueKind == JsonValueKind.String;
 
     /// <summary>Dispatches by kind; unknown kinds and invalid fields throw.</summary>
     private static TrnRunEvent ParseRouted(JsonElement data)
@@ -141,7 +151,12 @@ internal static class EventParser
         );
 
     /// <summary>Requires a field of the given JSON kind.</summary>
-    private static JsonElement Require(JsonElement data, string name, JsonValueKind kind, string expected) =>
+    private static JsonElement Require(
+        JsonElement data,
+        string name,
+        JsonValueKind kind,
+        string expected
+    ) =>
         data.TryGetProperty(name, out JsonElement value) && value.ValueKind == kind
             ? value
             : throw Invalid(name, expected);
@@ -162,7 +177,8 @@ internal static class EventParser
     {
         const string Expected = "a finite number";
 
-        return Require(data, name, JsonValueKind.Number, Expected).TryGetDouble(out double number)
+        return Require(data, name, JsonValueKind.Number, Expected)
+                .TryGetDouble(out double number)
             && double.IsFinite(number)
                 ? number
                 : throw Invalid(name, Expected);
@@ -173,9 +189,10 @@ internal static class EventParser
     {
         const string Expected = "a 32-bit integer";
 
-        return Require(data, name, JsonValueKind.Number, Expected).TryGetInt32(out int number)
-            ? number
-            : throw Invalid(name, Expected);
+        return Require(data, name, JsonValueKind.Number, Expected)
+            .TryGetInt32(out int number)
+                ? number
+                : throw Invalid(name, Expected);
     }
 
     /// <summary>Reads a required 64-bit JSON integer.</summary>
@@ -183,18 +200,11 @@ internal static class EventParser
     {
         const string Expected = "a 64-bit integer";
 
-        return Require(data, name, JsonValueKind.Number, Expected).TryGetInt64(out long number)
-            ? number
-            : throw Invalid(name, Expected);
+        return Require(data, name, JsonValueKind.Number, Expected)
+            .TryGetInt64(out long number)
+                ? number
+                : throw Invalid(name, Expected);
     }
-
-    /// <summary>Reports a field's expected type.</summary>
-    private static JsonException Invalid(string name, string expected) =>
-        new($"Field '{name}' must be {expected}.");
-
-    /// <summary>Checks for an absent or JSON-null field.</summary>
-    private static bool IsNullOrMissing(JsonElement data, string name) =>
-        !data.TryGetProperty(name, out JsonElement value) || value.ValueKind == JsonValueKind.Null;
 
     /// <summary>Reads a string, or null for an absent or JSON-null field.</summary>
     private static string? OptionalString(JsonElement data, string name) =>
@@ -211,4 +221,13 @@ internal static class EventParser
     /// <summary>Reads a 64-bit integer, or null for an absent or JSON-null field.</summary>
     private static long? OptionalInt64(JsonElement data, string name) =>
         IsNullOrMissing(data, name) ? null : RequireInt64(data, name);
+
+    /// <summary>Checks for an absent or JSON-null field.</summary>
+    private static bool IsNullOrMissing(JsonElement data, string name) =>
+        !data.TryGetProperty(name, out JsonElement value)
+        || value.ValueKind == JsonValueKind.Null;
+
+    /// <summary>Reports a field's expected type.</summary>
+    private static JsonException Invalid(string name, string expected) =>
+        new($"Field '{name}' must be {expected}.");
 }

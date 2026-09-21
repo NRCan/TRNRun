@@ -1,5 +1,4 @@
 using System.Globalization;
-using System.Runtime.CompilerServices;
 
 namespace TRNRun;
 
@@ -126,7 +125,7 @@ public sealed record SimulationConfig
         return
         [
             "--trnexePath:" + trnExePath,
-            "--guiVisibility:" + ToCliValue(GuiVisibility),
+            "--guiVisibility:" + ToGuiVisibility(GuiVisibility, nameof(GuiVisibility)),
             "--waitForGui:" + ToBoolean(WaitForGui),
             "--waitForLst:" + ToBoolean(WaitForLst),
             "--waitForTmp:" + ToBoolean(WaitForTmp),
@@ -140,7 +139,7 @@ public sealed record SimulationConfig
             "--clean:" + ToBoolean(CleanOnSuccess),
             "--killOnTimeout:" + ToBoolean(KillOnTimeout),
             "--killOnStall:" + ToBoolean(KillOnStall),
-            "--severity:" + ToCliValue(Severity),
+            "--severity:" + ToSeverity(Severity, nameof(Severity)),
             "--writeEvents:" + ToBoolean(WriteEvents),
         ];
     }
@@ -187,11 +186,8 @@ public sealed record SimulationConfig
         }
     }
 
-    /// <summary>Converts GUI visibility to its native CLI value.</summary>
-    private static string ToCliValue(
-        GuiVisibility value,
-        [CallerArgumentExpression(nameof(value))] string? paramName = null
-    ) => value switch
+    /// <summary>Formats a GUI visibility as its native CLI keyword.</summary>
+    private static string ToGuiVisibility(GuiVisibility value, string paramName) => value switch
     {
         GuiVisibility.KeepOpen => "keepOpen",
         GuiVisibility.AutoClose => "autoClose",
@@ -201,11 +197,8 @@ public sealed record SimulationConfig
         _ => throw new ArgumentOutOfRangeException(paramName, value, "Unknown GUI visibility."),
     };
 
-    /// <summary>Converts log severity to its native CLI value.</summary>
-    private static string ToCliValue(
-        LogSeverity value,
-        [CallerArgumentExpression(nameof(value))] string? paramName = null
-    ) => value switch
+    /// <summary>Formats a log severity as its native CLI keyword.</summary>
+    private static string ToSeverity(LogSeverity value, string paramName) => value switch
     {
         LogSeverity.Notice => "Notice",
         LogSeverity.Warning => "Warning",
