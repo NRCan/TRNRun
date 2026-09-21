@@ -195,6 +195,8 @@ public void Shutdown();
 - `Follow(simulation)` or `Follow()` processes events while enumerated and yields
   the existing, live `Simulation` objects. It does not produce immutable
   snapshots or replay events consumed by earlier calls (including `Add()`).
+  Validation occurs when enumeration starts, not when `Follow()` is called.
+  Malformed event lines are skipped, with a diagnostic in debug builds.
 - Reading for a selected run still updates all other runs. The selected object
   must belong to the manager. Already completed runs return immediately.
 - `Simulations`, `Succeeded`, `Failed`, and each simulation's `Logs` return
@@ -204,11 +206,12 @@ public void Shutdown();
   exit, and releases owned resources. It **drains accepted work, not cancels it**,
   and can block indefinitely, particularly if timeout/stall killing is disabled.
   Unexpected EOF with outstanding runs and queue exit failures are errors; the
-  client does not invent completion events or retry submissions. If a transport
-  failure makes draining impossible, emergency cleanup attempts to terminate and
-  reap the process tree before reporting the error. This is not cancellation of
-  normally draining work. After shutdown, repeated `Shutdown()` calls are harmless;
-  new submissions and waits are rejected.
+  client does not invent completion events or retry submissions. Display and read
+  errors propagate without recovery; the queue is only waited on after EOF, and
+  owned resources are disposed even if draining fails. Closing an assigned Job
+  Object terminates remaining child processes, but emergency reaping is not
+  attempted. Call `Shutdown()` only once; repeated shutdown and operations after
+  shutdown are unsupported.
 - Use `try`/`finally` for explicit cleanup. `SimulationManager` does **not**
   implement `IDisposable` or `IAsyncDisposable`, expose `Dispose()`, or support
   manager `using` statements. Do not rely on garbage collection for shutdown.
@@ -233,13 +236,13 @@ resume with `Wait()`, another `Follow()` enumeration, or `Shutdown()`.
 
 ### Single-threaded limitation and console output
 
-Use the thread that created the manager and only one active manager operation
-at a time. Concurrent calls, interleaved `Follow()` enumerations, and reentrant
-manager calls while following are rejected. Dispose a manually obtained Follow
-enumerator before calling another operation; `foreach` does this automatically. There are no background readers, tasks, subscriptions,
-or asynchronous methods. State advances only while `Add()`, `Wait()`, `Follow()`
-enumeration, or `Shutdown()` reads queue output. Long pauses between calls or
-inside a `Follow()` loop can fill stdout and stall the queue and its children.
+The manager is not thread-safe; use it from one thread with one operation or
+`Follow()` enumeration at a time. There are no runtime operation guards, thread
+synchronization, background readers, tasks, subscriptions, or asynchronous methods.
+State advances only while `Add()`, `Wait()`, `Follow()` enumeration, or `Shutdown()`
+reads queue output. Long pauses
+between calls or inside a `Follow()` loop can fill stdout and stall the queue
+and its children.
 
 `ShowProgress` is a public read/write property, defaulting to `false`. Set it to
 `true` to opt into a basic `System.Console` display of deck, status, log counts,
@@ -275,13 +278,15 @@ new record (or use `with`) to change settings for future submissions; do not
 mutate an accepted run's configuration. Durations use `TimeSpan`, and nullable
 timeouts use `null` (or zero) for unlimited/disabled behavior. Durations must
 be whole milliseconds from zero through 2,147,483,647 (about 24.8 days), with
-`PollInterval` at least one millisecond. Invalid enum values, unsupported deck
-extensions, and missing deck/executable files are rejected before submission.
+`PollInterval` at least one millisecond. Invalid enum values and missing runner
+or TRNSYS executable files are rejected before submission.
 
-Submission validates automatically: `SimulationManager.Add` checks the deck,
+Like the Python manager, `SimulationManager.Add` checks that the deck exists,
 then validates the configuration while building unquoted native arguments and
-resolving the runner executable. Invalid input throws without modifying the
-record, and the queue supplies the deck path and run ID.
+resolving the runner executable. Unsupported deck extensions are reported as
+failed simulations by the native queue. A missing queue executable is reported
+by process startup. The configuration is already immutable, so no copy is needed.
+The queue supplies the deck path and run ID.
 
 | Property | Default | Purpose |
 | --- | --- | --- |

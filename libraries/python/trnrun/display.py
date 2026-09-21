@@ -54,6 +54,9 @@ class DisplayCallback(Protocol):
     def refresh(self) -> None:
         """Refresh changed simulation state when due."""
 
+    def close(self) -> None:
+        """Release display resources without completing simulations."""
+
 
 class _DisplayHandle(Protocol):
     """Subset of an IPython ``DisplayHandle`` used by the notebook display."""
@@ -147,6 +150,9 @@ class NullDisplay:
     def refresh(self) -> None:
         """Ignore refresh requests."""
 
+    def close(self) -> None:
+        """Ignore cleanup requests."""
+
 
 # -----------------------------------------------------------------
 # Terminal Display
@@ -193,7 +199,13 @@ class Display:
 
         self.console.print(_render_line(simulation))
 
-        if not self._active and self._live is not None:
+        if not self._active:
+            self.close()
+
+    def close(self) -> None:
+        """Stop the live region without printing results or changing simulations."""
+        self._active.clear()
+        if self._live is not None:
             live, self._live = self._live, None
             live.stop()
 
@@ -268,6 +280,12 @@ class NotebookDisplay:
         _ = self._active.pop(simulation.id, None)
         self._completed_console.print(_render_line(simulation), soft_wrap=True)
         self._update()
+
+    def close(self) -> None:
+        """Release tracking and the handle without publishing or completing simulations."""
+        self._active.clear()
+        self._handle = None
+        self._last_html = None
 
     def refresh(self) -> None:
         """Update active progress at most once per refresh interval."""

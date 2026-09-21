@@ -36,7 +36,7 @@ class Harness:
 def harness(monkeypatch: pytest.MonkeyPatch) -> Harness:
     """Construct a manager with process and display boundaries replaced."""
     process = Mock(spec=QueueProcess)
-    process.wait.return_value = 0
+
     display = Mock(spec=Display)
     queue_factory = Mock(return_value=process)
     display_factory = Mock(return_value=display)
@@ -161,6 +161,73 @@ def test_follow_routes_updates_deduplicates_acceptance_and_completes(
     harness.display.simulation_started.assert_called_once_with(simulation)
     assert harness.display.refresh.call_count == 2
     harness.display.simulation_finished.assert_called_once_with(simulation)
+
+
+def test_lifecycle_callbacks_observe_updated_state_and_tracking(
+    harness: Harness,
+    valid_inputs: tuple[Path, SimulationConfig],
+) -> None:
+    """Display notifications see both simulation state and manager tracking updated."""
+    deck, config = valid_inputs
+    harness.process.read_line.side_effect = [
+        accepted("1"),
+        accepted("1"),
+        stream("1", "STATUS", status="DONE"),
+        completed("1"),
+    ]
+
+    def on_started(simulation: Simulation) -> None:
+        assert simulation.is_accepted
+        assert not simulation.is_finished
+        assert harness.manager.simulations == [simulation]
+        assert harness.manager._active == {"1": simulation}
+
+    def on_finished(simulation: Simulation) -> None:
+        assert simulation.is_finished
+        assert simulation.succeeded
+        assert harness.manager.simulations == [simulation]
+        assert harness.manager._active == {}
+
+    harness.display.simulation_started.side_effect = on_started
+    harness.display.simulation_finished.side_effect = on_finished
+
+    simulation = harness.manager.add(deck, config)
+    harness.manager.wait(simulation)
+
+    harness.display.simulation_started.assert_called_once_with(simulation)
+    harness.display.simulation_finished.assert_called_once_with(simulation)
+    harness.display.refresh.assert_called_once_with()
+
+
+def test_follow_ignores_late_and_unknown_events_without_stopping(
+    harness: Harness,
+    valid_inputs: tuple[Path, SimulationConfig],
+) -> None:
+    """Ignored events neither mutate completed runs nor end the update stream."""
+    deck, config = valid_inputs
+    harness.process.read_line.side_effect = [accepted("1"), accepted("2")]
+    first = harness.manager.add(deck, config)
+    second = harness.manager.add(deck, config)
+    harness.process.read_line.side_effect = [
+        stream("1", "STATUS", status="DONE"),
+        completed("1"),
+        accepted("1"),
+        stream("1", "STATUS", status="ERROR"),
+        completed("1", exit_code=9),
+        accepted("999"),
+        stream("2", "QUEUE", event="ENQUEUED"),
+        stream("2", "STATUS", status="DONE"),
+        completed("2"),
+    ]
+
+    assert list(harness.manager.follow()) == [first, first, second, second]
+    assert harness.manager.simulations == [first, second]
+    assert harness.manager.succeeded == [first, second]
+    assert first.completion_event is not None
+    assert first.completion_event.exit_code == 0
+    assert harness.display.simulation_started.call_args_list == [call(first), call(second)]
+    assert harness.display.simulation_finished.call_args_list == [call(first), call(second)]
+    assert harness.display.refresh.call_count == 2
 
 
 def test_follow_for_one_filters_yields_but_updates_other_runs(
@@ -302,17 +369,62 @@ def test_premature_eof_during_add_reports_outstanding_run(
     with pytest.raises(RuntimeError, match="closed before accepting or completing run IDs: 1"):
         harness.manager.add(deck, config)
 
-    assert harness.manager._queue_eof
     assert list(harness.manager._active) == ["1"]
     assert harness.manager.simulations == []
 
 
-def test_reading_eof_is_normal_when_no_runs_are_active(harness: Harness) -> None:
-    """An idle EOF marks the stream drained and returns no update."""
+def test_read_next_update_raises_on_eof_even_when_idle(harness: Harness) -> None:
+    """Reading an update either returns a simulation or raises, never None."""
     harness.process.read_line.return_value = None
 
-    assert harness.manager._read_next_update() is None
-    assert harness.manager._queue_eof
+    with pytest.raises(RuntimeError, match="queue closed"):
+        _ = harness.manager._read_next_update()
+
+
+@pytest.mark.parametrize("finished_run", [False, True])
+def test_idle_wait_and_follow_do_not_read_queue(
+    harness: Harness,
+    valid_inputs: tuple[Path, SimulationConfig],
+    *,
+    finished_run: bool,
+) -> None:
+    """Empty and fully completed managers finish waiting without reading EOF."""
+    simulation = None
+    if finished_run:
+        deck, config = valid_inputs
+        harness.process.read_line.side_effect = [accepted("1"), completed("1")]
+        simulation = harness.manager.add(deck, config)
+        harness.manager.wait()
+
+    harness.process.read_line.reset_mock(side_effect=True)
+    harness.process.read_line.return_value = None
+
+    harness.manager.wait()
+    harness.manager.wait(simulation)
+    assert list(harness.manager.follow()) == []
+    assert list(harness.manager.follow(simulation)) == []
+    harness.process.read_line.assert_not_called()
+
+
+@pytest.mark.parametrize("operation", ["follow", "wait"])
+def test_premature_eof_with_accepted_run_raises(
+    harness: Harness,
+    valid_inputs: tuple[Path, SimulationConfig],
+    operation: str,
+) -> None:
+    """Waiting must not silently finish when the queue closes with an active run."""
+    deck, config = valid_inputs
+    harness.process.read_line.side_effect = [accepted("1"), None]
+    simulation = harness.manager.add(deck, config)
+
+    with pytest.raises(RuntimeError, match="closed before accepting or completing run IDs: 1"):
+        if operation == "follow":
+            _ = list(harness.manager.follow())
+        else:
+            harness.manager.wait()
+
+    assert not simulation.is_finished
+    assert harness.manager._active == {"1": simulation}
 
 
 def test_display_errors_propagate_from_lifecycle_routing(
@@ -332,16 +444,66 @@ def test_display_errors_propagate_from_lifecycle_routing(
     assert harness.manager._active == {"1": simulation}
 
 
-def test_shutdown_closes_drains_and_waits_only_after_eof(
+def test_display_error_after_completion_preserves_finished_state(
     harness: Harness,
     valid_inputs: tuple[Path, SimulationConfig],
 ) -> None:
-    """Shutdown drains completion before reaping the mocked queue process."""
+    """A failing completion callback leaves the run completed and untracked."""
+    deck, config = valid_inputs
+    harness.process.read_line.side_effect = [accepted("1"), completed("1")]
+    simulation = harness.manager.add(deck, config)
+    harness.display.simulation_finished.side_effect = RuntimeError("display failed")
+
+    with pytest.raises(RuntimeError, match="display failed"):
+        harness.manager.wait()
+
+    assert simulation.is_finished
+    assert harness.manager._active == {}
+    harness.display.simulation_finished.assert_called_once_with(simulation)
+
+
+@pytest.mark.parametrize("operation", ["follow", "wait"])
+@pytest.mark.parametrize("callback", ["refresh", "simulation_finished"])
+def test_display_errors_outside_shutdown_stop_reading_immediately(
+    harness: Harness,
+    valid_inputs: tuple[Path, SimulationConfig],
+    operation: str,
+    callback: str,
+) -> None:
+    """Normal pumping raises the original display error without draining or reaping."""
     deck, config = valid_inputs
     harness.process.read_line.side_effect = [accepted("1")]
     simulation = harness.manager.add(deck, config)
     harness.process.reset_mock()
-    harness.process.wait.return_value = 0
+    harness.process.read_line.side_effect = [
+        stream("1", "STATUS", status="DONE"),
+        completed("1"),
+        None,
+    ]
+    display_error = RuntimeError("display failed")
+    getattr(harness.display, callback).side_effect = display_error
+
+    with pytest.raises(RuntimeError) as raised:
+        _ = list(harness.manager.follow()) if operation == "follow" else harness.manager.wait()
+
+    assert raised.value is display_error
+    assert harness.process.read_line.call_count == (1 if callback == "refresh" else 2)
+    assert simulation.status == StatusEvent("DONE", TIMESTAMP)
+    assert simulation.is_finished == (callback == "simulation_finished")
+    harness.process.shutdown.assert_not_called()
+
+
+def test_shutdown_terminates_without_reading_events_or_changing_state(
+    harness: Harness,
+    valid_inputs: tuple[Path, SimulationConfig],
+) -> None:
+    """Shutdown discards even buffered completion events and preserves observed state."""
+    deck, config = valid_inputs
+    harness.process.read_line.side_effect = [accepted("1"), stream("1", "STATUS", status="RUNNING")]
+    simulation = harness.manager.add(deck, config)
+    assert next(harness.manager.follow()) is simulation
+    harness.process.reset_mock()
+    harness.display.reset_mock()
     harness.process.read_line.side_effect = [
         stream("1", "STATUS", status="DONE"),
         completed("1"),
@@ -350,54 +512,283 @@ def test_shutdown_closes_drains_and_waits_only_after_eof(
 
     harness.manager.shutdown()
 
-    assert simulation.succeeded
-    assert harness.manager._queue_eof
-    assert harness.process.method_calls == [
-        call.close(),
-        call.read_line(),
-        call.read_line(),
-        call.read_line(),
-        call.wait(),
-    ]
+    assert not simulation.is_finished
+    assert simulation.status == StatusEvent("RUNNING", TIMESTAMP)
+    assert harness.manager.simulations == [simulation]
+    assert harness.manager.succeeded == []
+    assert harness.manager.failed == []
+    assert harness.process.method_calls == [call.shutdown()]
+    assert harness.display.method_calls == [call.close()]
 
 
-def test_shutdown_reports_nonzero_queue_exit_after_clean_eof(harness: Harness) -> None:
-    """A drained queue process failure is surfaced with its exit code."""
-    harness.process.read_line.return_value = None
-    harness.process.wait.return_value = 7
-
-    with pytest.raises(RuntimeError, match="queue exited with code 7"):
-        harness.manager.shutdown()
-
-    assert harness.process.method_calls == [call.close(), call.read_line(), call.wait()]
-
-
-def test_shutdown_preserves_premature_eof_error_and_still_reaps(
+def test_explicit_wait_collects_results_before_context_cleanup(
     harness: Harness,
     valid_inputs: tuple[Path, SimulationConfig],
 ) -> None:
-    """Outstanding-run EOF takes precedence over the process exit code."""
+    """Explicit waiting records outcomes that remain accessible after shutdown."""
     deck, config = valid_inputs
-    harness.process.read_line.side_effect = [accepted("1")]
-    harness.manager.add(deck, config)
-    harness.process.reset_mock()
-    harness.process.read_line.side_effect = None
-    harness.process.read_line.return_value = None
-    harness.process.wait.return_value = 13
+    harness.process.read_line.side_effect = [
+        accepted("1"),
+        accepted("2"),
+        stream("1", "STATUS", status="DONE"),
+        completed("1"),
+        stream("2", "STATUS", status="ERROR"),
+        completed("2", exit_code=9),
+    ]
 
-    with pytest.raises(RuntimeError, match="closed before accepting or completing run IDs: 1"):
+    with harness.manager:
+        first = harness.manager.add(deck, config)
+        second = harness.manager.add(deck, config)
+        harness.manager.wait()
+        harness.process.shutdown.assert_not_called()
+        harness.process.reset_mock()
+
+    assert harness.process.method_calls == [call.shutdown()]
+    assert first.is_finished
+    assert second.is_finished
+    for snapshot in (harness.manager.simulations, harness.manager.succeeded, harness.manager.failed):
+        snapshot.clear()
+    assert harness.manager.simulations == [first, second]
+    assert harness.manager.succeeded == [first]
+    assert harness.manager.failed == [second]
+
+
+@pytest.mark.parametrize("accept_before_eof", [False, True])
+def test_context_cleanup_preserves_previously_reported_eof(
+    harness: Harness,
+    valid_inputs: tuple[Path, SimulationConfig],
+    *,
+    accept_before_eof: bool,
+) -> None:
+    """Cleanup reaps an exhausted queue without replacing an add or wait error."""
+    deck, config = valid_inputs
+    harness.process.read_line.side_effect = [accepted("1"), None] if accept_before_eof else [None]
+
+    with pytest.raises(RuntimeError, match="closed before accepting or completing run IDs: 1"), harness.manager:
+        harness.manager.wait(harness.manager.add(deck, config))
+
+    harness.process.shutdown.assert_called_once_with()
+    harness.display.close.assert_called_once_with()
+    assert harness.process.read_line.call_count == (2 if accept_before_eof else 1)
+
+
+def test_repeated_shutdown_and_context_cleanup_do_not_touch_reaped_queue(harness: Harness) -> None:
+    """Manual shutdown and context cleanup share one cleanup attempt."""
+    with harness.manager:
+        harness.manager.shutdown()
         harness.manager.shutdown()
 
-    assert harness.process.method_calls == [call.close(), call.read_line(), call.wait()]
-    assert list(harness.manager._active) == ["1"]
+    harness.manager.shutdown()
+
+    assert harness.process.method_calls == [call.shutdown()]
+    assert harness.display.method_calls == [call.close()]
+
+
+def test_shutdown_rejects_operations_before_terminating_process(
+    harness: Harness,
+    valid_inputs: tuple[Path, SimulationConfig],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """All operation guards take effect before process cleanup can fail or interrupt."""
+    deck, config = valid_inputs
+    path_validation = Mock(return_value=False)
+    config_validation = Mock()
+    monkeypatch.setattr(Path, "is_file", path_validation)
+    monkeypatch.setattr(SimulationConfig, "validate", config_validation)
+
+    def on_shutdown() -> None:
+        with pytest.raises(RuntimeError, match="shutdown"):
+            harness.manager.add(deck, config)
+        with pytest.raises(RuntimeError, match="shutdown"):
+            harness.manager.__enter__()
+        with pytest.raises(RuntimeError, match="shutdown"):
+            harness.manager.wait()
+        with pytest.raises(RuntimeError, match="shutdown"):
+            _ = list(harness.manager.follow())
+
+    harness.process.shutdown.side_effect = on_shutdown
+    harness.manager.shutdown()
+
+    path_validation.assert_not_called()
+    config_validation.assert_not_called()
+    assert harness.process.method_calls == [call.shutdown()]
+
+
+@pytest.mark.parametrize(
+    ("failure_point", "error_type"),
+    [
+        ("clean", None),
+        ("process", OSError),
+        ("process", KeyboardInterrupt),
+        ("display", RuntimeError),
+        ("display", KeyboardInterrupt),
+    ],
+)
+def test_shutdown_is_one_shot_and_rejects_operations_even_after_failure(
+    harness: Harness,
+    valid_inputs: tuple[Path, SimulationConfig],
+    failure_point: str,
+    error_type: type[BaseException] | None,
+) -> None:
+    """Closure is permanent and later cleanup does nothing, regardless of failure."""
+    deck, config = valid_inputs
+    harness.process.read_line.side_effect = [accepted("1")]
+    simulation = harness.manager.add(deck, config)
+    harness.process.reset_mock()
+
+    def assert_operations_rejected() -> None:
+        for path in (deck, deck.with_name("missing.dck")):
+            with pytest.raises(RuntimeError, match="shutdown"):
+                harness.manager.add(path, config)
+        with pytest.raises(RuntimeError, match="shutdown"):
+            harness.manager.__enter__()
+        for target in (None, simulation):
+            with pytest.raises(RuntimeError, match="shutdown"):
+                harness.manager.wait(target)
+            with pytest.raises(RuntimeError, match="shutdown"):
+                _ = list(harness.manager.follow(target))
+
+    harness.display.reset_mock()
+    lifecycle = Mock()
+    lifecycle.attach_mock(harness.process.shutdown, "shutdown_process")
+    lifecycle.attach_mock(harness.display.close, "close_display")
+    shutdown_error = error_type("shutdown interrupted") if error_type is not None else None
+    if failure_point == "process":
+        harness.process.shutdown.side_effect = shutdown_error
+    elif failure_point == "display":
+        harness.display.close.side_effect = shutdown_error
+
+    with harness.manager:
+        if error_type is None:
+            harness.manager.shutdown()
+        else:
+            with pytest.raises(error_type) as raised:
+                harness.manager.shutdown()
+            assert raised.value is shutdown_error
+        harness.manager.shutdown()
+    harness.manager.shutdown()
+    assert_operations_rejected()
+
+    assert lifecycle.method_calls == [call.shutdown_process(), call.close_display()]
+    harness.process.read_line.assert_not_called()
+    harness.process.send.assert_not_called()
+    assert harness.manager.simulations == [simulation]
+    assert not simulation.is_finished
+    assert harness.manager.succeeded == []
+    assert harness.manager.failed == []
+
+
+def test_shutdown_does_not_accept_interrupted_submissions(
+    harness: Harness,
+    valid_inputs: tuple[Path, SimulationConfig],
+) -> None:
+    """Cleanup does not read pending acceptance or turn unaccepted runs into results."""
+    deck, config = valid_inputs
+    harness.process.read_line.side_effect = OSError("acceptance interrupted")
+    with pytest.raises(OSError, match="acceptance interrupted"):
+        harness.manager.add(deck, config)
+    simulation = harness.manager._active["1"]
+    harness.process.reset_mock()
+    harness.process.read_line.side_effect = [accepted("1"), completed("1"), None]
+
+    harness.manager.shutdown()
+
+    assert not simulation.is_accepted
+    assert not simulation.is_finished
+    assert harness.manager.simulations == []
+    assert harness.process.method_calls == [call.shutdown()]
+    assert harness.display.method_calls == [call.close()]
+
+
+@pytest.mark.parametrize("targeted", [False, True])
+def test_paused_follow_rejects_resume_after_shutdown_with_unfinished_runs(
+    harness: Harness,
+    valid_inputs: tuple[Path, SimulationConfig],
+    *,
+    targeted: bool,
+) -> None:
+    """An iterator already past its entry check cannot read again after shutdown."""
+    deck, config = valid_inputs
+    harness.process.read_line.side_effect = [accepted("1"), stream("1", "STATUS", status="RUNNING")]
+    simulation = harness.manager.add(deck, config)
+    updates = harness.manager.follow(simulation if targeted else None)
+    assert next(updates) is simulation
+    harness.process.reset_mock()
+    harness.process.read_line.side_effect = [completed("1"), None]
+
+    harness.manager.shutdown()
+    with pytest.raises(RuntimeError, match="shutdown"):
+        next(updates)
+
+    assert not simulation.is_finished
+    assert simulation.status == StatusEvent("RUNNING", TIMESTAMP)
+    assert harness.process.method_calls == [call.shutdown()]
+
+
+@pytest.mark.parametrize("error_type", [RuntimeError, KeyboardInterrupt])
+def test_context_cleanup_preserves_body_exception_without_waiting(
+    harness: Harness,
+    valid_inputs: tuple[Path, SimulationConfig],
+    error_type: type[BaseException],
+) -> None:
+    """An exception or interrupt kills active work without waiting or masking the error."""
+    deck, config = valid_inputs
+    harness.process.read_line.side_effect = [accepted("1"), completed("1")]
+    body_error = error_type("body failed")
+    simulation = harness.manager.add(deck, config)
+    harness.process.reset_mock()
+
+    with pytest.raises(error_type) as raised, harness.manager:
+        raise body_error
+
+    assert raised.value is body_error
+    assert not simulation.is_finished
+    assert harness.process.method_calls == [call.shutdown()]
+    harness.display.close.assert_called_once_with()
+
+
+def test_context_cleanup_after_display_error_stops_without_more_callbacks(
+    harness: Harness,
+    valid_inputs: tuple[Path, SimulationConfig],
+) -> None:
+    """A display failure escapes while cleanup still kills the queue and closes display."""
+    deck, config = valid_inputs
+    harness.process.read_line.side_effect = [accepted("1"), completed("1")]
+    display_error = RuntimeError("display failed")
+    harness.display.simulation_started.side_effect = display_error
+
+    with pytest.raises(RuntimeError) as raised, harness.manager:
+        harness.manager.add(deck, config)
+
+    assert raised.value is display_error
+    assert not harness.manager.simulations[0].is_finished
+    assert harness.process.read_line.call_count == 1
+    harness.process.shutdown.assert_called_once_with()
+    harness.display.close.assert_called_once_with()
+    harness.display.simulation_finished.assert_not_called()
 
 
 def test_context_manager_returns_itself_and_shuts_down(harness: Harness) -> None:
-    """Leaving a manager context performs the normal empty drain."""
-    harness.process.read_line.return_value = None
-
+    """Leaving an idle manager context closes resources without reading queue output."""
     with harness.manager as entered:
         assert entered is harness.manager
 
-    harness.process.close.assert_called_once_with()
-    harness.process.wait.assert_called_once_with()
+    assert harness.process.method_calls == [call.shutdown()]
+    harness.display.close.assert_called_once_with()
+
+
+def test_context_exit_without_wait_leaves_simulation_unfinished(
+    harness: Harness,
+    valid_inputs: tuple[Path, SimulationConfig],
+) -> None:
+    """A normal context exit does not implicitly finish accepted work."""
+    deck, config = valid_inputs
+    harness.process.read_line.side_effect = [accepted("1"), completed("1")]
+
+    with harness.manager:
+        simulation = harness.manager.add(deck, config)
+        harness.process.reset_mock()
+
+    assert not simulation.is_finished
+    assert harness.process.method_calls == [call.shutdown()]
+    harness.display.close.assert_called_once_with()

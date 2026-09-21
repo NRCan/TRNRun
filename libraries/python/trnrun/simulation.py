@@ -53,15 +53,15 @@ class Simulation:
         self._logs: deque[LogEvent] = deque(maxlen=max_log_events)
         self._severity_counts: Counter[str] = Counter()
 
-    def apply_event(self, event: TrnRunEvent) -> None:
-        """Fold one runner event into the simulation state.
+    def apply_event(self, event: TrnRunEvent) -> bool:
+        """Apply one runner or queue event, returning whether it was applied.
 
-        Queue lifecycle events share the ``TrnRunEvent`` union but carry no
-        runner state; the manager routes them to ``mark_accepted`` and
-        ``mark_completed`` instead.
+        Duplicate acceptance, unrecognized queue events, and all events after
+        completion return False without changing state. Queue completion records
+        metadata; success still depends on the runner's terminal status.
         """
         if self.is_finished:
-            return
+            return False
 
         match event:
             case StatusEvent():
@@ -75,8 +75,14 @@ class Simulation:
             case LogEvent():
                 self._logs.append(event)
                 self._severity_counts[event.severity.lower()] += 1
+            case QueueEvent(event="ACCEPTED") if not self.is_accepted:
+                self.mark_accepted()
+            case QueueEvent(event="COMPLETED"):
+                self.mark_completed(event)
             case QueueEvent():
-                return
+                return False
+
+        return True
 
     def mark_accepted(self) -> None:
         """Record that a queue worker picked the simulation up."""

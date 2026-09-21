@@ -85,7 +85,7 @@ def test_apply_event_folds_latest_runner_state(config: SimulationConfig) -> None
     setting = make_setting(severity="Warning")
 
     for event in (old_status, old_progress, old_config, old_setting, status, progress, config_event, setting):
-        simulation.apply_event(event)
+        assert simulation.apply_event(event)
 
     assert simulation.status is status
     assert simulation.progress is progress
@@ -94,21 +94,56 @@ def test_apply_event_folds_latest_runner_state(config: SimulationConfig) -> None
     assert simulation.is_running
 
 
-def test_queue_events_are_not_folded_as_runner_state(config: SimulationConfig) -> None:
-    """Queue lifecycle events only affect state through explicit markers."""
+def test_apply_event_handles_queue_lifecycle(config: SimulationConfig) -> None:
+    """Lifecycle events update state once without synthesizing runner status."""
     simulation = Simulation("deck.dck", config, sim_id=7)
     accepted = QueueEvent(event="ACCEPTED", run_id="7", timestamp=TIMESTAMP)
+    completed = completion()
 
-    simulation.apply_event(accepted)
-
-    assert not simulation.is_accepted
+    assert simulation.apply_event(accepted)
+    assert simulation.is_accepted
     assert not simulation.is_finished
     assert simulation.completion_event is None
+    assert not simulation.apply_event(accepted)
+
+    assert simulation.apply_event(completed)
+    assert simulation.is_accepted
+    assert simulation.is_finished
+    assert simulation.completion_event is completed
+    assert simulation.status is None
+    assert not simulation.succeeded
+    assert not simulation.apply_event(completion(exit_code=9))
+    assert simulation.completion_event is completed
+
+
+@pytest.mark.parametrize("is_accepted", [False, True])
+def test_apply_event_ignores_unknown_queue_events(config: SimulationConfig, *, is_accepted: bool) -> None:
+    """Unrecognized queue events are ignored before and after acceptance."""
+    simulation = Simulation("deck.dck", config, sim_id=7)
+    if is_accepted:
+        assert simulation.apply_event(QueueEvent(event="ACCEPTED", run_id="7", timestamp=TIMESTAMP))
+
+    assert not simulation.apply_event(QueueEvent(event="ENQUEUED", run_id="7", timestamp=TIMESTAMP))
+
+    assert simulation.is_accepted is is_accepted
+    assert not simulation.is_finished
+    assert simulation.completion_event is None
+    assert simulation.status is None
+
+
+def test_explicit_lifecycle_markers_remain_supported(config: SimulationConfig) -> None:
+    """Existing direct state-update methods still preserve first completion."""
+    simulation = Simulation("deck.dck", config, sim_id=7)
+    completed = completion()
 
     simulation.mark_accepted()
     simulation.mark_accepted()
+    simulation.mark_completed(completed)
+    simulation.mark_completed(completion(exit_code=9))
 
     assert simulation.is_accepted
+    assert simulation.is_finished
+    assert simulation.completion_event is completed
 
 
 def test_log_history_is_bounded_but_counts_include_evictions(config: SimulationConfig) -> None:
@@ -122,7 +157,7 @@ def test_log_history_is_bounded_but_counts_include_evictions(config: SimulationC
     ]
 
     for event in logs:
-        simulation.apply_event(event)
+        assert simulation.apply_event(event)
 
     snapshot = simulation.logs
     snapshot.clear()
@@ -138,7 +173,7 @@ def test_zero_log_capacity_retains_nothing_but_still_counts(config: SimulationCo
     """A zero-sized history drops every log without dropping metrics."""
     simulation = Simulation("deck.dck", config, sim_id=7, max_log_events=0)
 
-    simulation.apply_event(LogEvent("Notice", TIMESTAMP))
+    assert simulation.apply_event(LogEvent("Notice", TIMESTAMP))
 
     assert simulation.logs == []
     assert simulation.log_count == 1
@@ -174,14 +209,15 @@ def test_completed_result_classification(
     """Completion and exact runner status jointly determine the outcome."""
     simulation = Simulation("deck.dck", config, sim_id=7)
     if status is not None:
-        simulation.apply_event(StatusEvent(status, TIMESTAMP))
+        assert simulation.apply_event(StatusEvent(status, TIMESTAMP))
 
     assert simulation.has_terminal_status is terminal
     assert not simulation.succeeded
 
     event = completion(exit_code=9 if status == "DONE" else 0)
-    simulation.mark_completed(event)
+    assert simulation.apply_event(event)
 
+    assert not simulation.is_accepted
     assert simulation.completion_event is event
     assert simulation.is_finished
     assert not simulation.is_running
@@ -189,18 +225,37 @@ def test_completed_result_classification(
     assert simulation.succeeded is succeeded
 
 
-def test_completion_freezes_state_and_first_completion_metadata(config: SimulationConfig) -> None:
-    """No runner event or duplicate completion mutates a finished simulation."""
+@pytest.mark.parametrize("is_accepted", [False, True])
+def test_completion_freezes_state_and_first_completion_metadata(
+    config: SimulationConfig,
+    *,
+    is_accepted: bool,
+) -> None:
+    """No runner or queue event mutates a finished simulation."""
     simulation = Simulation("deck.dck", config, sim_id=7)
+    accepted = QueueEvent(event="ACCEPTED", run_id="7", timestamp=TIMESTAMP)
     running = StatusEvent("RUNNING", TIMESTAMP)
     first_completion = completion(exit_code=None)
-    simulation.apply_event(running)
-    simulation.mark_completed(first_completion)
+    if is_accepted:
+        assert simulation.apply_event(accepted)
+    assert simulation.apply_event(running)
+    assert simulation.apply_event(first_completion)
 
-    simulation.apply_event(StatusEvent("DONE", TIMESTAMP))
-    simulation.apply_event(LogEvent("Fatal", TIMESTAMP))
-    simulation.mark_completed(completion(exit_code=0))
+    for event in (
+        StatusEvent("DONE", TIMESTAMP),
+        LogEvent("Fatal", TIMESTAMP),
+        ConfigEvent(0.0, 10.0, 1.0, TIMESTAMP),
+        ProgressEvent(5.0, 0.5, 500.0, 500.0, TIMESTAMP),
+        make_setting(),
+        accepted,
+        completion(exit_code=0),
+    ):
+        assert not simulation.apply_event(event)
 
+    assert simulation.is_accepted is is_accepted
+    assert simulation.config_event is None
+    assert simulation.progress is None
+    assert simulation.setting_event is None
     assert simulation.status is running
     assert simulation.logs == []
     assert simulation.log_count == 0

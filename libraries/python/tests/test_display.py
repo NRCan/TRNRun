@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import builtins
+import sys
+from copy import deepcopy
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from io import StringIO
@@ -119,14 +121,21 @@ def test_display_rejects_nonpositive_refresh_intervals(refresh_interval: float) 
         Display(refresh_interval)
 
 
-def test_null_display_ignores_all_notifications() -> None:
+def test_null_display_ignores_all_notifications(capsys: pytest.CaptureFixture[str]) -> None:
     """The headless display accepts the complete manager callback surface."""
     display = NullDisplay()
     simulation = make_simulation()
+    state = deepcopy(vars(simulation))
 
     assert display.simulation_started(simulation) is None
     assert display.refresh() is None
     assert display.simulation_finished(simulation) is None
+    assert display.close() is None
+    assert display.close() is None
+
+    assert vars(simulation) == state
+    captured = capsys.readouterr()
+    assert captured.out == captured.err == ""
 
 
 def test_starting_simulations_creates_and_starts_one_live_region(
@@ -174,13 +183,82 @@ def test_finishing_prints_each_result_and_stops_live_after_last_simulation(
     live.stop.assert_not_called()
 
     display.simulation_finished(second)
+    display.close()
+    display.close()
 
     assert display._active == {}
     assert display._live is None
-    assert console.print.call_args_list[0].args == (rendered_first,)
-    assert console.print.call_args_list[1].args == (rendered_second,)
+    assert console.print.call_args_list == [call(rendered_first), call(rendered_second)]
     assert render_line.call_args_list == [call(first), call(second)]
     live.stop.assert_called_once_with()
+
+
+def test_close_stops_live_once_without_completing_simulations(
+    display_and_console: tuple[Display, Mock],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Early cleanup releases tracking, not simulation state or final results."""
+    display, console = display_and_console
+    live = Mock(spec=Live)
+    make_live = Mock(return_value=live)
+    monkeypatch.setattr(display, "_make_live", make_live)
+    finished = Mock()
+    monkeypatch.setattr(display, "simulation_finished", finished)
+
+    display.close()
+    display.close()
+    make_live.assert_not_called()
+    live.stop.assert_not_called()
+
+    first = make_simulation(1)
+    second = make_simulation(2)
+    first.mark_accepted()
+    first.apply_event(StatusEvent("RUNNING", TIMESTAMP))
+    first.apply_event(ProgressEvent(100.0, 0.25, 500.0, 1_500.0, TIMESTAMP))
+    display.simulation_started(first)
+    display.simulation_started(second)
+    states = [deepcopy(vars(simulation)) for simulation in (first, second)]
+
+    display.close()
+    display.close()
+    display.refresh()
+
+    live.stop.assert_called_once_with()
+    live.refresh.assert_not_called()
+    finished.assert_not_called()
+    console.print.assert_not_called()
+    assert display._live is None
+    assert display._active == {}
+    assert [vars(simulation) for simulation in (first, second)] == states
+
+
+def test_close_restores_rich_output_redirection_and_cursor() -> None:
+    """Stopping a real transient Live restores terminal resources without results."""
+    output = StringIO()
+    display = Display()
+    display.console = Console(file=output, force_terminal=True, force_jupyter=False, width=240)
+    simulation = make_simulation()
+    stdout, stderr = sys.stdout, sys.stderr
+
+    try:
+        display.simulation_started(simulation)
+        live = display._live
+        assert live is not None
+        assert live.is_started
+        assert sys.stdout is not stdout
+        assert sys.stderr is not stderr
+        display.refresh()
+        before_close = len(output.getvalue())
+    finally:
+        display.close()
+
+    assert not live.is_started
+    assert sys.stdout is stdout
+    assert sys.stderr is stderr
+    cleanup_output = output.getvalue()[before_close:]
+    assert "\x1b[?25h" in cleanup_output
+    assert "Status:" not in cleanup_output
+    assert str(simulation.deck_path) not in cleanup_output
 
 
 def test_refresh_is_noop_without_live_region(
@@ -350,6 +428,45 @@ def test_nonpositive_interval_selects_null_display(monkeypatch: pytest.MonkeyPat
     detect_kernel.assert_not_called()
     notebook_factory.assert_not_called()
     terminal_factory.assert_not_called()
+
+
+def test_notebook_close_releases_tracking_without_publishing_or_completing(
+    notebook_api: tuple[Mock, list[FakeDisplayHandle]],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Notebook cleanup leaves the last frame and simulation state untouched."""
+    display_html, handles = notebook_api
+    display = NotebookDisplay()
+    display.close()
+    display.close()
+    display_html.assert_not_called()
+
+    simulation = make_simulation()
+    simulation.mark_accepted()
+    simulation.apply_event(StatusEvent("RUNNING", TIMESTAMP))
+    simulation.apply_event(ProgressEvent(100.0, 0.25, 500.0, 1_500.0, TIMESTAMP))
+    display.simulation_started(simulation)
+    state = deepcopy(vars(simulation))
+    handle = handles[0]
+    frame = handle.html
+    finished = Mock()
+    monkeypatch.setattr(display, "simulation_finished", finished)
+
+    display.close()
+    display.close()
+    display.refresh()
+
+    assert display._active == {}
+    assert display._handle is None
+    assert display._last_html is None
+    assert vars(simulation) == state
+    assert handle.html is frame
+    assert handle.updates == []
+    display_html.assert_called_once()
+    finished.assert_not_called()
+    captured = capsys.readouterr()
+    assert captured.out == captured.err == ""
 
 
 def test_notebook_display_throttles_progress_but_updates_lifecycle_promptly(

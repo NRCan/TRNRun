@@ -71,21 +71,6 @@ internal sealed class QueueProcess : IDisposable
         return _process.ExitCode;
     }
 
-    /// <summary>Terminates the process tree and reaps the queue when stdout cannot be drained.</summary>
-    internal void Abort()
-    {
-        try
-        {
-            _process.Kill(entireProcessTree: true);
-        }
-        catch (InvalidOperationException) when (_process.HasExited)
-        {
-            // The queue may have exited between the read failure and emergency cleanup.
-        }
-
-        _process.WaitForExit();
-    }
-
     /// <summary>Releases pipes, the process handle, and the Job Object without waiting for exit.</summary>
     public void Dispose()
     {

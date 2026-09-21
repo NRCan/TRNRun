@@ -214,8 +214,9 @@ config = SimulationConfig(
 
 `SimulationManager` owns one queue process and controls how simulations are
 submitted, monitored, and displayed. It is synchronous and intended for use
-from one thread. Simulation state advances only while `add()`, `wait()`,
-`follow()`, or `shutdown()` reads queue output.
+from one thread. Simulation state advances only while `add()`, `wait()`, or
+`follow()` reads queue output. Call `wait()` before leaving a `with` block to
+finish simulations; context cleanup kills any remaining work.
 
 ### Parameters
 
@@ -268,26 +269,43 @@ with SimulationManager(
 
   Validate and submit `deck_file` using a copy of `config`. Blocks until a queue
   worker accepts the request and returns its `Simulation`. If every worker is
-  occupied, this may not return until an earlier simulation finishes.
+  occupied, this may not return until an earlier simulation finishes. Raises
+  `RuntimeError` if shutdown has started, even if cleanup has not yet finished.
 
 - _`wait(simulation: Simulation | None = None) -> None`_
 
   With no argument, process events until every accepted simulation completes.
   Pass a manager-owned `Simulation` to return when that run completes while
   continuing to process updates from other runs. There is no client-side
-  timeout.
+  timeout. Raises `RuntimeError` if shutdown has started.
 
 - _`follow(simulation: Simulation | None = None) -> Iterator[Simulation]`_
 
   With no argument, yield the affected `Simulation` after every newly processed
   event until all runs complete. Pass a manager-owned `Simulation` to yield only
   that run's updates and return when it completes. Events for other runs are
-  still processed, and previously consumed events are not replayed.
+  still processed, and previously consumed events are not replayed. Iterating
+  after shutdown starts raises `RuntimeError`, including when resuming a paused
+  iterator that would need to read more events.
 
 - _`shutdown() -> None`_
 
-  Close queue input, finish accepted work, and reap the queue process. Called
-  automatically when leaving a `with` block.
+  Kill and reap the queue process, close its pipes, and release the display.
+  Called automatically when leaving a `with` block, including on exceptions.
+  The bundled queue's Windows Job Object also terminates its descendants;
+  custom queue executables must provide equivalent child-process cleanup.
+
+  Call `wait()` first to finish simulations and collect their results, or fully
+  consume `follow()`. Shutdown does not read remaining events or synthesize
+  completion results: simulations retain their last observed state, including
+  unfinished runs. It waits only for process termination, not for simulations
+  to finish naturally.
+
+  The manager is permanently closed when shutdown starts. Subsequent calls do
+  nothing, even if cleanup failed or was interrupted. New submissions, `wait()`,
+  `follow()`, and context re-entry are rejected; recorded results remain
+  accessible. Display callback errors during `add()`, `wait()`, or `follow()`
+  propagate immediately.
 
 Example manager workflow with every method and property:
 

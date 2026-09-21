@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock, call
@@ -150,38 +151,84 @@ def test_read_line_returns_lines_and_none_at_eof(raw_line: str, expected: str | 
     assert queue.read_line() == expected
 
 
-def test_close_closes_standard_input() -> None:
-    """Closing the wrapper should close queue input."""
-    queue = _queue_without_init()
-    queue._stdin = MagicMock()
-
-    queue.close()
-
-    queue._stdin.close.assert_called_once_with()
-
-
-def test_close_suppresses_pipe_oserror() -> None:
-    """An already-broken input pipe should not make close fail."""
-    queue = _queue_without_init()
-    queue._stdin = MagicMock()
-    queue._stdin.close.side_effect = OSError("broken pipe")
-
-    queue.close()
-
-    queue._stdin.close.assert_called_once_with()
-
-
-def test_wait_uses_process_context_and_returns_exit_code() -> None:
-    """Waiting should delegate to Popen and leave pipe cleanup to its context manager."""
+def test_shutdown_kills_before_waiting_and_closing_pipes() -> None:
+    """Shutdown must not wait for or drain a queue that could have full stdout."""
     queue = _queue_without_init()
     child = MagicMock()
     child.wait.return_value = 7
     queue._process = child
+    queue._stdin = child.stdin
+    queue._stdout = child.stdout
 
-    assert queue.wait() == 7
-    child.__enter__.assert_called_once_with()
-    child.wait.assert_called_once_with()
-    child.__exit__.assert_called_once_with(None, None, None)
+    assert queue.shutdown() is None
+
+    assert child.mock_calls == [call.kill(), call.wait(), call.stdin.close(), call.stdout.close()]
+
+
+@pytest.mark.parametrize("exit_code", [0, 7])
+def test_shutdown_handles_already_exited_process(exit_code: int) -> None:
+    """An exited child still needs pipe cleanup, regardless of its exit code."""
+    with subprocess.Popen(
+        [sys.executable, "-c", f"raise SystemExit({exit_code})"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+    ) as child:
+        assert child.stdin is not None
+        assert child.stdout is not None
+        queue = _queue_without_init()
+        queue._process = child
+        queue._stdin = child.stdin
+        queue._stdout = child.stdout
+        assert child.wait(timeout=10) == exit_code
+
+        assert queue.shutdown() is None
+
+        assert child.returncode == exit_code
+        assert child.stdin.closed
+        assert child.stdout.closed
+
+
+@pytest.mark.parametrize("pipe_name", ["stdin", "stdout"])
+def test_shutdown_suppresses_pipe_oserror(pipe_name: str) -> None:
+    """A broken pipe should not prevent reaping or closing the other pipe."""
+    queue = _queue_without_init()
+    child = MagicMock()
+    queue._process = child
+    queue._stdin = child.stdin
+    queue._stdout = child.stdout
+    getattr(child, pipe_name).close.side_effect = BrokenPipeError("broken pipe")
+
+    assert queue.shutdown() is None
+
+    assert child.mock_calls == [call.kill(), call.wait(), call.stdin.close(), call.stdout.close()]
+
+
+@pytest.mark.parametrize("operation", ["kill", "wait"])
+@pytest.mark.parametrize("error_type", [OSError, KeyboardInterrupt])
+def test_shutdown_closes_pipes_after_process_error(
+    operation: str,
+    error_type: type[BaseException],
+) -> None:
+    """Process failures and interruptions should propagate after pipe cleanup."""
+    queue = _queue_without_init()
+    child = MagicMock()
+    queue._process = child
+    queue._stdin = child.stdin
+    queue._stdout = child.stdout
+    error = error_type("process interrupted")
+    getattr(child, operation).side_effect = error
+    child.stdin.close.side_effect = BrokenPipeError("broken pipe")
+
+    with pytest.raises(error_type) as raised:
+        queue.shutdown()
+
+    assert raised.value is error
+    expected = [call.kill()]
+    if operation == "wait":
+        expected.append(call.wait())
+    assert child.mock_calls == [*expected, call.stdin.close(), call.stdout.close()]
 
 
 def test_require_stream_returns_available_stream() -> None:
