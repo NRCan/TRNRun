@@ -171,16 +171,8 @@ public sealed record SimulationConfig
         }
     }
 
-<<<<<<< HEAD
     /// <summary>Formats a GUI visibility as its native CLI keyword.</summary>
     private static string ToGuiVisibility(GuiVisibility value, string paramName) => value switch
-=======
-    /// <summary>Converts GUI visibility to its native value.</summary>
-    private static string ToCliValue(
-        GuiVisibility value,
-        [CallerArgumentExpression(nameof(value))] string? paramName = null
-    ) => value switch
->>>>>>> ca8acfadef06eb4112b9effb7bab438856a0fdc8
     {
         GuiVisibility.KeepOpen => "keepOpen",
         GuiVisibility.AutoClose => "autoClose",
@@ -190,16 +182,8 @@ public sealed record SimulationConfig
         _ => throw new ArgumentOutOfRangeException(paramName, value, "Unknown GUI visibility."),
     };
 
-<<<<<<< HEAD
     /// <summary>Formats a log severity as its native CLI keyword.</summary>
     private static string ToSeverity(LogSeverity value, string paramName) => value switch
-=======
-    /// <summary>Converts log severity to its native value.</summary>
-    private static string ToCliValue(
-        LogSeverity value,
-        [CallerArgumentExpression(nameof(value))] string? paramName = null
-    ) => value switch
->>>>>>> ca8acfadef06eb4112b9effb7bab438856a0fdc8
     {
         LogSeverity.Notice => "Notice",
         LogSeverity.Warning => "Warning",

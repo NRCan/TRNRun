@@ -4,7 +4,6 @@ namespace TRNRun.Internal;
 
 internal static class EventParser
 {
-<<<<<<< HEAD
     /// <summary>Parses one queue output line into a typed event.</summary>
     /// <param name="line">One line from queue standard output.</param>
     /// <returns>
@@ -15,9 +14,6 @@ internal static class EventParser
     /// A routed event has an unknown kind or a missing or invalid field.
     /// </exception>
     /// <remarks>Kind matching is case-insensitive; native status, severity, and timestamp strings are preserved.</remarks>
-=======
-    /// <summary>Parses one queue output line into an event.</summary>
->>>>>>> ca8acfadef06eb4112b9effb7bab438856a0fdc8
     internal static TrnRunEvent? Parse(string line)
     {
         if (string.IsNullOrWhiteSpace(line))
@@ -153,7 +149,6 @@ internal static class EventParser
             ExitCode: OptionalInt32(data, "exitCode")
         );
 
-<<<<<<< HEAD
     /// <summary>Requires a field of the given JSON kind.</summary>
     private static JsonElement Require(
         JsonElement data,
@@ -161,10 +156,6 @@ internal static class EventParser
         JsonValueKind kind,
         string expected
     ) =>
-=======
-    /// <summary>Gets a required field of the specified JSON kind.</summary>
-    private static JsonElement Require(JsonElement data, string name, JsonValueKind kind, string expected) =>
->>>>>>> ca8acfadef06eb4112b9effb7bab438856a0fdc8
         data.TryGetProperty(name, out JsonElement value) && value.ValueKind == kind
             ? value
             : throw Invalid(name, expected);
@@ -233,19 +224,7 @@ internal static class EventParser
                 : throw Invalid(name, Expected);
     }
 
-<<<<<<< HEAD
     /// <summary>Reads a string, or null for an absent or JSON-null field.</summary>
-=======
-    /// <summary>Creates an exception for an invalid field.</summary>
-    private static JsonException Invalid(string name, string expected) =>
-        new($"Field '{name}' must be {expected}.");
-
-    /// <summary>Checks whether a field is absent or null.</summary>
-    private static bool IsNullOrMissing(JsonElement data, string name) =>
-        !data.TryGetProperty(name, out JsonElement value) || value.ValueKind == JsonValueKind.Null;
-
-    /// <summary>Gets an optional JSON string.</summary>
->>>>>>> ca8acfadef06eb4112b9effb7bab438856a0fdc8
     private static string? OptionalString(JsonElement data, string name) =>
         IsNullOrMissing(data, name) ? null : RequireString(data, name);
 
