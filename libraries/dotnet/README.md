@@ -128,7 +128,7 @@ try
 {
     Simulation simulation = manager.Add(@"C:\decks\example.dck", config);
     manager.Wait(simulation);
-    Console.WriteLine($"{simulation.DeckPath}: {simulation.Status?.Status ?? "unknown"}");
+    Console.WriteLine($"{simulation.DeckPath}: {simulation.Status?.Status.ToString() ?? "unknown"}");
     Console.WriteLine($"Succeeded: {simulation.Succeeded}");
     foreach (var log in simulation.Logs)
     {
@@ -257,13 +257,13 @@ refresh property. Native polling is configured by `SimulationConfig.PollInterval
 | `Config` | Immutable configuration submitted for this run. |
 | `IsAccepted` | The queue has reported `QUEUE/ACCEPTED`. |
 | `IsFinished` | The queue has reported `QUEUE/COMPLETED`, not just a terminal status or 100% progress. |
-| `Succeeded` | Finished, with the latest native runner status exactly `DONE`. |
-| `Status` | Latest `StatusEvent`; its `Status` string preserves unknown native statuses. |
+| `Succeeded` | Finished, with the latest status equal to `SimulationStatus.Done`. |
+| `Status` | Latest `StatusEvent`, including its typed `SimulationStatus`. |
 | `Progress` | Latest progress event, if available; not a completion signal. |
 | `ConfigEvent`, `SettingEvent` | Latest native simulation bounds and effective runner settings. |
 | `CompletionEvent` | Native queue completion metadata, including its nullable `ExitCode`. |
-| `Logs` | Copy of the latest 5,000 native log entries, oldest first. |
-| `LogCount`, `Notices`, `Warnings`, `Fatals` | Cumulative received counts, including entries evicted from history. |
+| `Logs` | Copy of all received native log entries, oldest first. |
+| `LogCount`, `Notices`, `Warnings`, `Fatals` | Cumulative received counts. |
 
 A finished simulation that did not succeed appears in `manager.Failed`.
 Missing native status/progress/exit-code information is not synthesized.

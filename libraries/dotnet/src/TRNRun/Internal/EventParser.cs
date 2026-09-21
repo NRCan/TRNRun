@@ -2,9 +2,9 @@ using System.Text.Json;
 
 namespace TRNRun.Internal;
 
-/// <summary>Parses routed native JSON Lines events without modifying simulation state.</summary>
 internal static class EventParser
 {
+<<<<<<< HEAD
     /// <summary>Parses one queue output line into a typed event.</summary>
     /// <param name="line">One line from queue standard output.</param>
     /// <returns>
@@ -15,6 +15,9 @@ internal static class EventParser
     /// A routed event has an unknown kind or a missing or invalid field.
     /// </exception>
     /// <remarks>Kind matching is case-insensitive; native status, severity, and timestamp strings are preserved.</remarks>
+=======
+    /// <summary>Parses one queue output line into an event.</summary>
+>>>>>>> ca8acfadef06eb4112b9effb7bab438856a0fdc8
     internal static TrnRunEvent? Parse(string line)
     {
         if (string.IsNullOrWhiteSpace(line))
@@ -51,12 +54,12 @@ internal static class EventParser
         }
     }
 
-    /// <summary>Checks for a string-valued field.</summary>
+    /// <summary>Checks whether a field contains a JSON string.</summary>
     private static bool IsString(JsonElement data, string name) =>
         data.TryGetProperty(name, out JsonElement value)
         && value.ValueKind == JsonValueKind.String;
 
-    /// <summary>Dispatches by kind; unknown kinds and invalid fields throw.</summary>
+    /// <summary>Parses a routed event according to its kind.</summary>
     private static TrnRunEvent ParseRouted(JsonElement data)
     {
         string kind = RequireString(data, "kind").ToUpperInvariant();
@@ -73,16 +76,16 @@ internal static class EventParser
         };
     }
 
-    /// <summary>Parses status; a missing or null message becomes empty.</summary>
+    /// <summary>Parses a runner status event.</summary>
     private static StatusEvent ParseStatus(JsonElement data) =>
         new(
             RunId: RequireString(data, "runID"),
             Timestamp: RequireString(data, "timestamp"),
-            Status: RequireString(data, "status"),
+            Status: RequireStatus(data, "status"),
             Message: OptionalString(data, "message") ?? string.Empty
         );
 
-    /// <summary>Parses finite simulation progress and wall-clock timing.</summary>
+    /// <summary>Parses a simulation progress event.</summary>
     private static ProgressEvent ParseProgress(JsonElement data) =>
         new(
             RunId: RequireString(data, "runID"),
@@ -93,7 +96,7 @@ internal static class EventParser
             Eta: RequireDouble(data, "eta")
         );
 
-    /// <summary>Parses finite simulation bounds and time step.</summary>
+    /// <summary>Parses a simulation configuration event.</summary>
     private static ConfigEvent ParseConfig(JsonElement data) =>
         new(
             RunId: RequireString(data, "runID"),
@@ -103,7 +106,7 @@ internal static class EventParser
             Step: RequireDouble(data, "step")
         );
 
-    /// <summary>Parses settings as native strings and integer milliseconds.</summary>
+    /// <summary>Parses an effective runner settings event.</summary>
     private static SettingEvent ParseSetting(JsonElement data) =>
         new(
             RunId: RequireString(data, "runID"),
@@ -127,7 +130,7 @@ internal static class EventParser
             WriteEvents: RequireBoolean(data, "writeEvents")
         );
 
-    /// <summary>Parses a TRNSYS log entry; missing optional fields stay null.</summary>
+    /// <summary>Parses a TRNSYS log event.</summary>
     private static LogEvent ParseLog(JsonElement data) =>
         new(
             RunId: RequireString(data, "runID"),
@@ -141,7 +144,7 @@ internal static class EventParser
             Information: OptionalString(data, "information")
         );
 
-    /// <summary>Parses queue lifecycle status and an optional runner exit code.</summary>
+    /// <summary>Parses a queue lifecycle event.</summary>
     private static QueueEvent ParseQueue(JsonElement data) =>
         new(
             RunId: RequireString(data, "runID"),
@@ -150,6 +153,7 @@ internal static class EventParser
             ExitCode: OptionalInt32(data, "exitCode")
         );
 
+<<<<<<< HEAD
     /// <summary>Requires a field of the given JSON kind.</summary>
     private static JsonElement Require(
         JsonElement data,
@@ -157,22 +161,45 @@ internal static class EventParser
         JsonValueKind kind,
         string expected
     ) =>
+=======
+    /// <summary>Gets a required field of the specified JSON kind.</summary>
+    private static JsonElement Require(JsonElement data, string name, JsonValueKind kind, string expected) =>
+>>>>>>> ca8acfadef06eb4112b9effb7bab438856a0fdc8
         data.TryGetProperty(name, out JsonElement value) && value.ValueKind == kind
             ? value
             : throw Invalid(name, expected);
 
-    /// <summary>Reads a required JSON string without coercion.</summary>
+    /// <summary>Gets a required JSON string.</summary>
     private static string RequireString(JsonElement data, string name) =>
         Require(data, name, JsonValueKind.String, "a string").GetString()!;
 
-    /// <summary>Reads a required JSON Boolean without coercion.</summary>
+    /// <summary>Gets a required simulation status.</summary>
+    private static SimulationStatus RequireStatus(JsonElement data, string name)
+    {
+        string value = RequireString(data, name);
+
+        return value switch
+        {
+            "PENDING" => SimulationStatus.Pending,
+            "LAUNCHING" => SimulationStatus.Launching,
+            "RUNNING" => SimulationStatus.Running,
+            "DONE" => SimulationStatus.Done,
+            "CANCELLED" => SimulationStatus.Cancelled,
+            "ERROR" => SimulationStatus.Error,
+            "TIMEOUT" => SimulationStatus.Timeout,
+            "STALLED" => SimulationStatus.Stalled,
+            _ => throw new JsonException($"Unknown simulation status '{value}'."),
+        };
+    }
+
+    /// <summary>Gets a required JSON Boolean.</summary>
     private static bool RequireBoolean(JsonElement data, string name) =>
         data.TryGetProperty(name, out JsonElement value)
         && value.ValueKind is JsonValueKind.True or JsonValueKind.False
             ? value.GetBoolean()
             : throw Invalid(name, "a boolean");
 
-    /// <summary>Reads a required JSON number as a finite double.</summary>
+    /// <summary>Gets a required finite JSON number.</summary>
     private static double RequireDouble(JsonElement data, string name)
     {
         const string Expected = "a finite number";
@@ -184,7 +211,7 @@ internal static class EventParser
                 : throw Invalid(name, Expected);
     }
 
-    /// <summary>Reads a required 32-bit JSON integer.</summary>
+    /// <summary>Gets a required 32-bit JSON integer.</summary>
     private static int RequireInt32(JsonElement data, string name)
     {
         const string Expected = "a 32-bit integer";
@@ -195,7 +222,7 @@ internal static class EventParser
                 : throw Invalid(name, Expected);
     }
 
-    /// <summary>Reads a required 64-bit JSON integer.</summary>
+    /// <summary>Gets a required 64-bit JSON integer.</summary>
     private static long RequireInt64(JsonElement data, string name)
     {
         const string Expected = "a 64-bit integer";
@@ -206,19 +233,31 @@ internal static class EventParser
                 : throw Invalid(name, Expected);
     }
 
+<<<<<<< HEAD
     /// <summary>Reads a string, or null for an absent or JSON-null field.</summary>
+=======
+    /// <summary>Creates an exception for an invalid field.</summary>
+    private static JsonException Invalid(string name, string expected) =>
+        new($"Field '{name}' must be {expected}.");
+
+    /// <summary>Checks whether a field is absent or null.</summary>
+    private static bool IsNullOrMissing(JsonElement data, string name) =>
+        !data.TryGetProperty(name, out JsonElement value) || value.ValueKind == JsonValueKind.Null;
+
+    /// <summary>Gets an optional JSON string.</summary>
+>>>>>>> ca8acfadef06eb4112b9effb7bab438856a0fdc8
     private static string? OptionalString(JsonElement data, string name) =>
         IsNullOrMissing(data, name) ? null : RequireString(data, name);
 
-    /// <summary>Reads a finite double, or null for an absent or JSON-null field.</summary>
+    /// <summary>Gets an optional finite JSON number.</summary>
     private static double? OptionalDouble(JsonElement data, string name) =>
         IsNullOrMissing(data, name) ? null : RequireDouble(data, name);
 
-    /// <summary>Reads a 32-bit integer, or null for an absent or JSON-null field.</summary>
+    /// <summary>Gets an optional 32-bit JSON integer.</summary>
     private static int? OptionalInt32(JsonElement data, string name) =>
         IsNullOrMissing(data, name) ? null : RequireInt32(data, name);
 
-    /// <summary>Reads a 64-bit integer, or null for an absent or JSON-null field.</summary>
+    /// <summary>Gets an optional 64-bit JSON integer.</summary>
     private static long? OptionalInt64(JsonElement data, string name) =>
         IsNullOrMissing(data, name) ? null : RequireInt64(data, name);
 
