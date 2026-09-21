@@ -2,8 +2,10 @@ namespace TRNRun;
 
 /// <summary>Tracks state and events for one queued simulation.</summary>
 /// <remarks>
-/// State is updated synchronously by the owning manager and is not thread-safe.
-/// Queue completion, rather than terminal runner status, finishes the simulation.
+/// The owning manager folds queue output into this object as it reads, so callers observe
+/// updates live rather than through snapshots. State is updated synchronously on the
+/// manager's thread and is not thread-safe. Queue completion, rather than terminal runner
+/// status, finishes the simulation.
 /// </remarks>
 public sealed class Simulation
 {
@@ -19,6 +21,7 @@ public sealed class Simulation
         Id = id;
         DeckPath = deckPath;
         Config = config;
+        Logs = _logs.AsReadOnly();
     }
 
     /// <summary>Gets the case-sensitive queue request identifier.</summary>
@@ -73,20 +76,24 @@ public sealed class Simulation
     /// </remarks>
     public QueueEvent? CompletionEvent { get; private set; }
 
-    /// <summary>Gets a copy of all log events in oldest-first order.</summary>
-    public IReadOnlyList<LogEvent> Logs => _logs.ToArray();
+    /// <summary>Gets all retained log events, oldest first.</summary>
+    /// <remarks>
+    /// Logs are retained without limit. This is a live read-only view that grows as
+    /// events arrive; copy it to take a stable snapshot.
+    /// </remarks>
+    public IReadOnlyList<LogEvent> Logs { get; }
 
     /// <summary>Gets the total number of received log events.</summary>
-    public long LogCount { get; private set; }
+    public int LogCount => _logs.Count;
 
     /// <summary>Gets the number of notice events.</summary>
-    public long Notices { get; private set; }
+    public int Notices { get; private set; }
 
     /// <summary>Gets the number of warning events.</summary>
-    public long Warnings { get; private set; }
+    public int Warnings { get; private set; }
 
     /// <summary>Gets the number of fatal events.</summary>
-    public long Fatals { get; private set; }
+    public int Fatals { get; private set; }
 
     /// <summary>Records that a queue worker accepted the simulation.</summary>
     internal void MarkAccepted() => IsAccepted = true;
@@ -94,20 +101,16 @@ public sealed class Simulation
     /// <summary>Records queue completion for the simulation.</summary>
     internal void MarkCompleted(QueueEvent completion)
     {
-        ArgumentNullException.ThrowIfNull(completion);
-        if (IsFinished || !string.Equals(completion.RunId, Id, StringComparison.Ordinal))
+        if (Accepts(completion))
         {
-            return;
+            CompletionEvent = completion;
         }
-
-        CompletionEvent = completion;
     }
 
     /// <summary>Applies a routed runner event to the simulation state.</summary>
     internal void ApplyRunnerEvent(TrnRunEvent runEvent)
     {
-        ArgumentNullException.ThrowIfNull(runEvent);
-        if (IsFinished || !string.Equals(runEvent.RunId, Id, StringComparison.Ordinal))
+        if (!Accepts(runEvent))
         {
             return;
         }
@@ -131,29 +134,35 @@ public sealed class Simulation
                 break;
 
             case LogEvent log:
-                ApplyLog(log);
+                RecordLog(log);
                 break;
         }
     }
 
-    /// <summary>Retains a log event and updates severity counters.</summary>
-    private void ApplyLog(LogEvent log)
-    {
-        LogCount++;
+    /// <summary>Checks that an event belongs to this simulation and still applies to it.</summary>
+    /// <remarks>A misrouted event, or any event after queue completion, is ignored.</remarks>
+    private bool Accepts(TrnRunEvent runEvent) =>
+        !IsFinished && string.Equals(runEvent.RunId, Id, StringComparison.Ordinal);
 
-        if (string.Equals(log.Severity, "Notice", StringComparison.OrdinalIgnoreCase))
+    /// <summary>Retains a log event and updates the severity counters.</summary>
+    /// <remarks>
+    /// Unrecognized severities are counted by <see cref="LogCount"/> alone.
+    /// </remarks>
+    private void RecordLog(LogEvent log)
+    {
+        _logs.Add(log);
+
+        if (log.Severity.Equals("Notice", StringComparison.OrdinalIgnoreCase))
         {
             Notices++;
         }
-        else if (string.Equals(log.Severity, "Warning", StringComparison.OrdinalIgnoreCase))
+        else if (log.Severity.Equals("Warning", StringComparison.OrdinalIgnoreCase))
         {
             Warnings++;
         }
-        else if (string.Equals(log.Severity, "Fatal", StringComparison.OrdinalIgnoreCase))
+        else if (log.Severity.Equals("Fatal", StringComparison.OrdinalIgnoreCase))
         {
             Fatals++;
         }
-
-        _logs.Add(log);
     }
 }

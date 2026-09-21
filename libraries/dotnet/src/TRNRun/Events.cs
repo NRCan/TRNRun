@@ -1,5 +1,26 @@
 namespace TRNRun;
 
+/// <summary>Lifecycle states reported for a simulation.</summary>
+public enum SimulationStatus
+{
+    /// <summary>The run was validated and is waiting to launch.</summary>
+    Pending,
+    /// <summary>TRNSYS is starting and readiness detection is under way.</summary>
+    Launching,
+    /// <summary>TRNSYS is running and being monitored.</summary>
+    Running,
+    /// <summary>The simulation completed.</summary>
+    Done,
+    /// <summary>TRNSYS exited before the simulation completed.</summary>
+    Cancelled,
+    /// <summary>The run failed to launch, crashed, or logged a fatal error.</summary>
+    Error,
+    /// <summary>The run did not finish within its readiness or monitoring timeout.</summary>
+    Timeout,
+    /// <summary>Simulation time stopped advancing for too long.</summary>
+    Stalled,
+}
+
 /// <summary>Base type for native events from one simulation.</summary>
 public abstract record TrnRunEvent(string RunId, string Timestamp);
 

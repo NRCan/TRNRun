@@ -128,7 +128,11 @@ public sealed class SimulationManager
             _active.Add(id, simulation);
             try
             {
-                _queue.Send(id, fullDeckPath, runnerPath, arguments);
+                _queue.Send(new QueueRequest(
+                    RunId: id,
+                    DeckFile: fullDeckPath,
+                    RunnerPath: runnerPath,
+                    RunnerArgs: arguments));
             }
             catch (IOException error)
             {
@@ -281,7 +285,7 @@ public sealed class SimulationManager
         {
             try
             {
-                _queue.Release();
+                _queue.Dispose();
             }
             finally
             {
