@@ -127,6 +127,7 @@ def test_null_display_ignores_all_notifications() -> None:
     assert display.simulation_started(simulation) is None
     assert display.refresh() is None
     assert display.simulation_finished(simulation) is None
+    assert display.close() is None
 
 
 def test_starting_simulations_creates_and_starts_one_live_region(
@@ -181,6 +182,27 @@ def test_finishing_prints_each_result_and_stops_live_after_last_simulation(
     assert console.print.call_args_list[1].args == (rendered_second,)
     assert render_line.call_args_list == [call(first), call(second)]
     live.stop.assert_called_once_with()
+
+
+def test_close_stops_live_region_without_printing_or_finishing(
+    display_and_console: tuple[Display, Mock],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Aborting a terminal display drops active rows without final output."""
+    display, console = display_and_console
+    live = Mock(spec=Live)
+    monkeypatch.setattr(display, "_make_live", Mock(return_value=live))
+    simulation = make_simulation()
+    display.simulation_started(simulation)
+
+    display.close()
+    display.close()
+
+    assert display._active == {}
+    assert display._live is None
+    assert simulation.is_running
+    live.stop.assert_called_once_with()
+    console.print.assert_not_called()
 
 
 def test_refresh_is_noop_without_live_region(
@@ -365,6 +387,32 @@ def test_nonpositive_interval_selects_null_display(monkeypatch: pytest.MonkeyPat
     detect_kernel.assert_not_called()
     notebook_factory.assert_not_called()
     terminal_factory.assert_not_called()
+
+
+def test_notebook_close_releases_handle_without_publishing_or_finishing(
+    notebook_api: tuple[Mock, list[FakeDisplayHandle]],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Shutdown releases tracking without manufacturing a completed result."""
+    display_html, handles = notebook_api
+    display = NotebookDisplay()
+    simulation = make_simulation()
+    display.simulation_started(simulation)
+    handle = handles[0]
+    initial_html = handle.html.data
+
+    display.close()
+    display.close()
+    display.refresh()
+
+    assert simulation.is_running
+    assert display._active == {}
+    assert display._handle is None
+    assert display._last_html is None
+    assert handle.html.data == initial_html
+    assert handle.updates == []
+    display_html.assert_called_once()
+    assert capsys.readouterr().out == ""
 
 
 def test_notebook_display_throttles_progress_but_updates_lifecycle_promptly(

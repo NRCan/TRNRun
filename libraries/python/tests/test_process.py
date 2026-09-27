@@ -150,38 +150,55 @@ def test_read_line_returns_lines_and_none_at_eof(raw_line: str, expected: str | 
     assert queue.read_line() == expected
 
 
-def test_close_closes_standard_input() -> None:
-    """Closing the wrapper should close queue input."""
+def test_shutdown_kills_and_reaps_before_closing_pipes() -> None:
+    """Unread stdout must not block reaping the killed queue."""
     queue = _queue_without_init()
-    queue._stdin = MagicMock()
+    operations = MagicMock()
+    queue._process = operations.child
+    queue._stdin = operations.stdin
+    queue._stdout = operations.stdout
 
-    queue.close()
+    queue.shutdown()
+
+    assert operations.mock_calls == [
+        call.child.kill(),
+        call.child.wait(),
+        call.stdin.close(),
+        call.stdout.close(),
+    ]
+
+
+@pytest.mark.parametrize("failure", ["kill", "wait"])
+def test_shutdown_closes_both_pipes_after_process_error(failure: str) -> None:
+    """A failed kill or reap still closes both pipe resources."""
+    queue = _queue_without_init()
+    queue._process = MagicMock()
+    queue._stdin = MagicMock()
+    queue._stdout = MagicMock()
+    getattr(queue._process, failure).side_effect = RuntimeError("process failed")
+
+    with pytest.raises(RuntimeError, match="process failed"):
+        queue.shutdown()
 
     queue._stdin.close.assert_called_once_with()
+    queue._stdout.close.assert_called_once_with()
 
 
-def test_close_suppresses_pipe_oserror() -> None:
-    """An already-broken input pipe should not make close fail."""
+def test_shutdown_suppresses_broken_pipe_close_errors() -> None:
+    """Broken input and output pipes do not prevent cleanup."""
     queue = _queue_without_init()
+    queue._process = MagicMock()
     queue._stdin = MagicMock()
-    queue._stdin.close.side_effect = OSError("broken pipe")
+    queue._stdout = MagicMock()
+    queue._stdin.close.side_effect = OSError("broken input")
+    queue._stdout.close.side_effect = OSError("broken output")
 
-    queue.close()
+    queue.shutdown()
 
+    queue._process.kill.assert_called_once_with()
+    queue._process.wait.assert_called_once_with()
     queue._stdin.close.assert_called_once_with()
-
-
-def test_wait_uses_process_context_and_returns_exit_code() -> None:
-    """Waiting should delegate to Popen and leave pipe cleanup to its context manager."""
-    queue = _queue_without_init()
-    child = MagicMock()
-    child.wait.return_value = 7
-    queue._process = child
-
-    assert queue.wait() == 7
-    child.__enter__.assert_called_once_with()
-    child.wait.assert_called_once_with()
-    child.__exit__.assert_called_once_with(None, None, None)
+    queue._stdout.close.assert_called_once_with()
 
 
 def test_require_stream_returns_available_stream() -> None:
