@@ -36,6 +36,7 @@ class Harness:
 def harness(monkeypatch: pytest.MonkeyPatch) -> Harness:
     """Construct a manager with process and display boundaries replaced."""
     process = Mock(spec=QueueProcess)
+    process.at_eof = False
 
     display = Mock(spec=Display)
     queue_factory = Mock(return_value=process)
@@ -320,6 +321,85 @@ def test_wait_for_one_processes_other_runs_and_returns_at_target(
     harness.manager.wait()
     assert second.is_finished
     assert harness.manager._active == {}
+
+
+def test_pump_applies_buffered_events_without_blocking(
+    harness: Harness,
+    valid_inputs: tuple[Path, SimulationConfig],
+) -> None:
+    """Buffered events should reach simulation state without waiting for more."""
+    deck, config = valid_inputs
+    harness.process.read_line.side_effect = [accepted("1")]
+    simulation = harness.manager.add(deck, config)
+    harness.process.read_line.reset_mock(side_effect=True)
+    harness.process.read_line.side_effect = [
+        stream("1", "STATUS", status="RUNNING"),
+        stream("1", "PROGRESS", time=5, percent=0.5, elapsed=1000, eta=1000),
+        None,
+    ]
+
+    assert harness.manager.pump() is None
+
+    assert harness.process.read_line.call_args_list == [call(block=False)] * 3
+    assert simulation.status is not None
+    assert simulation.status.status == "RUNNING"
+    assert simulation.progress is not None
+    assert simulation.progress.percent == 0.5
+    assert not simulation.is_finished
+    assert harness.manager._active == {"1": simulation}
+
+
+def test_pump_returns_immediately_when_nothing_is_buffered(
+    harness: Harness,
+    valid_inputs: tuple[Path, SimulationConfig],
+) -> None:
+    """An empty buffer must not block a caller that is only polling for updates."""
+    deck, config = valid_inputs
+    harness.process.read_line.side_effect = [accepted("1")]
+    simulation = harness.manager.add(deck, config)
+    harness.process.read_line.reset_mock(side_effect=True)
+    harness.process.read_line.return_value = None
+    harness.display.reset_mock()
+
+    assert harness.manager.pump() is None
+
+    harness.process.read_line.assert_called_once_with(block=False)
+    assert not simulation.is_finished
+    harness.display.refresh.assert_not_called()
+
+
+def test_pump_raises_when_queue_closed_with_outstanding_runs(
+    harness: Harness,
+    valid_inputs: tuple[Path, SimulationConfig],
+) -> None:
+    """A drained buffer behind a closed queue cannot silently strand a run."""
+    deck, config = valid_inputs
+    harness.process.read_line.side_effect = [accepted("1")]
+    _ = harness.manager.add(deck, config)
+    harness.process.read_line.reset_mock(side_effect=True)
+    harness.process.read_line.return_value = None
+    harness.process.at_eof = True
+
+    with pytest.raises(RuntimeError, match="closed before accepting or completing run IDs: 1"):
+        harness.manager.pump()
+
+
+def test_pump_ignores_closed_queue_without_outstanding_runs(harness: Harness) -> None:
+    """Polling an idle manager after the queue exits is not an error."""
+    harness.process.read_line.return_value = None
+    harness.process.at_eof = True
+
+    assert harness.manager.pump() is None
+
+
+def test_pump_rejects_calls_after_shutdown(harness: Harness) -> None:
+    """Pumping a killed queue must fail the same way following it does."""
+    harness.manager.shutdown()
+
+    with pytest.raises(RuntimeError, match="Cannot pump simulations after shutdown has started"):
+        harness.manager.pump()
+
+    harness.process.read_line.assert_not_called()
 
 
 def test_wait_and_follow_reject_simulation_from_another_manager(

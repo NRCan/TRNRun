@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock, call
@@ -22,8 +23,12 @@ def _create_executable(tmp_path: Path) -> Path:
 
 
 def _queue_without_init() -> process.QueueProcess:
-    """Allocate a queue wrapper without spawning its process."""
-    return object.__new__(process.QueueProcess)
+    """Allocate a queue wrapper without spawning its process or reader thread."""
+    queue = object.__new__(process.QueueProcess)
+    queue._on_line = Mock()
+    queue._on_eof = Mock()
+    queue._reader = Mock(spec=threading.Thread)
+    return queue
 
 
 @pytest.mark.parametrize("max_concurrent", [0, -1])
@@ -36,7 +41,7 @@ def test_init_rejects_nonpositive_concurrency(
     monkeypatch.setattr(process.subprocess, "Popen", popen)
 
     with pytest.raises(ValueError, match="max_concurrent must be at least 1"):
-        process.QueueProcess("does-not-matter.exe", max_concurrent)
+        process.QueueProcess("does-not-matter.exe", max_concurrent, Mock(), Mock())
 
     popen.assert_not_called()
 
@@ -51,7 +56,7 @@ def test_init_rejects_missing_executable(
     monkeypatch.setattr(process.subprocess, "Popen", popen)
 
     with pytest.raises(FileNotFoundError, match=r"TRNRun queue executable not found: .*missing\.exe"):
-        process.QueueProcess(missing, 1)
+        process.QueueProcess(missing, 1, Mock(), Mock())
 
     popen.assert_not_called()
 
@@ -68,7 +73,7 @@ def test_init_spawns_configured_process_and_assigns_job(
     monkeypatch.setattr(process.subprocess, "Popen", popen)
     monkeypatch.setattr(process, "assign_to_job", assign_to_job)
 
-    queue = process.QueueProcess(executable, 3)
+    queue = process.QueueProcess(executable, 3, Mock(), Mock())
 
     popen.assert_called_once_with(
         [str(executable.absolute()), "--maxConcurrent:3"],
@@ -83,6 +88,28 @@ def test_init_spawns_configured_process_and_assigns_job(
     assert queue._process is child
     assert queue._stdin is child.stdin
     assert queue._stdout is child.stdout
+    queue._reader.join(timeout=5)
+
+
+def test_init_starts_daemon_reader_that_forwards_stdout_to_callbacks(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Stdout must be drained in the background so a slow caller cannot stall the queue."""
+    executable = _create_executable(tmp_path)
+    child = SimpleNamespace(stdin=io.StringIO(), stdout=io.StringIO('{"kind":"QUEUE"}\nsecond\n'))
+    monkeypatch.setattr(process.subprocess, "Popen", Mock(return_value=child))
+    monkeypatch.setattr(process, "assign_to_job", Mock(return_value=True))
+    on_line = Mock()
+    on_eof = Mock()
+
+    queue = process.QueueProcess(executable, 1, on_line, on_eof)
+
+    assert queue._reader.daemon
+    queue._reader.join(timeout=5)
+    assert not queue._reader.is_alive()
+    assert on_line.mock_calls == [call('{"kind":"QUEUE"}\n'), call("second\n")]
+    on_eof.assert_called_once_with()
 
 
 @pytest.mark.parametrize(
@@ -106,7 +133,7 @@ def test_init_rejects_unavailable_pipe(
     monkeypatch.setattr(process, "assign_to_job", Mock(return_value=True))
 
     with pytest.raises(RuntimeError, match=rf"queue {missing_name} is unavailable"):
-        process.QueueProcess(executable, 1)
+        process.QueueProcess(executable, 1, Mock(), Mock())
 
 
 def test_send_writes_compact_json_line_and_flushes() -> None:
@@ -136,19 +163,58 @@ def test_send_rejects_nonstandard_nan_without_writing() -> None:
     stream.flush.assert_not_called()
 
 
-@pytest.mark.parametrize(
-    ("raw_line", "expected"),
-    [
-        pytest.param('{"event":"started"}\n', '{"event":"started"}\n', id="line"),
-        pytest.param("", None, id="eof"),
-    ],
-)
-def test_read_line_returns_lines_and_none_at_eof(raw_line: str, expected: str | None) -> None:
-    """Queue output should remain unmodified while EOF receives a sentinel."""
+def test_consume_stdout_forwards_lines_unmodified_then_signals_eof() -> None:
+    """Queue output should reach the callback in order and unmodified, followed by one EOF."""
     queue = _queue_without_init()
-    queue._stdout = io.StringIO(raw_line)
+    queue._stdout = io.StringIO('{"event":"started"}\nplain diagnostic\n')
 
-    assert queue.read_line() == expected
+    queue._consume_stdout()
+
+    assert queue._on_line.mock_calls == [call('{"event":"started"}\n'), call("plain diagnostic\n")]
+    queue._on_eof.assert_called_once_with()
+
+
+def test_consume_stdout_signals_eof_when_stdout_closes_underneath() -> None:
+    """Closing stdout during shutdown must still report EOF instead of losing it."""
+    queue = _queue_without_init()
+    stdout = io.StringIO("first\n")
+    stdout.close()
+    queue._stdout = stdout
+
+    queue._consume_stdout()
+
+    queue._on_line.assert_not_called()
+    queue._on_eof.assert_called_once_with()
+
+
+def test_consume_stdout_keeps_draining_after_line_callback_raises(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A failing line callback must never stop the drain that keeps the queue running."""
+    queue = _queue_without_init()
+    queue._stdout = io.StringIO("first\nsecond\n")
+    queue._on_line.side_effect = [RuntimeError("callback bug"), None]
+
+    queue._consume_stdout()
+
+    assert queue._on_line.mock_calls == [call("first\n"), call("second\n")]
+    queue._on_eof.assert_called_once_with()
+    assert "queue line callback failed" in caplog.text
+
+
+def test_consume_stdout_absorbs_failing_eof_callback(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A failing EOF callback must be logged rather than escaping the reader thread."""
+    queue = _queue_without_init()
+    queue._stdout = io.StringIO("first\n")
+    queue._on_eof.side_effect = RuntimeError("callback bug")
+
+    assert queue._consume_stdout() is None
+
+    queue._on_line.assert_called_once_with("first\n")
+    queue._on_eof.assert_called_once_with()
+    assert "queue EOF callback failed" in caplog.text
 
 
 def test_shutdown_kills_before_waiting_and_closing_pipes() -> None:
@@ -163,6 +229,23 @@ def test_shutdown_kills_before_waiting_and_closing_pipes() -> None:
     assert queue.shutdown() is None
 
     assert child.mock_calls == [call.kill(), call.wait(), call.stdin.close(), call.stdout.close()]
+    queue._reader.join.assert_called_once_with(timeout=process._READER_JOIN_TIMEOUT)
+
+
+def test_shutdown_joins_reader_after_releasing_its_stream() -> None:
+    """The reader owns stdout until shutdown closes it, so the join must come last."""
+    queue = _queue_without_init()
+    order: list[str] = []
+    child = MagicMock()
+    child.stdout.close.side_effect = lambda: order.append("close")
+    queue._process = child
+    queue._stdin = child.stdin
+    queue._stdout = child.stdout
+    queue._reader.join.side_effect = lambda **_kwargs: order.append("join")
+
+    assert queue.shutdown() is None
+
+    assert order == ["close", "join"]
 
 
 @pytest.mark.parametrize("exit_code", [0, 7])
@@ -229,6 +312,7 @@ def test_shutdown_closes_pipes_after_process_error(
     if operation == "wait":
         expected.append(call.wait())
     assert child.mock_calls == [*expected, call.stdin.close(), call.stdout.close()]
+    queue._reader.join.assert_called_once_with(timeout=process._READER_JOIN_TIMEOUT)
 
 
 def test_require_stream_returns_available_stream() -> None:

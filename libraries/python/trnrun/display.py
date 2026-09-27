@@ -43,7 +43,12 @@ MS_PER_SECOND = 1000
 
 
 class DisplayCallback(Protocol):
-    """Callback surface used by ``SimulationManager``."""
+    """Callback surface used by ``SimulationManager``.
+
+    Every method is invoked on the manager's reader thread, in stream order,
+    so implementations must be quick: blocking here stalls queue stdout and
+    with it every concurrent run.
+    """
 
     def simulation_started(self, simulation: Simulation) -> None:
         """Show a newly accepted simulation."""
@@ -75,15 +80,20 @@ def _progress_bar(percent: float, width: int = PROGRESS_BAR_WIDTH) -> str:
 
 
 def _render_line(sim: Simulation) -> Text:
-    """Render one simulation as a shared Rich status line."""
+    """Render one simulation as a shared Rich status line.
+
+    Every field is read under the simulation's lock so the whole line describes
+    one instant, even though the manager's reader thread may be applying events.
+    """
+    with sim.lock:
+        status = sim.status.status if sim.status is not None else ""
+        notices, warnings, fatals = sim.notices, sim.warnings, sim.fatals
+        progress = sim.progress
+        config = sim.config_event
+
     path = truncate_left(str(sim.deck_path), PATH_WIDTH)
-
-    status = sim.status.status if sim.status is not None else ""
     status_style = COLOR_MAP.get(status.upper())
-
-    logs = f"N:{sim.notices} W:{sim.warnings} F:{sim.fatals}"
-
-    progress = sim.progress
+    logs = f"N:{notices} W:{warnings} F:{fatals}"
 
     elapsed = format_hhmmss(progress.elapsed / MS_PER_SECOND if progress else None)
     eta = format_hhmmss(progress.eta / MS_PER_SECOND if progress else None)
@@ -91,7 +101,6 @@ def _render_line(sim: Simulation) -> Text:
     sim_time = progress.time if progress else None
     percent = progress.percent if progress else None
 
-    config = sim.config_event
     sim_stop = config.stop if config else None
 
     bar = _progress_bar(percent if percent is not None else 0.0)
@@ -160,9 +169,9 @@ class NullDisplay:
 class Display:
     """Live terminal view of currently running simulations.
 
-    The manager drives every redraw from its own thread, so the live region
-    never refreshes on a timer of its own and never reads a simulation while
-    the manager is updating it.
+    The manager drives every redraw from its reader thread, so the live region
+    never refreshes on a timer of its own. Rendering takes each simulation's
+    lock briefly to sample a consistent set of fields.
 
     Parameters
     ----------
