@@ -216,7 +216,7 @@ config = SimulationConfig(
 `SimulationManager` owns one queue process and controls how simulations are
 submitted, monitored, and displayed. It is synchronous and intended for use
 from one thread. Simulation state advances only while `add()`, `wait()`,
-`follow()`, or `shutdown()` reads queue output.
+or `follow()` reads queue output.
 
 ### Parameters
 
@@ -287,8 +287,10 @@ with SimulationManager(
 
 - _`shutdown() -> None`_
 
-  Close queue input, finish accepted work, and reap the queue process. Called
-  automatically when leaving a `with` block.
+  Kill and reap the queue without reading pending events or completing active
+  simulations. Called automatically when leaving a `with` block; call `wait()`
+  first to collect results. Repeated shutdown is safe, but `add()`, `wait()`,
+  `follow()`, and context entry are unavailable afterward.
 
 Example manager workflow with every method and property:
 

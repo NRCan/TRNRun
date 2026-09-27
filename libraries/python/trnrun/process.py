@@ -67,18 +67,17 @@ class QueueProcess:
         """Block for the next queue stdout line, or return None at EOF."""
         return self._stdout.readline() or None
 
-    def close(self) -> None:
-        """Close queue input, ending submission and starting its drain."""
-        with contextlib.suppress(OSError):
-            self._stdin.close()
-
-    def wait(self) -> int:
-        """Wait for exit and close the pipes; return the queue's exit code.
-
-        Call `close()` and drain `read_line()` to EOF first to avoid deadlock.
-        """
-        with self._process:
-            return self._process.wait()
+    def shutdown(self) -> None:
+        """Kill and reap the queue, then close its pipes without draining output."""
+        try:
+            # Kill before waiting or closing pipes: unread stdout may be full.
+            self._process.kill()
+            _ = self._process.wait()
+        finally:
+            with contextlib.suppress(OSError):
+                self._stdin.close()
+            with contextlib.suppress(OSError):
+                self._stdout.close()
 
     @staticmethod
     def _require_stream(stream: IO[str] | None, name: str) -> IO[str]:

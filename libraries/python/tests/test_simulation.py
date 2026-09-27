@@ -94,7 +94,7 @@ def test_apply_event_folds_latest_runner_state(config: SimulationConfig) -> None
     setting = make_setting(severity="Warning")
 
     for event in (old_status, old_progress, old_config, old_setting, status, progress, config_event, setting):
-        simulation.apply_event(event)
+        assert simulation.apply_event(event)
 
     assert simulation.status is SimulationStatus.RUNNING
     assert simulation.status_event is status
@@ -104,21 +104,27 @@ def test_apply_event_folds_latest_runner_state(config: SimulationConfig) -> None
     assert simulation.is_running
 
 
-def test_queue_events_are_not_folded_as_runner_state(config: SimulationConfig) -> None:
-    """Queue lifecycle events only affect state through explicit markers."""
+def test_queue_events_apply_lifecycle_only_once(config: SimulationConfig) -> None:
+    """Acceptance and completion change state, while duplicate or unknown events do not."""
     simulation = Simulation("deck.dck", config, sim_id=7)
     accepted = QueueEvent(event="ACCEPTED", run_id="7", timestamp=TIMESTAMP)
+    unknown = QueueEvent(event="ENQUEUED", run_id="7", timestamp=TIMESTAMP)
+    finished = completion(exit_code=9)
 
-    simulation.apply_event(accepted)
-
-    assert not simulation.is_accepted
-    assert not simulation.is_finished
-    assert simulation.completion_event is None
-
-    simulation.mark_accepted()
-    simulation.mark_accepted()
-
+    assert not simulation.apply_event(unknown)
+    assert simulation.apply_event(accepted)
     assert simulation.is_accepted
+    assert not simulation.apply_event(accepted)
+    assert not simulation.is_finished
+    assert simulation.apply_event(finished)
+    assert simulation.completion_event is finished
+    assert simulation.is_finished
+    assert not simulation.succeeded
+    assert not simulation.apply_event(completion())
+    assert not simulation.apply_event(accepted)
+    assert not simulation.apply_event(StatusEvent(SimulationStatus.DONE, TIMESTAMP))
+    assert simulation.completion_event is finished
+    assert simulation.status is None
 
 
 def test_log_history_is_bounded_but_counts_include_evictions(config: SimulationConfig) -> None:
@@ -191,7 +197,7 @@ def test_completed_result_classification(
     assert not simulation.succeeded
 
     event = completion(exit_code=9 if status is SimulationStatus.DONE else 0)
-    simulation.mark_completed(event)
+    assert simulation.apply_event(event)
 
     assert simulation.completion_event is event
     assert simulation.is_finished
@@ -208,9 +214,9 @@ def test_completion_freezes_state_and_first_completion_metadata(config: Simulati
     simulation.apply_event(running)
     simulation.mark_completed(first_completion)
 
-    simulation.apply_event(StatusEvent(SimulationStatus.DONE, TIMESTAMP))
-    simulation.apply_event(LogEvent("Fatal", TIMESTAMP))
-    simulation.mark_completed(completion(exit_code=0))
+    assert not simulation.apply_event(StatusEvent(SimulationStatus.DONE, TIMESTAMP))
+    assert not simulation.apply_event(LogEvent("Fatal", TIMESTAMP))
+    assert not simulation.apply_event(completion(exit_code=0))
 
     assert simulation.status is SimulationStatus.RUNNING
     assert simulation.status_event is running
