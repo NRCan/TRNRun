@@ -2,8 +2,8 @@
 
 Rich renders the same status lines for terminals and notebooks. IPython
 ``DisplayHandle`` replaces notebook output in place without widgets or clearing
-other cell output. Displays do not own simulation state; they
-only render state provided synchronously by ``SimulationManager``.
+other cell output. Displays do not own simulation state; they render immutable
+snapshots of the live ``Simulation`` objects supplied by ``SimulationManager``.
 """
 
 # pyright: reportUnusedCallResult=false
@@ -44,7 +44,13 @@ MS_PER_SECOND = 1000
 
 
 class DisplayCallback(Protocol):
-    """Callback surface used by ``SimulationManager``."""
+    """Callback surface used by ``SimulationManager``.
+
+    Simulation notifications and refreshes run on the manager's reader thread
+    and must be nonblocking: do not wait for simulations or perform lengthy work.
+    Callbacks still receive live ``Simulation`` objects; capture a snapshot when
+    deferring work. GUI integrations must dispatch updates to their UI thread.
+    """
 
     def simulation_started(self, simulation: Simulation) -> None:
         """Show a newly accepted simulation."""
@@ -76,16 +82,17 @@ def _progress_bar(percent: float, width: int = PROGRESS_BAR_WIDTH) -> str:
 
 
 def _render_line(sim: Simulation) -> Text:
-    """Render one simulation as a shared Rich status line."""
-    path = truncate_left(str(sim.deck_path), PATH_WIDTH)
+    """Render one coherent snapshot as a shared Rich status line."""
+    snapshot = sim.snapshot()
+    path = truncate_left(str(snapshot.deck_path), PATH_WIDTH)
 
-    status = sim.status
+    status = snapshot.status
     status_text = status.value if status is not None else ""
     status_style = COLOR_MAP.get(status) if status is not None else None
 
-    logs = f"N:{sim.notices} W:{sim.warnings} F:{sim.fatals}"
+    logs = f"N:{snapshot.notices} W:{snapshot.warnings} F:{snapshot.fatals}"
 
-    progress = sim.progress
+    progress = snapshot.progress
 
     elapsed = format_hhmmss(progress.elapsed / MS_PER_SECOND if progress else None)
     eta = format_hhmmss(progress.eta / MS_PER_SECOND if progress else None)
@@ -93,7 +100,7 @@ def _render_line(sim: Simulation) -> Text:
     sim_time = progress.time if progress else None
     percent = progress.percent if progress else None
 
-    config = sim.config_event
+    config = snapshot.config_event
     sim_stop = config.stop if config else None
 
     bar = _progress_bar(percent if percent is not None else 0.0)
@@ -102,7 +109,7 @@ def _render_line(sim: Simulation) -> Text:
     sim_progress = "- / -" if sim_time is None or sim_stop is None else f"{sim_time:6,.0f} / {sim_stop:6,.0f}"
 
     text = Text()
-    text.append(f"[{sim.id}] ")
+    text.append(f"[{snapshot.id}] ")
     text.append(f"{path} │ ")
     text.append("Status: ")
     text.append(f"{status_text:<10}", style=status_style)
@@ -129,7 +136,7 @@ def _in_notebook_kernel() -> bool:
 def _load_notebook_api() -> tuple[Callable[[str], object], Callable[..., object]]:
     """Load the optional IPython display API only for notebook rendering."""
     try:
-        from IPython.display import HTML, display  # pyright: ignore[reportUnknownVariableType]
+        from IPython.display import HTML, display
     except ImportError as error:
         raise ImportError("Notebook display mode requires IPython") from error
     return cast("Callable[[str], object]", HTML), cast("Callable[..., object]", display)
@@ -162,9 +169,9 @@ class NullDisplay:
 class Display:
     """Live terminal view of currently running simulations.
 
-    The manager drives every redraw from its own thread, so the live region
-    never refreshes on a timer of its own and never reads a simulation while
-    the manager is updating it.
+    The manager's reader thread drives every redraw, so the live region never
+    refreshes on a timer of its own. Each status line uses a coherent simulation
+    snapshot and renders after releasing the simulation's lock.
 
     Parameters
     ----------

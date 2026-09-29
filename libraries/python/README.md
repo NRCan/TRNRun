@@ -213,10 +213,19 @@ config = SimulationConfig(
 
 ## `SimulationManager`
 
-`SimulationManager` owns one queue process and controls how simulations are
-submitted, monitored, and displayed. It is synchronous and intended for use
-from one thread. Simulation state advances only while `add()`, `wait()`,
-or `follow()` reads queue output.
+`SimulationManager` owns one queue process and a background stdout reader.
+Simulation state continues to advance even when your code is not calling
+`add()` or `wait()`. Submissions and observers may use separate
+threads; stdin requests are serialized and waiters sleep on a condition rather
+than polling. `add()` still blocks until a queue worker accepts the request.
+
+The queue process and its reader are assumed to remain healthy until the manager
+shuts them down. Unexpected queue exit or reader failure is not reported to
+waiting operations; unfinished work may remain blocked until manager shutdown.
+
+Returned `Simulation` objects are live handles. Individual state properties are
+synchronized, but use `simulation.snapshot()` when multiple fields must describe
+the same instant. Do not mutate a managed simulation or its input attributes.
 
 ### Parameters
 
@@ -228,14 +237,28 @@ or `follow()` reads queue output.
 
 - _`refresh_interval`_ (`float`, default: `1.0`)
 
-  Minimum seconds between terminal-display redraws while events are being read.
+  Minimum seconds between display redraws as background events arrive.
   Set to `0` or a negative value to disable the built-in display.
 
 - _`trnrunq_path`_ (`str | Path`, default: bundled `trnrunq.exe`)
 
   Path to the `trnrunq.exe` executable.
 
-A manager with every parameter set explicitly:
+- _`display`_ (`DisplayCallback | None`, default: `None`)
+
+  Optional custom display, overriding automatic selection. Lifecycle and refresh
+  callbacks run on the reader thread, outside the manager lock; they must return
+  promptly and must not call `add()`, `wait()`, or `shutdown()`;
+  shutdown belongs to the manager's owner. Slow callbacks delay output
+  consumption. Display exceptions are logged instead of stopping simulations.
+  After queue cleanup joins the reader, the shutdown caller closes the display.
+  Display close errors propagate to the shutdown caller.
+
+  For a GUI, use `refresh_interval=0` and poll snapshots on the UI event loop, or
+  marshal lightweight notifications onto that loop. Do not update GUI widgets
+  directly from the reader callback.
+
+An explicitly configured manager:
 
 ```python
 from pathlib import Path
@@ -252,45 +275,67 @@ with SimulationManager(
 
 ### Methods and properties
 
+- _`submitted`_ (`list[Simulation]`)
+
+  Copy of all tracked live handles in submission order, including pending,
+  running, and completed simulations. Handles are visible as soon as they are
+  registered, before the request is sent. If sending fails before queue
+  acceptance, the handle is removed. Use this property to populate a GUI with
+  all submissions, including those not yet accepted.
+
 - _`simulations`_ (`list[Simulation]`)
 
-  Snapshot of all queue-accepted simulations in acceptance order.
+  Copy of the list of queue-accepted live handles, in submission order.
+
+- _`active`_ (`list[Simulation]`)
+
+  Copy of the list of unfinished handles in submission order, including
+  submissions waiting for worker acceptance.
+
 
 - _`succeeded`_ (`list[Simulation]`)
 
-  Snapshot of accepted simulations that completed successfully.
+  List of accepted live handles that completed successfully.
 
 - _`failed`_ (`list[Simulation]`)
 
-  Snapshot of simulations that completed without succeeding. Pending and
+  List of live handles that completed without succeeding. Pending and
   running simulations are not included.
 
-- _`add(deck_file: str | Path, config: SimulationConfig) -> Simulation`_
+- _`add(deck_file: str | Path, config: SimulationConfig, *, blocking: bool = True) -> Simulation`_
 
-  Validate and submit `deck_file` using a copy of `config`. Blocks until a queue
-  worker accepts the request and returns its `Simulation`. If every worker is
-  occupied, this may not return until an earlier simulation finishes.
+  Validate and submit `deck_file` using a copy of `config`. By default, blocks
+  until a queue worker accepts the request. Pass `blocking=False` to return a
+  live, initially pending `Simulation` immediately after the request is sent.
+  The send itself may still block if the queue's input pipe is full. Pending
+  handles appear in `submitted` and `active`, but not in `simulations` until accepted.
+  Use `wait(simulation)` to wait for completion, not just acceptance.
 
 - _`wait(simulation: Simulation | None = None) -> None`_
 
-  With no argument, process events until every accepted simulation completes.
-  Pass a manager-owned `Simulation` to return when that run completes while
-  continuing to process updates from other runs. There is no client-side
-  timeout.
+  With no argument, wait until no submissions remain outstanding, including
+  submissions waiting for acceptance. Pass a manager-owned `Simulation`
+  (including a pending handle) to return when that run completes. Events are processed independently by the
+  reader. There is no execution timeout; concurrent future submissions after the
+  wait returns are not included.
 
-- _`follow(simulation: Simulation | None = None) -> Iterator[Simulation]`_
 
-  With no argument, yield the affected `Simulation` after every newly processed
-  event until all runs complete. Pass a manager-owned `Simulation` to yield only
-  that run's updates and return when it completes. Events for other runs are
-  still processed, and previously consumed events are not replayed.
 
 - _`shutdown() -> None`_
 
-  Kill and reap the queue without reading pending events or completing active
-  simulations. Called automatically when leaving a `with` block; call `wait()`
-  first to collect results. Repeated shutdown is safe, but `add()`, `wait()`,
-  `follow()`, and context entry are unavailable afterward.
+  Reject new work, wake blocked callers, then kill and reap the queue. Events
+  arriving after shutdown starts are ignored; unfinished runs are not marked
+  complete or assigned synthetic outcomes. Called automatically when leaving a
+  `with` block; call `wait()` first to finish work and collect results.
+  The owner must call shutdown, never concurrently or reentrantly (including
+  from display callbacks). Sequential repeated calls are no-ops.
+
+  Process cleanup allows up to five seconds for each wait: child exit, the stdin
+  writer lock, and the stdout reader. A timeout is reported rather than silently
+  leaving cleanup incomplete. Display close happens only after successful
+  cleanup. Shutdown is a single attempt: if queue cleanup fails, repeated calls
+  do not retry it. `add()`, `wait()`, and context entry remain unavailable once
+  shutdown starts.
 
 Example manager workflow with every method and property:
 
@@ -304,11 +349,11 @@ try:
     first = manager.add(r"C:\path\to\first.dck", config)
     second = manager.add(r"C:\path\to\second.dck", config)
 
-    for updated in manager.follow(first):
-        if updated.status is not None:
-            print(f"{updated.deck_path}: {updated.status}")
+    manager.wait(first)
+    print(f"First status: {first.snapshot().status}")
 
     manager.wait()
+    print(f"Submitted: {len(manager.submitted)}")
     print(f"Simulations: {len(manager.simulations)}")
     print(f"Succeeded: {len(manager.succeeded)}")
     print(f"Failed: {len(manager.failed)}")
@@ -324,6 +369,28 @@ finally:
 results of one run. The manager updates this object as it processes queue events;
 applications normally inspect it rather than constructing or updating it
 directly.
+
+### Consistent snapshots
+
+`simulation.snapshot() -> SimulationSnapshot` captures an immutable display view
+under the same lock used for event updates. It contains `id`, `deck_path`,
+`status`, `progress`, `config_event` (simulation bounds), `is_accepted`,
+`is_finished`, and the `log_count`, `notices`, `warnings`, and `fatals` counters.
+It also exposes the derived `is_running` and `succeeded` properties.
+Previously captured snapshots do not change when new events arrive.
+
+Snapshots never copy log history, so capture cost and snapshot size do not grow
+with the number of logs. Full logs, status/setting/completion event metadata,
+and input configuration remain available on `Simulation`. Snapshots are coherent
+per simulation, not a simultaneous snapshot of the whole manager.
+
+For example, a GUI timer can call this on its own UI thread with the built-in
+display disabled:
+
+```python
+def current_rows(manager):
+    return [simulation.snapshot() for simulation in manager.submitted]
+```
 
 ### Identity and configuration
 
@@ -373,8 +440,8 @@ directly.
 
 - _`logs`_ (`list[LogEvent]`)
 
-  Snapshot of the latest 5,000 log events in arrival order. Older events are
-  discarded from this list, but remain included in the log counters.
+  Copy of all log events in arrival order. The complete history stays in memory
+  for the lifetime of the simulation object; no events are evicted.
 
 ### State and outcome
 
@@ -391,9 +458,6 @@ directly.
 
   Whether the queue has reported completion for the request.
 
-- _`has_terminal_status`_ (`bool`)
-
-  Whether the runner has reported a terminal `SimulationStatus`.
 
 - _`succeeded`_ (`bool`)
 
@@ -433,7 +497,7 @@ print(f"Config: {simulation.config}")
 print(f"Running: {simulation.is_running}")
 print(f"Accepted: {simulation.is_accepted}")
 print(f"Finished: {simulation.is_finished}")
-print(f"Terminal status received: {simulation.has_terminal_status}")
+
 print(f"Succeeded: {simulation.succeeded}")
 print(f"Status: {simulation.status}")
 print(f"Status event: {simulation.status_event}")
