@@ -2,7 +2,9 @@ classdef SimulationManager < handle
     %SIMULATIONMANAGER Submit and monitor simulations through one queue process.
 
     properties (Dependent, SetAccess = private)
+        submitted
         simulations
+        active
         succeeded
         failed
         sessionDiagnostics
@@ -38,8 +40,8 @@ classdef SimulationManager < handle
             %   trnrunqPath - Path to the queue executable. Defaults to the
             %       MATLAB-managed TRNRunQ installation.
             %
-            %   Use add to submit runs, wait to process updates until completion,
-            %   or follow to receive callbacks as updates are applied. Call
+            %   Use add to submit runs, poll to apply ready updates without
+            %   waiting, or wait to process updates until completion. Call
             %   shutdown to close queue input, drain output, and wait for exit.
             %   Deleting the manager releases its owned transport and display,
             %   whose destructors perform best-effort cleanup.
@@ -65,13 +67,16 @@ classdef SimulationManager < handle
                 options.trnrunqPath, options.maxConcurrent);
         end
 
-        function simulation = add(obj, deckFile, config)
-            %ADD Submit one run and return only after QUEUE/ACCEPTED.
+        function simulation = add(obj, deckFile, config, options)
+            %ADD Submit one run; optionally return before QUEUE/ACCEPTED.
+            %   With blocking=false, the returned handle starts pending.
+            %   Call poll, wait, or shutdown to apply queue updates.
 
             arguments
                 obj (1,1) trnrun.SimulationManager
                 deckFile (1,1) string {mustBeFile}
                 config (1,1) trnrun.SimulationConfig
+                options.blocking (1,1) logical = true
             end
 
             guard = obj.enterOperation('add'); %#ok<NASGU>
@@ -103,12 +108,28 @@ classdef SimulationManager < handle
                 rethrow(exception);
             end
 
-            while ~simulation.isAccepted
-                obj.readNextUpdate();
-                if simulation.isFinished && ~simulation.isAccepted
-                    error('trnrun:QueueProtocolError', ...
-                        'Run ID %d completed before it was accepted.', runId);
+            if options.blocking
+                while ~simulation.isAccepted
+                    obj.readNextUpdate();
                 end
+            end
+        end
+
+        function count = poll(obj)
+            %POLL Apply all currently ready queue updates without waiting.
+            %   Returns the number of applied events. A zero result can mean
+            %   either no line is ready yet or the queue reached clean EOF.
+            %   MATLAB state does not advance automatically between calls.
+
+            guard = obj.enterOperation('poll'); %#ok<NASGU>
+            obj.requireOpen();
+            count = 0;
+            while ~obj.queueEof
+                simulation = obj.readNextUpdate(true);
+                if isempty(simulation)
+                    break
+                end
+                count = count + 1;
             end
         end
 
@@ -143,45 +164,6 @@ classdef SimulationManager < handle
             end
         end
 
-        function follow(obj, callback, simulation)
-            %FOLLOW Invoke a callback as updates arrive for all runs or one run.
-            %   FOLLOW(CALLBACK) invokes CALLBACK after every newly applied
-            %   update until all currently pending simulations complete.
-            %
-            %   FOLLOW(CALLBACK, SIMULATION) processes every queue event but
-            %   invokes CALLBACK only for SIMULATION, returning when that
-            %   manager-owned simulation completes.
-
-            arguments
-                obj (1,1) trnrun.SimulationManager
-                callback (1,1) function_handle
-                simulation trnrun.Simulation {mustBeScalarOrEmpty} = ...
-                    trnrun.Simulation.empty(1, 0)
-            end
-
-            guard = obj.enterOperation('follow'); %#ok<NASGU>
-            if isempty(simulation)
-                pending = obj.sims(~[obj.sims.isFinished]);
-            else
-                if ~any(obj.sims == simulation)
-                    error('trnrun:ForeignSimulation', ...
-                        'Simulation does not belong to this manager.');
-                end
-                pending = simulation(~simulation.isFinished);
-            end
-            if isempty(pending)
-                return
-            end
-            obj.requireOpen();
-
-            while ~isempty(pending)
-                updated = obj.readNextUpdate();
-                if isempty(simulation) || updated == simulation
-                    callback(updated);
-                end
-                pending = pending(~[pending.isFinished]);
-            end
-        end
 
         function shutdown(obj)
             %SHUTDOWN Close input, drain output, and reap the queue.
@@ -224,10 +206,22 @@ classdef SimulationManager < handle
             obj.shutdownComplete = true;
         end
 
+        function value = get.submitted(obj)
+            %GET.SUBMITTED Return every tracked simulation, including pending runs.
+
+            value = obj.sims;
+        end
+
         function value = get.simulations(obj)
             %GET.SIMULATIONS Return simulations accepted by the queue.
 
             value = obj.sims([obj.sims.isAccepted]);
+        end
+
+        function value = get.active(obj)
+            %GET.ACTIVE Return unfinished runs, including pending submissions.
+
+            value = obj.sims(~[obj.sims.isFinished]);
         end
 
         function value = get.succeeded(obj)
@@ -253,11 +247,22 @@ classdef SimulationManager < handle
     end
 
     methods (Access = private)
-        function simulation = readNextUpdate(obj)
-            %READNEXTUPDATE Apply the next valid update, or return empty at EOF.
+        function simulation = readNextUpdate(obj, nonblocking)
+            %READNEXTUPDATE Apply the next valid update, or return empty if none.
 
+            if nargin < 2
+                nonblocking = false;
+            end
             while true
-                line = obj.transport.readLine();
+                if nonblocking
+                    line = obj.transport.pollLine();
+                    if isstring(line) && ismissing(line)
+                        simulation = [];
+                        return
+                    end
+                else
+                    line = obj.transport.readLine();
+                end
 
                 % Numeric [] is EOF; an empty character vector is a blank line.
                 if isnumeric(line) && isempty(line)
@@ -316,6 +321,11 @@ classdef SimulationManager < handle
 
                             case 'COMPLETED'
                                 simulation.markCompleted(event);
+                                if ~simulation.isAccepted
+                                    error('trnrun:QueueProtocolError', ...
+                                        'Run ID %d completed before it was accepted.', ...
+                                        simulation.id);
+                                end
                                 obj.display.simulationFinished(simulation);
 
                             otherwise
@@ -342,8 +352,7 @@ classdef SimulationManager < handle
 
         function guard = enterOperation(obj, operation)
             %ENTEROPERATION Reject reentrancy and return a cleanup guard.
-            %   Transport waits can invoke graphics callbacks; follow callbacks
-            %   must also remain inside the same reentrancy guard.
+            %   Transport waits can invoke graphics callbacks.
 
             if obj.busy
                 error('trnrun:ReentrantOperation', ...

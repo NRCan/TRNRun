@@ -74,11 +74,24 @@
         [
             {"name":"obj", "kind":"required", "type":["trnrun.SimulationManager"]},
             {"name":"deckFile", "kind":"required", "type":["file=*.dck"], "purpose":"Deck to submit"},
-            {"name":"config", "kind":"required", "type":["trnrun.SimulationConfig"], "purpose":"Configuration snapshot"}
+            {"name":"config", "kind":"required", "type":["trnrun.SimulationConfig"], "purpose":"Configuration snapshot"},
+            {"name":"blocking", "kind":"namevalue", "type":["logical","scalar"], "purpose":"Wait for queue acceptance (default true)"}
         ],
         "outputs":
         [
             {"name":"simulation", "type":["trnrun.Simulation"]}
+        ]
+    },
+
+    "trnrun.SimulationManager.poll":
+    {
+        "inputs":
+        [
+            {"name":"obj", "kind":"required", "type":["trnrun.SimulationManager"]}
+        ],
+        "outputs":
+        [
+            {"name":"count", "type":["numeric","scalar"]}
         ]
     },
 
@@ -91,15 +104,6 @@
         ]
     },
 
-    "trnrun.SimulationManager.follow":
-    {
-        "inputs":
-        [
-            {"name":"obj", "kind":"required", "type":["trnrun.SimulationManager"]},
-            {"name":"callback", "kind":"required", "type":["function_handle"], "purpose":"Called with each updated simulation"},
-            {"name":"simulation", "kind":"optional", "type":["trnrun.Simulation","scalar"], "purpose":"Single owned simulation whose updates invoke the callback"}
-        ]
-    },
 
     "trnrun.SimulationManager.shutdown":
     {

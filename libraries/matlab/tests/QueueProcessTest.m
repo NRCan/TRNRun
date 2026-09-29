@@ -141,6 +141,65 @@ classdef QueueProcessTest < matlab.unittest.TestCase
                 'Repeated reads must remain at EOF.');
         end
 
+        function pollLineReturnsMissingWhenQueueIsIdle(testCase)
+            queue = testCase.startQueue(1);
+
+            first = queue.pollLine();
+            second = queue.pollLine();
+
+            testCase.verifyTrue(isstring(first) && isscalar(first) && ...
+                ismissing(first));
+            testCase.verifyTrue(isstring(second) && isscalar(second) && ...
+                ismissing(second));
+            testCase.verifyEmpty(queue.diagnostics().exit_code, ...
+                'Polling an idle queue must not terminate it.');
+        end
+
+        function pollLineReturnsReadyStdoutLine(testCase)
+            queue = testCase.startQueue(1);
+            queue.send(struct( ...
+                'runID', 'polled-run', ...
+                'deckFile', 'missing.dck', ...
+                'runnerPath', 'missing.exe', ...
+                'runnerArgs', {{}}));
+            started = tic;
+            line = string(missing);
+
+            while isstring(line) && ismissing(line) && toc(started) < 10
+                line = queue.pollLine();
+                if isstring(line) && ismissing(line)
+                    pause(0.01);
+                end
+            end
+
+            testCase.assertClass(line, 'char', ...
+                'The first stdout line should become ready without a blocking read.');
+            event = jsondecode(line);
+            testCase.verifyEqual(string(event.kind), "QUEUE");
+            testCase.verifyEqual(string(event.event), "ACCEPTED");
+            testCase.verifyEqual(string(event.runID), "polled-run");
+        end
+
+        function pollLineReturnsNumericEmptyAtEof(testCase)
+            queue = testCase.startQueue(1);
+            queue.close();
+            started = tic;
+            line = string(missing);
+
+            while isstring(line) && ismissing(line) && toc(started) < 10
+                line = queue.pollLine();
+                if isstring(line) && ismissing(line)
+                    pause(0.01);
+                end
+            end
+
+            testCase.verifyTrue(isnumeric(line) && isempty(line), ...
+                'A closed and drained stdout must report numeric EOF.');
+            again = queue.pollLine();
+            testCase.verifyTrue(isnumeric(again) && isempty(again), ...
+                'Polling after EOF must keep reporting EOF.');
+        end
+
         function sendRejectsNonStructRequests(testCase)
             %SENDREJECTSNONSTRUCTREQUESTS Requests are JSON objects.
 

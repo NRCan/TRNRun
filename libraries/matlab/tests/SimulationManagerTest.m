@@ -132,6 +132,8 @@ classdef SimulationManagerTest < matlab.unittest.TestCase
             testCase.makeManager();
 
             testCase.verifyEmpty(testCase.Manager.simulations);
+            testCase.verifyEmpty(testCase.Manager.submitted);
+            testCase.verifyEmpty(testCase.Manager.active);
             testCase.verifyEmpty(testCase.Manager.succeeded);
             testCase.verifyEmpty(testCase.Manager.failed);
             testCase.verifyEmpty(testCase.Manager.sessionDiagnostics);
@@ -161,6 +163,58 @@ classdef SimulationManagerTest < matlab.unittest.TestCase
             testCase.verifyEqual(request.runnerArgs, simulation.config.to_cli_args());
         end
 
+
+        function nonblockingAddReturnsPendingWithoutReading(testCase)
+            testCase.makeManager();
+            testCase.Queue.queue([accepted(1), accepted(2)]);
+            mark = numel(testCase.Queue.calls);
+
+            first = testCase.Manager.add(testCase.Deck, testCase.Config, ...
+                blocking=false);
+            second = testCase.Manager.add(testCase.Deck, testCase.Config, ...
+                blocking=false);
+
+            testCase.verifyEqual(testCase.Queue.callsSince(mark), ["send", "send"]);
+            testCase.verifyEqual(string({testCase.Queue.sent{1}.runID, ...
+                testCase.Queue.sent{2}.runID}), ["1", "2"]);
+            testCase.verifyEqual([first.id, second.id], [1, 2]);
+            testCase.verifyEqual(first.state, 'pending');
+            testCase.verifyFalse(second.isAccepted);
+            testCase.verifyTrue(first.isRunning);
+            testCase.verifyEqual(testCase.Manager.submitted, [first, second]);
+            testCase.verifyEqual(testCase.Manager.active, [first, second]);
+            testCase.verifyEmpty(testCase.Manager.simulations);
+            testCase.verifyEmpty(testCase.Manager.succeeded);
+            testCase.verifyEmpty(testCase.Manager.failed);
+        end
+
+        function explicitBlockingAddStillWaitsForAcceptance(testCase)
+            testCase.makeManager();
+            testCase.Queue.queue(accepted(1));
+
+            simulation = testCase.Manager.add(testCase.Deck, testCase.Config, ...
+                blocking=true);
+
+            testCase.verifyTrue(simulation.isAccepted);
+            testCase.verifyEqual(testCase.Queue.calls, ["send", "readLine"]);
+        end
+
+        function nonblockingSendFailureDiscardsHandleAndRetiresId(testCase)
+            testCase.makeManager();
+            testCase.Queue.sendError = "trnrun:QueuePipeFailed";
+
+            testCase.verifyError(@() testCase.Manager.add( ...
+                testCase.Deck, testCase.Config, blocking=false), ...
+                'trnrun:QueuePipeFailed');
+            testCase.verifyEmpty(testCase.Manager.submitted);
+            testCase.verifyEmpty(testCase.Manager.active);
+
+            testCase.Queue.sendError = string(missing);
+            simulation = testCase.Manager.add(testCase.Deck, testCase.Config, ...
+                blocking=false);
+            testCase.verifyEqual(simulation.id, 2);
+            testCase.verifyEqual(testCase.Manager.submitted, simulation);
+        end
 
         function addAssignsIncreasingRunIds(testCase)
             %ADDASSIGNSINCREASINGRUNIDS Run IDs are unique within a session.
@@ -307,6 +361,118 @@ classdef SimulationManagerTest < matlab.unittest.TestCase
         end
 
         % -----------------------------------------------------------------
+        % poll
+        % -----------------------------------------------------------------
+
+        function pollAppliesReadyUpdatesAcrossPendingRuns(testCase)
+            testCase.makeManager();
+            first = testCase.Manager.add(testCase.Deck, testCase.Config, ...
+                blocking=false);
+            second = testCase.Manager.add(testCase.Deck, testCase.Config, ...
+                blocking=false);
+            testCase.Queue.queue([ ...
+                "native diagnostic output", ...
+                status(1, "RUNNING"), ...
+                accepted(2), ...
+                accepted(1), ...
+                accepted(1), ...
+                status(1, "DONE"), completed(1), ...
+                status(2, "ERROR"), completed(2), ...
+                status(1, "ERROR")]);
+
+            count = testCase.Manager.poll();
+
+            testCase.verifyEqual(count, 7, ...
+                'Only applied events, not noise or duplicate events, count.');
+            testCase.verifyEqual(first.status.status, "DONE");
+            testCase.verifyEqual(second.status.status, "ERROR");
+            testCase.verifyTrue(first.isFinished);
+            testCase.verifyTrue(second.isFinished);
+            testCase.verifyEqual(testCase.Manager.submitted, [first, second]);
+            testCase.verifyEmpty(testCase.Manager.active);
+            testCase.verifyEqual(testCase.Manager.simulations, [first, second]);
+            testCase.verifyEqual(testCase.Manager.succeeded, first);
+            testCase.verifyEqual(testCase.Manager.failed, second);
+            testCase.verifyNumElements(testCase.Manager.sessionDiagnostics, 3);
+        end
+
+        function pollConsumesUpdatesBeforeBlockingWait(testCase)
+            testCase.makeManager();
+            simulation = testCase.Manager.add(testCase.Deck, testCase.Config, ...
+                blocking=false);
+            testCase.Queue.queue([accepted(1), progress(1, 0.5), ...
+                status(1, "DONE"), completed(1)]);
+
+            testCase.verifyEqual(testCase.Manager.poll(), 4);
+            mark = numel(testCase.Queue.calls);
+            testCase.Manager.wait(simulation);
+
+            testCase.verifyEmpty(testCase.Queue.callsSince(mark));
+            testCase.verifyEqual(simulation.progress.percent, 0.5);
+            testCase.verifyTrue(simulation.succeeded);
+        end
+
+        function pollWithoutReadyUpdatesReturnsZero(testCase)
+            testCase.makeManager();
+
+            testCase.verifyEqual(testCase.Manager.poll(), 0);
+            testCase.verifyEmpty(testCase.Manager.submitted);
+            testCase.verifyEmpty(testCase.Manager.active);
+        end
+
+        function pollReturnsZeroWhenOutputIsNotYetReady(testCase)
+            testCase.makeManager();
+            testCase.Queue.pollNoReadyWhenEmpty = true;
+            simulation = testCase.Manager.add(testCase.Deck, testCase.Config, ...
+                blocking=false);
+
+            testCase.verifyEqual(testCase.Manager.poll(), 0);
+            testCase.verifyEqual(testCase.Manager.active, simulation);
+            testCase.verifyFalse(simulation.isAccepted);
+
+            testCase.Queue.queue([accepted(1), completed(1)]);
+            testCase.verifyEqual(testCase.Manager.poll(), 2);
+            testCase.verifyTrue(simulation.isFinished);
+        end
+
+        function pollReportsCompletionBeforeAcceptance(testCase)
+            testCase.makeManager();
+            simulation = testCase.Manager.add(testCase.Deck, testCase.Config, ...
+                blocking=false);
+            testCase.Queue.queue(completed(1));
+
+            testCase.verifyError(@() testCase.Manager.poll(), ...
+                'trnrun:QueueProtocolError');
+            testCase.verifyTrue(simulation.isFinished);
+            testCase.verifyFalse(simulation.isAccepted);
+        end
+
+        function pollReportsPrematureEofForPendingRuns(testCase)
+            testCase.makeManager();
+            first = testCase.Manager.add(testCase.Deck, testCase.Config, ...
+                blocking=false);
+            second = testCase.Manager.add(testCase.Deck, testCase.Config, ...
+                blocking=false);
+            testCase.Queue.stderr = "queue crashed";
+            testCase.Queue.queue(accepted(2));
+
+            try
+                testCase.Manager.poll();
+                testCase.verifyFail('Expected a premature EOF error.');
+            catch exception
+                testCase.verifyEqual(exception.identifier, 'trnrun:PrematureQueueEOF');
+                testCase.verifySubstring(exception.message, 'run IDs: 1, 2');
+                testCase.verifySubstring(exception.message, 'Queue stderr: queue crashed');
+            end
+
+            testCase.verifyFalse(first.isAccepted);
+            testCase.verifyTrue(second.isAccepted);
+            testCase.verifyEqual(testCase.Manager.active, [first, second]);
+            testCase.verifyEqual(testCase.Manager.simulations, second);
+            testCase.verifyEmpty(testCase.Manager.failed);
+        end
+
+        % -----------------------------------------------------------------
         % Routing
         % -----------------------------------------------------------------
 
@@ -378,6 +544,24 @@ classdef SimulationManagerTest < matlab.unittest.TestCase
         % -----------------------------------------------------------------
         % wait
         % -----------------------------------------------------------------
+
+        function waitIncludesPendingNonblockingSubmissions(testCase)
+            testCase.makeManager();
+            first = testCase.Manager.add(testCase.Deck, testCase.Config, ...
+                blocking=false);
+            second = testCase.Manager.add(testCase.Deck, testCase.Config, ...
+                blocking=false);
+            testCase.Queue.queue([accepted(1), status(1, "DONE"), ...
+                completed(1), accepted(2), completed(2)]);
+
+            testCase.Manager.wait();
+
+            testCase.verifyTrue(first.succeeded);
+            testCase.verifyTrue(second.isFinished);
+            testCase.verifyEqual(testCase.Manager.submitted, [first, second]);
+            testCase.verifyEmpty(testCase.Manager.active);
+            testCase.verifyEqual(testCase.Manager.failed, second);
+        end
 
         function waitForOneRunStopsAtItsCompletion(testCase)
             %WAITFORONERUNSTOPSATITSCOMPLETION Later work stays queued for the next wait.
@@ -453,156 +637,43 @@ classdef SimulationManagerTest < matlab.unittest.TestCase
         end
 
         % -----------------------------------------------------------------
-        % follow
-        % -----------------------------------------------------------------
-
-        function followCallsBackOnlyForAppliedUpdates(testCase)
-            %FOLLOWCALLSBACKONLYFORAPPLIEDUPDATES Queue noise never reaches the callback.
-
-            simulation = testCase.addAccepted();
-            testCase.Queue.queue([ ...
-                "native diagnostic output", ...
-                progress(1, 0.5), ...
-                status(1, "DONE"), ...
-                completed(1)]);
-            seen = trnrun.Simulation.empty(1, 0);
-            percents = [];
-
-            testCase.Manager.follow(@record);
-
-            testCase.verifyNumElements(seen, 3);
-            testCase.verifyTrue(all(seen == simulation));
-            testCase.verifyEqual(percents, [0.5 0.5 0.5], ...
-                'The callback sees state that is already folded in.');
-            testCase.verifyTrue(simulation.isFinished);
-
-            function record(updated)
-                %RECORD Capture the simulation handed to the callback.
-
-                seen(end + 1) = updated;
-                percents(end + 1) = updated.progress.percent;
-            end
-        end
-
-        function followForOneFiltersCallbacksAndStopsAtItsCompletion(testCase)
-            %FOLLOWFORONEFILTERSCALLBACKS Other runs update without being yielded.
-
-            first = testCase.addAccepted();
-            second = testCase.addAccepted();
-            testCase.Queue.queue([ ...
-                progress(2, 0.2), ...
-                progress(1, 0.5), ...
-                status(2, "RUNNING"), ...
-                completed(1), ...
-                completed(2)]);
-            seen = trnrun.Simulation.empty(1, 0);
-
-            testCase.Manager.follow(@record, first);
-
-            testCase.verifyNumElements(seen, 2);
-            testCase.verifyTrue(all(seen == first));
-            testCase.verifyTrue(first.isFinished);
-            testCase.verifyFalse(second.isFinished);
-            testCase.verifyEqual(second.progress.percent, 0.2);
-            testCase.verifyEqual(second.status.status, "RUNNING");
-
-            testCase.Manager.wait(second);
-            testCase.verifyTrue(second.isFinished);
-
-            function record(updated)
-                %RECORD Capture only updates for the selected simulation.
-
-                seen(end + 1) = updated;
-            end
-        end
-
-        function followForOneReturnsImmediatelyWhenFinished(testCase)
-            %FOLLOWFORONERETURNSIMMEDIATELYWHENFINISHED No reads or callbacks occur.
-
-            simulation = testCase.addAccepted();
-            testCase.Queue.queue(completed(1));
-            testCase.Manager.wait(simulation);
-            mark = numel(testCase.Queue.calls);
-            count = 0;
-
-            testCase.Manager.follow(@increment, simulation);
-
-            testCase.verifyEqual(count, 0);
-            testCase.verifyEmpty(testCase.Queue.callsSince(mark));
-
-            function increment(~)
-                %INCREMENT Count callbacks that should never happen.
-
-                count = count + 1;
-            end
-        end
-
-        function followRejectsAForeignSimulation(testCase)
-            %FOLLOWREJECTSAFOREIGNSIMULATION Ownership is checked before reading.
-
-            testCase.makeManager();
-            outsider = trnrun.Simulation(testCase.Deck, testCase.Config, 1);
-            mark = numel(testCase.Queue.calls);
-
-            testCase.verifyError(@() testCase.Manager.follow( ...
-                @(simulation) simulation, outsider), ...
-                'trnrun:ForeignSimulation');
-            testCase.verifyEmpty(testCase.Queue.callsSince(mark));
-        end
-
-        function followRejectsNonScalarTargets(testCase)
-            %FOLLOWREJECTSNONSCALARTARGETS Follow takes one selected run or all runs.
-
-            first = testCase.addAccepted();
-            second = testCase.addAccepted();
-
-            testCase.verifyError(@() testCase.Manager.follow( ...
-                @(simulation) simulation, [first, second]), ...
-                'MATLAB:validators:mustBeScalarOrEmpty');
-        end
-
-        function followOnAnIdleManagerDoesNothing(testCase)
-            %FOLLOWONANIDLEMANAGERDOESNOTHING No pending runs means no callbacks.
-
-            testCase.makeManager();
-            count = 0;
-
-            testCase.Manager.follow(@increment);
-
-            testCase.verifyEqual(count, 0);
-
-            function increment(~)
-                %INCREMENT Count callbacks that should never happen.
-
-                count = count + 1;
-            end
-        end
-
-        function followRejectsNonFunctionCallbacks(testCase)
-            %FOLLOWREJECTSNONFUNCTIONCALLBACKS The callback is a function handle.
-
-            testCase.makeManager();
-
-            testCase.verifyError(@() testCase.Manager.follow('disp'), ...
-                'MATLAB:validation:UnableToConvert');
-            simulation = trnrun.Simulation(testCase.Deck, testCase.Config, 1);
-            testCase.verifyError(@() testCase.Manager.follow('disp', simulation), ...
-                'MATLAB:validation:UnableToConvert');
-        end
-
-        % -----------------------------------------------------------------
         % Reentrancy
         % -----------------------------------------------------------------
 
+        function pollRejectsReentrantCalls(testCase)
+            simulation = testCase.addAccepted();
+            testCase.Queue.queue([progress(1, 0.5), completed(1)]);
+            captured = MException.empty(1, 0);
+
+            testCase.Queue.onRead = @capturePollError;
+            testCase.Manager.poll();
+
+            testCase.assertNumElements(captured, 1);
+            testCase.verifyEqual(captured(1).identifier, ...
+                'trnrun:ReentrantOperation');
+            testCase.verifyTrue(simulation.isFinished);
+
+            function capturePollError()
+                if isempty(captured)
+                    try
+                        testCase.Manager.poll();
+                    catch exception
+                        captured(end + 1) = exception;
+                    end
+                end
+            end
+        end
+
         function operationsRejectReentrantCalls(testCase)
-            %OPERATIONSREJECTREENTRANTCALLS A callback must not re-enter the manager.
+            %OPERATIONSREJECTREENTRANTCALLS Queue reads cannot re-enter the manager.
 
             simulation = testCase.addAccepted();
             testCase.Queue.queue([progress(1, 0.5), completed(1)]);
             manager = testCase.Manager;
             captured = MException.empty(1, 0);
 
-            testCase.Manager.follow(@(sim) captureError());
+            testCase.Queue.onRead = @captureError;
+            testCase.Manager.wait(simulation);
 
             testCase.assertNumElements(captured, 1);
             testCase.verifyEqual(captured(1).identifier, 'trnrun:ReentrantOperation');
@@ -640,6 +711,24 @@ classdef SimulationManagerTest < matlab.unittest.TestCase
         % Result lists
         % -----------------------------------------------------------------
 
+        function activeExcludesCompletedRunsButSubmittedKeepsThem(testCase)
+            testCase.makeManager();
+            first = testCase.Manager.add(testCase.Deck, testCase.Config, ...
+                blocking=false);
+            second = testCase.Manager.add(testCase.Deck, testCase.Config, ...
+                blocking=false);
+            testCase.Queue.queue([accepted(1), status(1, "DONE"), ...
+                completed(1), accepted(2), completed(2)]);
+
+            testCase.Manager.wait(first);
+
+            testCase.verifyEqual(testCase.Manager.submitted, [first, second]);
+            testCase.verifyEqual(testCase.Manager.active, second);
+            testCase.verifyFalse(second.isFinished);
+            testCase.Manager.wait(second);
+            testCase.verifyEmpty(testCase.Manager.active);
+        end
+
         function resultListsClassifyAcceptedRuns(testCase)
             %RESULTLISTSCLASSIFYACCEPTEDRUNS Success needs completion and DONE.
 
@@ -663,6 +752,22 @@ classdef SimulationManagerTest < matlab.unittest.TestCase
         % -----------------------------------------------------------------
         % shutdown
         % -----------------------------------------------------------------
+
+        function shutdownDrainsPendingNonblockingSubmissions(testCase)
+            testCase.makeManager();
+            simulation = testCase.Manager.add(testCase.Deck, testCase.Config, ...
+                blocking=false);
+            testCase.Queue.queue([accepted(1), status(1, "DONE"), completed(1)]);
+            mark = numel(testCase.Queue.calls);
+
+            testCase.Manager.shutdown();
+
+            testCase.verifyEqual(testCase.Queue.callsSince(mark), ...
+                ["close", "readLine", "readLine", "readLine", "readLine", "wait"]);
+            testCase.verifyTrue(simulation.succeeded);
+            testCase.verifyEmpty(testCase.Manager.active);
+            testCase.verifyEqual(testCase.Manager.submitted, simulation);
+        end
 
         function shutdownClosesDrainsThenReaps(testCase)
             %SHUTDOWNCLOSESDRAINSTHENREAPS The order of transport calls is fixed.
@@ -692,6 +797,16 @@ classdef SimulationManagerTest < matlab.unittest.TestCase
             testCase.verifyEmpty(testCase.Queue.callsSince(mark));
         end
 
+        function pollIsRejectedAfterShutdown(testCase)
+            testCase.makeManager();
+            testCase.Manager.shutdown();
+            mark = numel(testCase.Queue.calls);
+
+            testCase.verifyError(@() testCase.Manager.poll(), ...
+                'trnrun:ManagerShutdown');
+            testCase.verifyEmpty(testCase.Queue.callsSince(mark));
+        end
+
         function operationsAreRejectedAfterShutdownStarts(testCase)
             %OPERATIONSAREREJECTEDAFTERSHUTDOWNSTARTS Submission ends with shutdown.
 
@@ -700,6 +815,9 @@ classdef SimulationManagerTest < matlab.unittest.TestCase
 
             testCase.verifyError(@() testCase.Manager.add( ...
                 testCase.Deck, testCase.Config), 'trnrun:ManagerShutdown');
+            testCase.verifyError(@() testCase.Manager.add( ...
+                testCase.Deck, testCase.Config, blocking=false), ...
+                'trnrun:ManagerShutdown');
         end
 
         function shutdownReportsANonZeroQueueExit(testCase)
