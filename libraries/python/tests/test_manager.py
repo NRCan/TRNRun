@@ -83,6 +83,7 @@ class Harness:
     queue_factory: Mock
     display_factory: Mock
     output: Callable[[str], None]
+    exit_reader: Callable[[], None]
 
     workers: list[Thread] = field(default_factory=list)
     gates: list[Event] = field(default_factory=list)
@@ -123,15 +124,16 @@ def make_harness(monkeypatch: pytest.MonkeyPatch) -> Iterator[Callable[..., Harn
         process = Mock(spec=QueueProcess)
         shown = Mock(spec=DisplayCallback)
         display_factory = Mock(return_value=shown)
-        callbacks: list[Callable[[str], None]] = []
+        callbacks: list[tuple[Callable[[str], None], Callable[[], None]]] = []
 
         def queue_factory(
             executable: str | Path,
             max_concurrent: int,
             on_output: Callable[[str], None],
+            on_exit: Callable[[], None],
         ) -> Mock:
             del executable, max_concurrent
-            callbacks.append(on_output)
+            callbacks.append((on_output, on_exit))
             return process
 
         factory = Mock(side_effect=queue_factory)
@@ -144,8 +146,8 @@ def make_harness(monkeypatch: pytest.MonkeyPatch) -> Iterator[Callable[..., Harn
             trnrunq_path="mock-queue.exe",
             **options,
         )
-        (output,) = callbacks
-        harness = Harness(manager, process, shown, factory, display_factory, output)
+        ((output, exit_reader),) = callbacks
+        harness = Harness(manager, process, shown, factory, display_factory, output, exit_reader)
         harnesses.append(harness)
 
         def accept_immediately(request: dict[str, object]) -> None:
@@ -234,6 +236,7 @@ def test_constructor_captures_output_callback_and_injects_display(harness: Harne
         "executable": "mock-queue.exe",
         "max_concurrent": 3,
         "on_output": harness.output,
+        "on_exit": harness.exit_reader,
     }
     assert callable(harness.output)
 
@@ -691,6 +694,28 @@ def test_send_rollback_notifies_all_waiters(
     assert harness.manager.simulations == []
 
 
+def test_reader_exit_wakes_only_unfinished_work(
+    harness: Harness,
+    valid_inputs: tuple[Path, SimulationConfig],
+) -> None:
+    """Unexpected stdout EOF must not leave acceptance or completion waiters blocked."""
+    finished = harness.add(valid_inputs)
+    harness.emit(completed("1"))
+    harness.process.send.side_effect = None
+    submission = harness.start(lambda: harness.manager.add(*valid_inputs))
+    submission.blocked()
+    waiting = harness.start(harness.manager.wait)
+    waiting.blocked()
+
+    harness.exit_reader()
+
+    assert "before acceptance" in str(submission.raises(RuntimeError))
+    assert "before completion" in str(waiting.raises(RuntimeError))
+    assert harness.start(lambda: harness.manager.wait(finished)).result() is None
+    harness.start(lambda: harness.manager.add(*valid_inputs, blocking=False)).raises(RuntimeError)
+    assert harness.manager.active[0].id == 2
+
+
 def test_shutdown_wakes_waiting_add_and_wait_and_ignores_late_output(
     harness: Harness,
     valid_inputs: tuple[Path, SimulationConfig],
@@ -744,15 +769,38 @@ def test_shutdown_notifies_before_blocking_process_cleanup(
     closing.result()
 
 
-def test_shutdown_failure_does_not_retry_cleanup(harness: Harness) -> None:
-    """Shutdown is a single attempt; later calls are no-ops once closed."""
-    failure = OSError("kill failed")
+def test_shutdown_retries_queue_cleanup_after_failure(harness: Harness) -> None:
+    """A failed cleanup keeps work closed but allows a later shutdown to finish."""
+    failure = TimeoutError("queue reader did not exit")
     harness.process.shutdown.side_effect = failure
-    assert harness.start(harness.manager.shutdown).raises(OSError) is failure
+    assert harness.start(harness.manager.shutdown).raises(TimeoutError) is failure
     harness.display.close.assert_not_called()
     harness.start(harness.manager.__enter__).raises(RuntimeError)
+    harness.start(harness.manager.wait).raises(RuntimeError)
+
+    harness.process.shutdown.side_effect = None
     harness.start(harness.manager.shutdown).result()
+    assert harness.process.shutdown.call_count == 2
+    harness.display.close.assert_called_once_with()
+    harness.start(harness.manager.shutdown).result()
+    assert harness.process.shutdown.call_count == 2
+    harness.display.close.assert_called_once_with()
+
+
+def test_shutdown_retries_display_close_after_failure(harness: Harness) -> None:
+    """A display close error also leaves shutdown retryable."""
+    failure = OSError("display close failed")
+    harness.display.close.side_effect = failure
+    assert harness.start(harness.manager.shutdown).raises(OSError) is failure
     harness.process.shutdown.assert_called_once_with()
+
+    harness.display.close.side_effect = None
+    harness.start(harness.manager.shutdown).result()
+    assert harness.process.shutdown.call_count == 2
+    assert harness.display.close.call_count == 2
+    harness.start(harness.manager.shutdown).result()
+    assert harness.process.shutdown.call_count == 2
+    assert harness.display.close.call_count == 2
 
 
 def test_shutdown_rejects_future_operations(

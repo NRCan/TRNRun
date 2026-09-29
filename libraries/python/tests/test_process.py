@@ -69,6 +69,7 @@ def make_queue(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[Call
         stdin: IO[str] | None = None,
         stdout: IO[str] | None = None,
         on_output: Callable[[str], None] | None = None,
+        on_exit: Callable[[], None] | None = None,
     ) -> Harness:
         output = Mock(side_effect=on_output)
         child = Mock(stdin=stdin if stdin is not None else io.StringIO())
@@ -86,7 +87,7 @@ def make_queue(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[Call
         popen = Mock(return_value=child)
         monkeypatch.setattr(process.subprocess, "Popen", popen)
 
-        queue = process.QueueProcess(executable, 3, output)
+        queue = process.QueueProcess(executable, 3, output, on_exit)
         harness = Harness(queue, child, popen, output)
         queues.append(harness)
         return harness
@@ -239,15 +240,18 @@ def test_startup_cleanup_preserves_original_exception(monkeypatch: pytest.Monkey
 def test_reader_delivers_lines_in_order_and_closes_at_eof(make_queue: Callable[..., Harness]) -> None:
     """Output is delivered continuously, unchanged, on one background thread."""
     threads: list[Thread] = []
+    exited = Mock()
     harness = make_queue(
         stdout=io.StringIO('first\n\n{"event":"started"}\nlast'),
         on_output=lambda _line: threads.append(current_thread()),
+        on_exit=exited,
     )
     _join(harness.queue._reader)
 
     assert harness.output.call_args_list == [call("first\n"), call("\n"), call('{"event":"started"}\n'), call("last")]
     assert threads == [harness.queue._reader] * 4
     assert harness.child.stdout.closed
+    exited.assert_called_once_with()
     assert harness.queue._closing.is_set()
     assert harness.queue.is_alive
     with pytest.raises(RuntimeError, match="Cannot send after queue closure"):
@@ -271,9 +275,11 @@ def test_reader_failure_closes_queue_and_reaches_thread_excepthook(
     elif failure == "close":
         stdout.close.side_effect = error
     output = Mock(side_effect=error if failure == "output" else None)
-    harness = make_queue(stdout=stdout, on_output=output)
+    exited = Mock()
+    harness = make_queue(stdout=stdout, on_output=output, on_exit=exited)
     _join(harness.queue._reader)
 
+    exited.assert_called_once_with()
     assert len(errors) == 1
     assert errors[0].exc_value is error
     assert errors[0].thread is harness.queue._reader

@@ -49,7 +49,7 @@ def run_simulations(dck_files: list[Path]) -> SimulationManager:
         refresh_interval=REFRESH_INTERVAL,
     ) as manager:
         for dck in dck_files:
-            _ = manager.add(dck, CONFIG, blocking= False)
+            _ = manager.add(dck, CONFIG)
         manager.wait()
     return manager
 

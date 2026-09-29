@@ -40,9 +40,11 @@ class SimulationManager:
         self._simulations: dict[str, Simulation] = {}
         self._next_id: int = 1
         self._closed: bool = False
+        self._cleanup_complete: bool = False
+        self._reader_stopped: bool = False
 
         self._display: DisplayCallback = display if display is not None else create_display(refresh_interval)
-        self._process: QueueProcess = QueueProcess(trnrunq_path, max_concurrent, self._on_queue_output)
+        self._process: QueueProcess = QueueProcess(trnrunq_path, max_concurrent, self._on_queue_output, self._on_queue_exit)
 
     @property
     def submitted(self) -> list[Simulation]:
@@ -89,6 +91,8 @@ class SimulationManager:
         with self._condition:
             if self._closed:
                 raise RuntimeError("SimulationManager is closed")
+            if self._reader_stopped:
+                raise RuntimeError("TRNRun queue output stopped")
             simulation: Simulation = Simulation(deck_path, config, self._next_id)
             self._next_id += 1
             run_id: str = str(simulation.id)
@@ -113,9 +117,11 @@ class SimulationManager:
 
         if blocking:
             with self._condition:
-                _ = self._condition.wait_for(lambda: simulation.is_accepted or self._closed)
+                _ = self._condition.wait_for(lambda: simulation.is_accepted or self._closed or self._reader_stopped)
                 if self._closed:
                     raise RuntimeError("SimulationManager is closed")
+                if self._reader_stopped and not simulation.is_accepted:
+                    raise RuntimeError("TRNRun queue output stopped before acceptance")
         return simulation
 
     def wait(self, simulation: Simulation | None = None) -> None:
@@ -125,26 +131,28 @@ class SimulationManager:
                 raise RuntimeError("SimulationManager is closed")
             if simulation is not None and self._simulations.get(str(simulation.id)) is not simulation:
                 raise ValueError("Simulation does not belong to this manager")
-            _ = self._condition.wait_for(
-                lambda: (
-                    simulation.is_finished
-                    if simulation is not None
-                    else all(item.is_finished for item in self._simulations.values())
-                ) or self._closed,
-            )
+            def finished() -> bool:
+                return simulation.is_finished if simulation is not None else all(
+                    item.is_finished for item in self._simulations.values()
+                )
+
+            _ = self._condition.wait_for(lambda: finished() or self._closed or self._reader_stopped)
             if self._closed:
                 raise RuntimeError("SimulationManager is closed")
+            if self._reader_stopped and not finished():
+                raise RuntimeError("TRNRun queue output stopped before completion")
 
     def shutdown(self) -> None:
-        """Stop the queue and close the display."""
+        """Stop the queue and close the display, retrying incomplete cleanup."""
         with self._condition:
-            if self._closed:
+            if self._cleanup_complete:
                 return
             self._closed = True
             self._condition.notify_all()
 
         self._process.shutdown()
         self._display.close()
+        self._cleanup_complete = True
 
     def __enter__(self) -> Self:
         """Enter the manager before shutdown."""
@@ -160,6 +168,12 @@ class SimulationManager:
     ) -> None:
         """Release the queue and display when leaving the context."""
         self.shutdown()
+
+    def _on_queue_exit(self) -> None:
+        """Wake blocked submissions and observers when stdout closes."""
+        with self._condition:
+            self._reader_stopped = True
+            self._condition.notify_all()
 
     def _on_queue_output(self, line: str) -> None:
         """Apply one queue output line to its simulation."""

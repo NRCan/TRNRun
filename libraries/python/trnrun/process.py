@@ -32,6 +32,7 @@ class QueueProcess:
         executable: str | Path,
         max_concurrent: int,
         on_output: Callable[[str], None],
+        on_exit: Callable[[], None] | None = None,
     ) -> None:
         """Spawn the queue, assign its job, and start reading UTF-8 output."""
         if type(max_concurrent) is not int or max_concurrent < 1:
@@ -42,6 +43,7 @@ class QueueProcess:
             raise FileNotFoundError(f"TRNRun queue executable not found: {executable}")
 
         self._on_output: Callable[[str], None] = on_output
+        self._on_exit: Callable[[], None] | None = on_exit
         self._write_lock: LockType = Lock()
         self._closing: Event = Event()
         process: subprocess.Popen[str] = subprocess.Popen(
@@ -139,4 +141,8 @@ class QueueProcess:
                 self._on_output(line)
         finally:
             self._closing.set()
-            stdout.close()
+            try:
+                stdout.close()
+            finally:
+                if self._on_exit is not None:
+                    self._on_exit()

@@ -219,9 +219,10 @@ Simulation state continues to advance even when your code is not calling
 threads; stdin requests are serialized and waiters sleep on a condition rather
 than polling. `add()` still blocks until a queue worker accepts the request.
 
-The queue process and its reader are assumed to remain healthy until the manager
-shuts them down. Unexpected queue exit or reader failure is not reported to
-waiting operations; unfinished work may remain blocked until manager shutdown.
+If queue stdout closes unexpectedly, pending `add()` and `wait()` calls wake
+with a `RuntimeError`; already completed runs remain available. A reader failure
+is also reported through the thread exception hook. Shutdown still cleans up
+the process and display.
 
 Returned `Simulation` objects are live handles. Individual state properties are
 synchronized, but use `simulation.snapshot()` when multiple fields must describe
@@ -246,17 +247,7 @@ the same instant. Do not mutate a managed simulation or its input attributes.
 
 - _`display`_ (`DisplayCallback | None`, default: `None`)
 
-  Optional custom display, overriding automatic selection. Lifecycle and refresh
-  callbacks run on the reader thread, outside the manager lock; they must return
-  promptly and must not call `add()`, `wait()`, or `shutdown()`;
-  shutdown belongs to the manager's owner. Slow callbacks delay output
-  consumption. Display exceptions are logged instead of stopping simulations.
-  After queue cleanup joins the reader, the shutdown caller closes the display.
-  Display close errors propagate to the shutdown caller.
-
-  For a GUI, use `refresh_interval=0` and poll snapshots on the UI event loop, or
-  marshal lightweight notifications onto that loop. Do not update GUI widgets
-  directly from the reader callback.
+  Optional custom display, overriding automatic selection.
 
 An explicitly configured manager:
 
@@ -269,6 +260,7 @@ with SimulationManager(
     max_concurrent=4,
     refresh_interval=1.0,
     trnrunq_path=Path(r"C:\path\to\trnrunq.exe"),
+    display = None
 ) as manager:
     ...
 ```
@@ -278,10 +270,7 @@ with SimulationManager(
 - _`submitted`_ (`list[Simulation]`)
 
   Copy of all tracked live handles in submission order, including pending,
-  running, and completed simulations. Handles are visible as soon as they are
-  registered, before the request is sent. If sending fails before queue
-  acceptance, the handle is removed. Use this property to populate a GUI with
-  all submissions, including those not yet accepted.
+  running, and completed simulations.
 
 - _`simulations`_ (`list[Simulation]`)
 
@@ -291,7 +280,6 @@ with SimulationManager(
 
   Copy of the list of unfinished handles in submission order, including
   submissions waiting for worker acceptance.
-
 
 - _`succeeded`_ (`list[Simulation]`)
 
@@ -304,38 +292,18 @@ with SimulationManager(
 
 - _`add(deck_file: str | Path, config: SimulationConfig, *, blocking: bool = True) -> Simulation`_
 
-  Validate and submit `deck_file` using a copy of `config`. By default, blocks
+  Validate and submit `deck_file` using `config`. By default, blocks
   until a queue worker accepts the request. Pass `blocking=False` to return a
   live, initially pending `Simulation` immediately after the request is sent.
-  The send itself may still block if the queue's input pipe is full. Pending
-  handles appear in `submitted` and `active`, but not in `simulations` until accepted.
-  Use `wait(simulation)` to wait for completion, not just acceptance.
 
 - _`wait(simulation: Simulation | None = None) -> None`_
 
   With no argument, wait until no submissions remain outstanding, including
-  submissions waiting for acceptance. Pass a manager-owned `Simulation`
-  (including a pending handle) to return when that run completes. Events are processed independently by the
-  reader. There is no execution timeout; concurrent future submissions after the
-  wait returns are not included.
-
-
+  submissions waiting for acceptance. Pass a `Simulation` to return when that run completes.
 
 - _`shutdown() -> None`_
 
-  Reject new work, wake blocked callers, then kill and reap the queue. Events
-  arriving after shutdown starts are ignored; unfinished runs are not marked
-  complete or assigned synthetic outcomes. Called automatically when leaving a
-  `with` block; call `wait()` first to finish work and collect results.
-  The owner must call shutdown, never concurrently or reentrantly (including
-  from display callbacks). Sequential repeated calls are no-ops.
-
-  Process cleanup allows up to five seconds for each wait: child exit, the stdin
-  writer lock, and the stdout reader. A timeout is reported rather than silently
-  leaving cleanup incomplete. Display close happens only after successful
-  cleanup. Shutdown is a single attempt: if queue cleanup fails, repeated calls
-  do not retry it. `add()`, `wait()`, and context entry remain unavailable once
-  shutdown starts.
+  Shutdown the manager.
 
 Example manager workflow with every method and property:
 
@@ -359,40 +327,19 @@ try:
     print(f"Failed: {len(manager.failed)}")
     print(f"First succeeded: {first.succeeded}")
     print(f"Second succeeded: {second.succeeded}")
+
 finally:
     manager.shutdown()
 ```
 
 ## `Simulation`
 
-`SimulationManager.add()` returns a `Simulation` containing the current state and
-results of one run. The manager updates this object as it processes queue events;
-applications normally inspect it rather than constructing or updating it
-directly.
+`SimulationManager.add()` returns a live `Simulation` for one run. The manager
+updates it as queue events arrive; inspect it rather than updating it yourself.
+Individual properties are synchronized, but separate reads may reflect different
+moments. Use `snapshot()` when you need a consistent set of fields.
 
-### Consistent snapshots
-
-`simulation.snapshot() -> SimulationSnapshot` captures an immutable display view
-under the same lock used for event updates. It contains `id`, `deck_path`,
-`status`, `progress`, `config_event` (simulation bounds), `is_accepted`,
-`is_finished`, and the `log_count`, `notices`, `warnings`, and `fatals` counters.
-It also exposes the derived `is_running` and `succeeded` properties.
-Previously captured snapshots do not change when new events arrive.
-
-Snapshots never copy log history, so capture cost and snapshot size do not grow
-with the number of logs. Full logs, status/setting/completion event metadata,
-and input configuration remain available on `Simulation`. Snapshots are coherent
-per simulation, not a simultaneous snapshot of the whole manager.
-
-For example, a GUI timer can call this on its own UI thread with the built-in
-display disabled:
-
-```python
-def current_rows(manager):
-    return [simulation.snapshot() for simulation in manager.submitted]
-```
-
-### Identity and configuration
+### Methods and properties
 
 - _`id`_ (`int`)
 
@@ -407,7 +354,6 @@ def current_rows(manager):
 
   Independent copy of the configuration used for this run.
 
-### Events
 
 - _`status`_ (`SimulationStatus | None`)
 
@@ -443,7 +389,6 @@ def current_rows(manager):
   Copy of all log events in arrival order. The complete history stays in memory
   for the lifetime of the simulation object; no events are evicted.
 
-### State and outcome
 
 - _`is_running`_ (`bool`)
 
@@ -458,13 +403,11 @@ def current_rows(manager):
 
   Whether the queue has reported completion for the request.
 
-
 - _`succeeded`_ (`bool`)
 
   Whether the queue completed the request and the latest runner status is
   `SimulationStatus.DONE`.
 
-### Log counters
 
 - _`log_count`_ (`int`)
 
@@ -482,6 +425,12 @@ def current_rows(manager):
 
   Number of received `Fatal` log events.
 
+- _`snapshot() -> SimulationSnapshot`_
+
+  Immutable, per-simulation view of `id`, `deck_path`, `status`, `progress`,
+  `config_event`, `is_accepted`, `is_finished`, and the log counters. It also
+  provides `is_running` and `succeeded`.
+
 An example inspecting every property:
 
 ```python
@@ -497,7 +446,6 @@ print(f"Config: {simulation.config}")
 print(f"Running: {simulation.is_running}")
 print(f"Accepted: {simulation.is_accepted}")
 print(f"Finished: {simulation.is_finished}")
-
 print(f"Succeeded: {simulation.succeeded}")
 print(f"Status: {simulation.status}")
 print(f"Status event: {simulation.status_event}")
@@ -510,6 +458,80 @@ print(f"Log count: {simulation.log_count}")
 print(f"Notices: {simulation.notices}")
 print(f"Warnings: {simulation.warnings}")
 print(f"Fatals: {simulation.fatals}")
+print(f"Snapshot: {simulation.snapshot()}")
+```
+
+## Custom display
+
+### Using Callback
+Pass an object with `simulation_started`, `simulation_finished`, `refresh`, and
+`close` methods as `display`.
+
+```python
+from time import monotonic
+
+from trnrun import SimulationConfig, SimulationManager
+
+
+class ProgressDisplay:
+    def __init__(self):
+        self.active = {}
+        self.last_print = 0.0
+
+    def simulation_started(self, simulation):
+        self.active[simulation.id] = simulation
+        self.refresh()
+
+    def simulation_finished(self, simulation):
+        self.active.pop(simulation.id, None)
+        state = simulation.snapshot()
+        print(f"[{state.id}] {state.deck_path.name}: {state.status or 'unknown'}")
+
+    def refresh(self):
+        now = monotonic()
+        if now - self.last_print < 1.0:
+            return
+        self.last_print = now
+        for simulation in self.active.values():
+            state = simulation.snapshot()
+            progress = f"{state.progress.percent:.0%}" if state.progress else "no progress yet"
+            print(f"[{state.id}] {state.deck_path.name}: {progress}")
+
+    def close(self):
+        self.active.clear()
+
+
+config = SimulationConfig(watch_tmp=True)
+with SimulationManager(max_concurrent=2, display=ProgressDisplay()) as manager:
+    for deck in (r"C:\path\to\first.dck", r"C:\path\to\second.dck"):
+        manager.add(deck, config, blocking=False)
+    manager.wait()
+```
+
+### Using Snapshot
+
+To print every second even without new events, poll the live `Simulation`
+handles yourself. Disable the built-in display with `refresh_interval=0`.
+
+```python
+from time import sleep
+
+from trnrun import SimulationConfig, SimulationManager
+
+config = SimulationConfig(watch_tmp=True)
+with SimulationManager(max_concurrent=2, refresh_interval=0) as manager:
+    simulations = [
+        manager.add(deck, config, blocking=False)
+        for deck in (r"C:\path\to\first.dck", r"C:\path\to\second.dck")
+    ]
+    while True:
+        snapshots = [simulation.snapshot() for simulation in simulations]
+        for state in snapshots:
+            progress = f"{state.progress.percent:.0%}" if state.progress else "no progress yet"
+            print(f"[{state.id}] {state.deck_path.name}: {progress} ({state.status})")
+        if all(state.is_finished for state in snapshots):
+            break
+        sleep(1)
 ```
 
 ## Examples
