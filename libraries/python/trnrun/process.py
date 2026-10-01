@@ -1,87 +1,148 @@
-"""Interactive `trnrunq.exe` child process.
-
-Owns the queue process and its two pipes: JSON requests go in one line at a
-time, and queue lifecycle events plus merged child output come back the same
-way. This module knows the queue's command line and framing, and nothing about
-simulations.
-
-Reads and writes block. The caller must drain stdout regularly; leaving it
-unread can fill the pipe and stall the queue.
-"""
+"""Interactive `trnrunq.exe` process with background stdout reading."""
 
 from __future__ import annotations
 
 import contextlib
 import json
 import subprocess
+from _thread import LockType
+from collections.abc import Callable
 from pathlib import Path
-from typing import IO, Final
+from threading import Event, Lock, Thread, current_thread
+from types import TracebackType
+from typing import IO, Final, Self
 
 from trnrun.job import assign_to_job
 
 CREATE_NO_WINDOW: Final[int] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+SHUTDOWN_TIMEOUT: Final[float] = 5.0
 
 
 class QueueProcess:
-    """One running `trnrunq.exe` and the pipes used to drive it.
+    """Run a queue and forward stdout lines on a background thread.
 
-    Parameters
-    ----------
-    executable : str or Path
-        Path to the queue executable to spawn.
-    max_concurrent : int
-        Positive integer limiting simultaneous runners (`--maxConcurrent`).
+    The owner controls the lifetime; the queue and output callback are assumed
+    to stay healthy until shutdown. Callbacks may run before construction
+    returns and must return promptly. Shutdown must not be concurrent or
+    reentrant, and callers must not hold locks needed by the callback.
     """
 
-    def __init__(self, executable: str | Path, max_concurrent: int) -> None:
-        """Spawn the queue process and adopt it into the kill-on-close job."""
-        if max_concurrent < 1:
-            raise ValueError("max_concurrent must be at least 1")
+    def __init__(
+        self,
+        executable: str | Path,
+        max_concurrent: int,
+        on_output: Callable[[str], None],
+        on_exit: Callable[[], None] | None = None,
+    ) -> None:
+        """Spawn the queue, assign its job, and start reading UTF-8 output."""
+        if type(max_concurrent) is not int or max_concurrent < 1:
+            raise ValueError("max_concurrent must be an integer of at least 1")
 
         executable = Path(executable).absolute()
         if not executable.is_file():
             raise FileNotFoundError(f"TRNRun queue executable not found: {executable}")
 
-        self._process: subprocess.Popen[str] = subprocess.Popen(
-            [
-                str(executable),
-                f"--maxConcurrent:{max_concurrent}",
-            ],
+        self._on_output: Callable[[str], None] = on_output
+        self._on_exit: Callable[[], None] | None = on_exit
+        self._write_lock: LockType = Lock()
+        self._closing: Event = Event()
+        process: subprocess.Popen[str] = subprocess.Popen(
+            [str(executable), f"--maxConcurrent:{max_concurrent}"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            text=True,
             encoding="utf-8",
             errors="replace",
             creationflags=CREATE_NO_WINDOW,
         )
-        _ = assign_to_job(self._process)
-        self._stdin: IO[str] = self._require_stream(self._process.stdin, "stdin")
-        self._stdout: IO[str] = self._require_stream(self._process.stdout, "stdout")
+        try:
+            _ = assign_to_job(process)
+            if process.stdin is None or process.stdout is None:
+                raise RuntimeError("TRNRun queue pipes are unavailable")  # noqa: TRY301 - use the same startup cleanup
+
+            self._process: subprocess.Popen[str] = process
+            self._stdin: IO[str] = process.stdin
+            self._reader: Thread = Thread(
+                target=self._read_output,
+                args=(process.stdout,),
+                name="trnrunq-reader",
+                daemon=True,
+            )
+            self._reader.start()
+        except BaseException:
+            # Best-effort cleanup must preserve the original startup exception.
+            with contextlib.suppress(Exception):
+                process.kill()
+            with contextlib.suppress(Exception):
+                _ = process.wait(timeout=SHUTDOWN_TIMEOUT)
+            for stream in (process.stdin, process.stdout):
+                if stream is not None:
+                    with contextlib.suppress(Exception):
+                        stream.close()
+            raise
+
+    def __enter__(self) -> Self:
+        """Return this queue for context-managed cleanup."""
+        return self
+
+    def __exit__(
+        self,
+        _exc_type: type[BaseException] | None,
+        _exc_value: BaseException | None,
+        _traceback: TracebackType | None,
+    ) -> None:
+        """Stop the queue when leaving the context."""
+        self.shutdown()
+
+    @property
+    def is_alive(self) -> bool:
+        """Return whether the queue process is running."""
+        return self._process.poll() is None
 
     def send(self, request: dict[str, object]) -> None:
-        """Encode a request as strict JSON, then write and flush one line."""
-        _ = self._stdin.write(json.dumps(request, separators=(",", ":"), allow_nan=False) + "\n")
-        self._stdin.flush()
-
-    def read_line(self) -> str | None:
-        """Block for the next queue stdout line, or return None at EOF."""
-        return self._stdout.readline() or None
+        """Write and flush one strict JSON line without interleaving senders."""
+        line = json.dumps(request, separators=(",", ":"), allow_nan=False) + "\n"
+        if self._closing.is_set():
+            raise RuntimeError("Cannot send after queue closure has started")
+        with self._write_lock:
+            if self._closing.is_set():
+                raise RuntimeError("Cannot send after queue closure has started")
+            _ = self._stdin.write(line)
+            self._stdin.flush()
 
     def shutdown(self) -> None:
-        """Kill and reap the queue, then close its pipes without draining output."""
-        try:
-            # Kill before waiting or closing pipes: unread stdout may be full.
+        """Kill/reap the queue, close stdin, and join its reader.
+
+        Each wait has a five-second timeout; incomplete cleanup can be retried.
+        Only the reader closes stdout, avoiding its cross-thread stream lock.
+        """
+        self._closing.set()
+        # Kill before taking the write lock to unblock a full stdin pipe.
+        if self.is_alive:
             self._process.kill()
-            _ = self._process.wait()
-        finally:
+        _ = self._process.wait(timeout=SHUTDOWN_TIMEOUT)
+
+        if not self._write_lock.acquire(timeout=SHUTDOWN_TIMEOUT):
+            raise TimeoutError("Timed out waiting for queue stdin writer")
+        try:
             with contextlib.suppress(OSError):
                 self._stdin.close()
-            with contextlib.suppress(OSError):
-                self._stdout.close()
+        finally:
+            self._write_lock.release()
 
-    @staticmethod
-    def _require_stream(stream: IO[str] | None, name: str) -> IO[str]:
-        """Return a configured queue stream."""
-        if stream is None:
-            raise RuntimeError(f"queue {name} is unavailable")
-        return stream
+        if current_thread() is not self._reader:
+            self._reader.join(timeout=SHUTDOWN_TIMEOUT)
+            if self._reader.is_alive():
+                raise TimeoutError("Timed out waiting for queue stdout reader")
+
+    def _read_output(self, stdout: IO[str]) -> None:
+        """Forward lines, including trailing newlines, until the queue closes."""
+        try:
+            for line in iter(stdout.readline, ""):
+                self._on_output(line)
+        finally:
+            self._closing.set()
+            try:
+                stdout.close()
+            finally:
+                if self._on_exit is not None:
+                    self._on_exit()

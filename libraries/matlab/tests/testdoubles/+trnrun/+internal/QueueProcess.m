@@ -17,8 +17,10 @@ classdef QueueProcess < handle
     %       queue = getappdata(0, trnrun.internal.QueueProcess.MockKey);
     %       queue.script = ["...", "..."];
     %
-    %   READLINE walks script in order and then reports EOF, matching the
-    %   real transport, which returns numeric [] once stdout is drained.
+    %   READLINE and POLLLINE share a cursor into script. By default,
+    %   exhausting the script means EOF (numeric []); setting
+    %   pollNoReadyWhenEmpty makes POLLLINE report string(missing) instead,
+    %   to simulate a live queue with no ready output.
 
     properties (Constant)
         MockKey = 'TRNRunMockQueueProcess'
@@ -28,7 +30,9 @@ classdef QueueProcess < handle
         script (1,:) string = strings(1, 0)     % stdout lines, in order
         exitCode (1,1) double = 0               % value returned by wait
         sendError (1,1) string = string(missing)    % identifier raised by send
-        readError (1,1) string = string(missing)    % identifier raised by readLine
+        readError (1,1) string = string(missing)    % identifier raised by reads
+        pollNoReadyWhenEmpty (1,1) logical = false
+        onRead = []                             % optional reentrancy test hook
         stderr (1,:) string = strings(1, 0)     % reported by diagnostics
         stderrDropped (1,1) double = 0
         diagnosticsError (1,1) logical = false  % make diagnostics throw
@@ -65,11 +69,36 @@ classdef QueueProcess < handle
             %READLINE Return the next scripted line, or numeric [] at EOF.
 
             obj.calls(end + 1) = "readLine";
+            if ~isempty(obj.onRead)
+                obj.onRead();
+            end
             if ~ismissing(obj.readError)
                 error(char(obj.readError), 'Mock queue read failed.');
             end
             if obj.scriptHead > numel(obj.script)
                 line = [];
+                return
+            end
+            line = char(obj.script(obj.scriptHead));
+            obj.scriptHead = obj.scriptHead + 1;
+        end
+
+        function line = pollLine(obj)
+            %POLLLINE Return one scripted line, no-ready, or EOF without waiting.
+
+            obj.calls(end + 1) = "pollLine";
+            if ~isempty(obj.onRead)
+                obj.onRead();
+            end
+            if ~ismissing(obj.readError)
+                error(char(obj.readError), 'Mock queue read failed.');
+            end
+            if obj.scriptHead > numel(obj.script)
+                if obj.pollNoReadyWhenEmpty
+                    line = string(missing);
+                else
+                    line = [];
+                end
                 return
             end
             line = char(obj.script(obj.scriptHead));

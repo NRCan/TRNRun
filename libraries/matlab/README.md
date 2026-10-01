@@ -18,6 +18,7 @@ toolbox is installed.
 - [Installation](#installation)
 - [Quick start](#quick-start)
 - [Run a batch](#run-a-batch)
+- [Submit without waiting for acceptance](#submit-without-waiting-for-acceptance)
 - [`trnrun.SimulationConfig`](#trnrunsimulationconfig)
 - [`trnrun.SimulationManager`](#trnrunsimulationmanager)
 - [`trnrun.Simulation`](#trnrunsimulation)
@@ -85,6 +86,41 @@ function simulations = run_batch(deck_folder)
     manager.shutdown();
 end
 ```
+
+## Submit without waiting for acceptance
+
+Use `blocking=false` when submissions must not wait for queue acceptance (for
+example, when all workers are occupied). The returned handles start in the
+`pending` state. Call `poll()` from your own loop to apply ready updates; it
+returns immediately with the number of applied updates, or `0` if none are
+ready.
+
+```matlab
+manager = trnrun.SimulationManager(maxConcurrent=2);
+config = trnrun.SimulationConfig(watch_tmp=true);
+
+first = manager.add("C:\path\to\first.dck", config, blocking=false);
+second = manager.add("C:\path\to\second.dck", config, blocking=false);
+
+while ~isempty(manager.active)
+    count = manager.poll();
+    if count == 0
+        pause(0.1); % Let the queue make progress without busy-spinning.
+    end
+end
+
+fprintf("%d submitted, %d accepted, %d succeeded\n", ...
+    numel(manager.submitted), numel(manager.simulations), ...
+    numel(manager.succeeded));
+manager.shutdown();
+```
+
+`poll()` does not run in the background: MATLAB-visible state, results and
+built-in display updates remain stale until `poll()`, `wait()`, or
+`shutdown()` reads queue output. The transport can still wait briefly while
+sending a request; `blocking=false` only skips the wait for `QUEUE/ACCEPTED`.
+If you do not need to integrate with an event loop, `manager.wait()` also
+finishes pending submissions.
 
 ## `trnrun.SimulationConfig`
 
@@ -220,9 +256,10 @@ config = trnrun.SimulationConfig( ...
 ## `trnrun.SimulationManager`
 
 `trnrun.SimulationManager` owns one queue process and controls how simulations
-are submitted, monitored, and displayed. It is synchronous and intended for use
-from one thread. Simulation state advances only while `add()`, `wait()`,
-`follow()`, or `shutdown()` reads queue output.
+are submitted, monitored, and displayed. It is intended for use from one
+thread. Simulation state advances only while blocking `add()`, `poll()`,
+`wait()`, or `shutdown()` reads queue output. Non-blocking `add()`
+submits without processing updates.
 
 ### Parameters
 
@@ -252,6 +289,17 @@ manager = trnrun.SimulationManager( ...
 
 ### Methods and properties
 
+- _`submitted`_ (`trnrun.Simulation` array)
+
+  Snapshot of all successfully submitted handles in submission order, including
+  those not yet accepted by the queue and those already finished. Failed sends
+  are excluded.
+
+- _`active`_ (`trnrun.Simulation` array)
+
+  Snapshot of unfinished submitted handles, including pending requests that
+  have not yet received `QUEUE/ACCEPTED`.
+
 - _`simulations`_ (`trnrun.Simulation` array)
 
   Snapshot of all queue-accepted simulations in submission order.
@@ -265,16 +313,31 @@ manager = trnrun.SimulationManager( ...
   Snapshot of accepted simulations that completed without succeeding. Pending
   and running simulations are not included.
 
-- _`simulation = add(deckFile, config)`_
+- _`simulation = add(deckFile, config, blocking=true)`_
 
-  Validate and submit `deckFile` using a copy of `config`. Blocks until a queue
-  worker accepts the request and returns its `trnrun.Simulation`. If every
-  worker is occupied, this may not return until an earlier simulation finishes.
+  Validate and submit `deckFile` using a copy of `config`. The default
+  `blocking=true` preserves the two-argument behavior: return its
+  `trnrun.Simulation` only after `QUEUE/ACCEPTED`. If every worker is occupied,
+  this may wait until an earlier simulation finishes. With `blocking=false`,
+  return the handle immediately after `transport.send` succeeds without waiting
+  for acceptance or reading updates; its initial state is `pending`. The send
+  itself may still take time. Acceptance is not a prerequisite for inclusion in
+  `submitted` or `active`.
+
+- _`count = poll()`_
+
+  Non-blockingly consume currently ready queue output and apply its events.
+  Return the number of updates actually applied, or `0` when none are ready.
+  Malformed, unroutable, duplicate and post-completion events do not count;
+  they may be retained in `sessionDiagnostics`. A premature queue EOF with
+  unfinished runs raises an error rather than treating those runs as failures.
+  Do not call `poll()` reentrantly from another manager operation or after
+  shutdown starts.
 
 - _`wait()`_
 
-  Process events until every accepted simulation completes. There is no
-  client-side timeout.
+  Process events until every unfinished submitted simulation completes,
+  including requests still pending acceptance. There is no client-side timeout.
 
 - _`wait(simulation)`_
 
@@ -282,24 +345,10 @@ manager = trnrun.SimulationManager( ...
   process updates from other runs. Passing a finished simulation returns
   immediately; a simulation owned by another manager is rejected.
 
-- _`follow(callback)`_
-
-  Follow every unfinished simulation. After applying each new event, call
-  `callback(updatedSimulation)` with the simulation affected by that event.
-  Return when all simulations are finished.
-
-- _`follow(callback, simulation)`_
-
-  Follow one manager-owned simulation. Events for every run are still processed,
-  but `callback(updatedSimulation)` is called only when the selected simulation
-  is updated. Return when the selected simulation is finished; if it is already
-  finished, return immediately.
-
-Previously consumed events are not replayed by either form.
 
 - _`shutdown()`_
 
-  Close queue input, finish accepted work, and reap the queue process. A
+  Close queue input, drain pending and accepted work, and reap the queue process. A
   successful shutdown is idempotent and leaves simulation results readable.
 
 
@@ -314,12 +363,15 @@ function [first, second] = manager_example()
     config = trnrun.SimulationConfig(watch_tmp=true);
     manager = trnrun.SimulationManager(maxConcurrent=2);
 
-    first = manager.add("C:\path\to\first.dck", config);
-    second = manager.add("C:\path\to\second.dck", config);
+    first = manager.add("C:\path\to\first.dck", config, blocking=false);
+    second = manager.add("C:\path\to\second.dck", config, blocking=false);
 
-    manager.follow(@report_update, first);
+    manager.poll();
+    manager.wait(first);
     manager.wait();
 
+    fprintf("Submitted: %d\n", numel(manager.submitted));
+    fprintf("Active: %d\n", numel(manager.active));
     fprintf("Simulations: %d\n", numel(manager.simulations));
     fprintf("Succeeded: %d\n", numel(manager.succeeded));
     fprintf("Failed: %d\n", numel(manager.failed));
@@ -329,13 +381,6 @@ function [first, second] = manager_example()
     fprintf("Second succeeded: %d\n", second.succeeded);
 
     manager.shutdown();
-end
-
-function report_update(simulation)
-    if ~isempty(simulation.status)
-        fprintf("%s: %s\n", ...
-            char(simulation.deckPath), char(string(simulation.status.status)));
-    end
 end
 ```
 

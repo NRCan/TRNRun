@@ -31,7 +31,6 @@ function simulations = example_manager()
     for dck = dck_files
         manager.add(dck, config);
     end
-
     manager.wait();
     manager.shutdown();
 

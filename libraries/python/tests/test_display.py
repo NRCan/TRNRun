@@ -6,6 +6,7 @@ import builtins
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from io import StringIO
+from pathlib import Path
 from typing import override
 from unittest.mock import Mock, call
 
@@ -19,7 +20,7 @@ import trnrun.display as display_module
 from trnrun.config import SimulationConfig
 from trnrun.display import Display, NotebookDisplay, NullDisplay
 from trnrun.events import ConfigEvent, LogEvent, ProgressEvent, SimulationStatus, StatusEvent
-from trnrun.simulation import Simulation
+from trnrun.simulation import Simulation, SimulationSnapshot
 
 TIMESTAMP = "2026-01-02T03:04:05Z"
 
@@ -317,6 +318,38 @@ def test_render_line_formats_complete_state_and_status_style() -> None:
     assert "Elapsed: 01:02:03 │ ETA: 00:01:05" in line.plain
     assert "[#####---------------]  1,234 /  2,000 (25%)" in line.plain
     assert any(span.style == "green" and line.plain[span.start : span.end].strip() == "DONE" for span in line.spans)
+
+
+def test_render_line_uses_one_log_free_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Updates after capture cannot mix newer fields into the rendered line."""
+    simulation = make_simulation(sim_id=7, deck_path="original.dck")
+    simulation.apply_event(StatusEvent(SimulationStatus.RUNNING, TIMESTAMP))
+    simulation.apply_event(ConfigEvent(0.0, 2_000.0, 1.0, TIMESTAMP))
+    simulation.apply_event(ProgressEvent(500.0, 0.25, 3_723_000.0, 65_000.0, TIMESTAMP))
+    simulation.apply_event(LogEvent("Notice", TIMESTAMP))
+    expected = display_module._render_line(simulation)
+    capture = simulation.snapshot
+
+    def capture_then_update() -> SimulationSnapshot:
+        snapshot = capture()
+        simulation.id = 8
+        simulation.deck_path = Path("changed.dck")
+        simulation.apply_event(StatusEvent(SimulationStatus.DONE, TIMESTAMP))
+        simulation.apply_event(ConfigEvent(0.0, 4_000.0, 1.0, TIMESTAMP))
+        simulation.apply_event(ProgressEvent(4_000.0, 1.0, 5_000_000.0, 0.0, TIMESTAMP))
+        for severity in ("Notice", "Warning", "Fatal"):
+            simulation.apply_event(LogEvent(severity, TIMESTAMP))
+        return snapshot
+
+    snapshot = Mock(side_effect=capture_then_update)
+    monkeypatch.setattr(simulation, "snapshot", snapshot)
+
+    line = display_module._render_line(simulation)
+
+    snapshot.assert_called_once_with()
+    assert line.plain == expected.plain
+    assert line.spans == expected.spans
+    assert simulation.status is SimulationStatus.DONE
 
 
 def test_render_all_preserves_simulation_insertion_order(

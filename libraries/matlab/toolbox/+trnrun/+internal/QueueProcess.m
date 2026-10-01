@@ -4,7 +4,9 @@ classdef QueueProcess < handle
     %   trnrunq with redirected input and output.
     %
     %   Q.send(REQUEST) writes one JSON request per line. Q.readLine(TIMEOUT)
-    %   returns stdout as character vectors, or numeric [] at EOF. TIMEOUT
+    %   returns stdout as character vectors, or numeric [] at EOF. Q.pollLine()
+    %   returns a ready line without waiting, string(missing) if none is
+    %   available yet, or numeric [] at EOF. TIMEOUT
     %   limits the wait for a stdout line in seconds (default Inf), not
     %   simulation progress. Expiry terminates the queue and raises
     %   trnrun:QueueReadTimeout.
@@ -154,6 +156,26 @@ classdef QueueProcess < handle
                     obj.pendingStdoutHead > numel(obj.pendingStdout) / 2
                 obj.pendingStdout(1:obj.pendingStdoutHead - 1) = [];
                 obj.pendingStdoutHead = 1;
+            end
+        end
+
+        function line = pollLine(obj)
+            %POLLLINE Return one ready stdout line without waiting.
+            %   A missing string means no line is ready; numeric [] means EOF.
+
+            obj.pump();
+            if obj.pendingStdoutHead <= numel(obj.pendingStdout)
+                line = char(obj.pendingStdout(obj.pendingStdoutHead));
+                obj.pendingStdoutHead = obj.pendingStdoutHead + 1;
+                if obj.pendingStdoutHead > 256 && ...
+                        obj.pendingStdoutHead > numel(obj.pendingStdout) / 2
+                    obj.pendingStdout(1:obj.pendingStdoutHead - 1) = [];
+                    obj.pendingStdoutHead = 1;
+                end
+            elseif obj.stdoutEof
+                line = [];
+            else
+                line = string(missing);
             end
         end
 
