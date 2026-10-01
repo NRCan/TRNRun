@@ -1,0 +1,564 @@
+<?xml version="1.0"?>
+<doc>
+    <assembly>
+        <name>TRNRun</name>
+    </assembly>
+    <members>
+        <member name="T:TRNRun.Display.ConsoleDisplay">
+            <summary>Renders manager-supplied state synchronously without owning simulations or background work.</summary>
+        </member>
+        <member name="M:TRNRun.Display.ConsoleDisplay.Render(System.Collections.Generic.IReadOnlyList{TRNRun.Simulation},System.Boolean)">
+            <summary>Writes a changed frame when due; force bypasses both throttling and change detection.</summary>
+        </member>
+        <member name="T:TRNRun.SimulationStatus">
+            <summary>Lifecycle states reported for a simulation.</summary>
+        </member>
+        <member name="F:TRNRun.SimulationStatus.Pending">
+            <summary>The run was validated and is waiting to launch.</summary>
+        </member>
+        <member name="F:TRNRun.SimulationStatus.Launching">
+            <summary>TRNSYS is starting and readiness detection is under way.</summary>
+        </member>
+        <member name="F:TRNRun.SimulationStatus.Running">
+            <summary>TRNSYS is running and being monitored.</summary>
+        </member>
+        <member name="F:TRNRun.SimulationStatus.Done">
+            <summary>The simulation completed.</summary>
+        </member>
+        <member name="F:TRNRun.SimulationStatus.Cancelled">
+            <summary>TRNSYS exited before the simulation completed.</summary>
+        </member>
+        <member name="F:TRNRun.SimulationStatus.Error">
+            <summary>The run failed to launch, crashed, or logged a fatal error.</summary>
+        </member>
+        <member name="F:TRNRun.SimulationStatus.Timeout">
+            <summary>The run did not finish within its readiness or monitoring timeout.</summary>
+        </member>
+        <member name="F:TRNRun.SimulationStatus.Stalled">
+            <summary>Simulation time stopped advancing for too long.</summary>
+        </member>
+        <member name="T:TRNRun.TrnRunEvent">
+            <summary>Base type for native events from one simulation.</summary>
+        </member>
+        <member name="M:TRNRun.TrnRunEvent.#ctor(System.String,System.String)">
+            <summary>Base type for native events from one simulation.</summary>
+        </member>
+        <member name="T:TRNRun.StatusEvent">
+            <summary>Runner status and optional outcome detail.</summary>
+        </member>
+        <member name="M:TRNRun.StatusEvent.#ctor(System.String,System.String,TRNRun.SimulationStatus,System.String)">
+            <summary>Runner status and optional outcome detail.</summary>
+        </member>
+        <member name="T:TRNRun.ProgressEvent">
+            <summary>Simulation progress and wall-clock timing.</summary>
+        </member>
+        <member name="M:TRNRun.ProgressEvent.#ctor(System.String,System.String,System.Double,System.Double,System.Double,System.Double)">
+            <summary>Simulation progress and wall-clock timing.</summary>
+        </member>
+        <member name="T:TRNRun.ConfigEvent">
+            <summary>Runner-reported simulation bounds and time step.</summary>
+        </member>
+        <member name="M:TRNRun.ConfigEvent.#ctor(System.String,System.String,System.Double,System.Double,System.Double)">
+            <summary>Runner-reported simulation bounds and time step.</summary>
+        </member>
+        <member name="T:TRNRun.SettingEvent">
+            <summary>Effective native runner settings.</summary>
+        </member>
+        <member name="M:TRNRun.SettingEvent.#ctor(System.String,System.String,System.String,System.String,System.Boolean,System.Boolean,System.Boolean,System.Int64,System.Int64,System.Boolean,System.Boolean,System.Int64,System.Int64,System.Int64,System.Boolean,System.Boolean,System.Boolean,System.String,System.Boolean)">
+            <summary>Effective native runner settings.</summary>
+        </member>
+        <member name="T:TRNRun.LogEvent">
+            <summary>TRNSYS log entry.</summary>
+        </member>
+        <member name="M:TRNRun.LogEvent.#ctor(System.String,System.String,System.String,System.Nullable{System.Double},System.Nullable{System.Int64},System.Nullable{System.Int64},System.Nullable{System.Int64},System.String,System.String)">
+            <summary>TRNSYS log entry.</summary>
+        </member>
+        <member name="T:TRNRun.QueueEvent">
+            <summary>Queue worker acceptance or completion event.</summary>
+        </member>
+        <member name="M:TRNRun.QueueEvent.#ctor(System.String,System.String,System.String,System.Nullable{System.Int32})">
+            <summary>Queue worker acceptance or completion event.</summary>
+        </member>
+        <member name="M:TRNRun.Internal.EventParser.Parse(System.String)">
+            <summary>Parses one queue output line into a typed event.</summary>
+            <param name="line">One line from queue standard output.</param>
+            <returns>
+            The parsed event, or null for blank, invalid JSON, or unrouted lines
+            lacking string-valued runID and kind fields.
+            </returns>
+            <exception cref="T:System.Text.Json.JsonException">
+            A routed event has an unknown kind or a missing or invalid field.
+            </exception>
+            <remarks>Kind matching is case-insensitive; native status, severity, and timestamp strings are preserved.</remarks>
+        </member>
+        <member name="M:TRNRun.Internal.EventParser.IsString(System.Text.Json.JsonElement,System.String)">
+            <summary>Checks whether a field contains a JSON string.</summary>
+        </member>
+        <member name="M:TRNRun.Internal.EventParser.ParseRouted(System.Text.Json.JsonElement)">
+            <summary>Parses a routed event according to its kind.</summary>
+        </member>
+        <member name="M:TRNRun.Internal.EventParser.ParseStatus(System.Text.Json.JsonElement)">
+            <summary>Parses a runner status event.</summary>
+        </member>
+        <member name="M:TRNRun.Internal.EventParser.ParseProgress(System.Text.Json.JsonElement)">
+            <summary>Parses a simulation progress event.</summary>
+        </member>
+        <member name="M:TRNRun.Internal.EventParser.ParseConfig(System.Text.Json.JsonElement)">
+            <summary>Parses a simulation configuration event.</summary>
+        </member>
+        <member name="M:TRNRun.Internal.EventParser.ParseSetting(System.Text.Json.JsonElement)">
+            <summary>Parses an effective runner settings event.</summary>
+        </member>
+        <member name="M:TRNRun.Internal.EventParser.ParseLog(System.Text.Json.JsonElement)">
+            <summary>Parses a TRNSYS log event.</summary>
+        </member>
+        <member name="M:TRNRun.Internal.EventParser.ParseQueue(System.Text.Json.JsonElement)">
+            <summary>Parses a queue lifecycle event.</summary>
+        </member>
+        <member name="M:TRNRun.Internal.EventParser.Require(System.Text.Json.JsonElement,System.String,System.Text.Json.JsonValueKind,System.String)">
+            <summary>Requires a field of the given JSON kind.</summary>
+        </member>
+        <member name="M:TRNRun.Internal.EventParser.RequireString(System.Text.Json.JsonElement,System.String)">
+            <summary>Gets a required JSON string.</summary>
+        </member>
+        <member name="M:TRNRun.Internal.EventParser.RequireStatus(System.Text.Json.JsonElement,System.String)">
+            <summary>Gets a required simulation status.</summary>
+        </member>
+        <member name="M:TRNRun.Internal.EventParser.RequireBoolean(System.Text.Json.JsonElement,System.String)">
+            <summary>Gets a required JSON Boolean.</summary>
+        </member>
+        <member name="M:TRNRun.Internal.EventParser.RequireDouble(System.Text.Json.JsonElement,System.String)">
+            <summary>Gets a required finite JSON number.</summary>
+        </member>
+        <member name="M:TRNRun.Internal.EventParser.RequireInt32(System.Text.Json.JsonElement,System.String)">
+            <summary>Gets a required 32-bit JSON integer.</summary>
+        </member>
+        <member name="M:TRNRun.Internal.EventParser.RequireInt64(System.Text.Json.JsonElement,System.String)">
+            <summary>Gets a required 64-bit JSON integer.</summary>
+        </member>
+        <member name="M:TRNRun.Internal.EventParser.OptionalString(System.Text.Json.JsonElement,System.String)">
+            <summary>Reads a string, or null for an absent or JSON-null field.</summary>
+        </member>
+        <member name="M:TRNRun.Internal.EventParser.OptionalDouble(System.Text.Json.JsonElement,System.String)">
+            <summary>Gets an optional finite JSON number.</summary>
+        </member>
+        <member name="M:TRNRun.Internal.EventParser.OptionalInt32(System.Text.Json.JsonElement,System.String)">
+            <summary>Gets an optional 32-bit JSON integer.</summary>
+        </member>
+        <member name="M:TRNRun.Internal.EventParser.OptionalInt64(System.Text.Json.JsonElement,System.String)">
+            <summary>Gets an optional 64-bit JSON integer.</summary>
+        </member>
+        <member name="M:TRNRun.Internal.EventParser.IsNullOrMissing(System.Text.Json.JsonElement,System.String)">
+            <summary>Checks for an absent or JSON-null field.</summary>
+        </member>
+        <member name="M:TRNRun.Internal.EventParser.Invalid(System.String,System.String)">
+            <summary>Reports a field's expected type.</summary>
+        </member>
+        <member name="T:TRNRun.Internal.QueueProcess">
+            <summary>Owns the queue process, its redirected pipes, and its Job Object.</summary>
+            <remarks>
+            The owner must stop sending, close input, drain stdout to EOF, wait, then dispose.
+            Waiting before EOF can deadlock on a full stdout pipe; disposing does not reap the queue.
+            </remarks>
+        </member>
+        <member name="M:TRNRun.Internal.QueueProcess.#ctor(System.String,System.Int32)">
+            <summary>Starts the queue with redirected UTF-8 pipes and best-effort Job Object protection.</summary>
+        </member>
+        <member name="M:TRNRun.Internal.QueueProcess.Send(TRNRun.Internal.QueueRequest)">
+            <summary>Writes and flushes one request as a JSON line to queue stdin.</summary>
+        </member>
+        <member name="M:TRNRun.Internal.QueueProcess.ReadLine">
+            <summary>Reads the next stdout line, or returns null at EOF.</summary>
+        </member>
+        <member name="M:TRNRun.Internal.QueueProcess.CloseInput">
+            <summary>Closes stdin so the queue finishes accepted work and exits.</summary>
+        </member>
+        <member name="M:TRNRun.Internal.QueueProcess.WaitForExit">
+            <summary>Waits for the drained queue to exit and returns its exit code.</summary>
+        </member>
+        <member name="M:TRNRun.Internal.QueueProcess.Dispose">
+            <summary>Releases pipes, the process handle, and the Job Object without waiting for exit.</summary>
+        </member>
+        <member name="T:TRNRun.Internal.QueueRequest">
+            <summary>One queue request, matching the native stdin schema.</summary>
+            <param name="RunId">Non-empty identifier the queue attaches to every event for this run.</param>
+            <param name="DeckFile">Full deck path; the queue validates existence and extension.</param>
+            <param name="RunnerPath">Full path to the runner executable used for this request.</param>
+            <param name="RunnerArgs">Arguments forwarded to the runner.</param>
+        </member>
+        <member name="M:TRNRun.Internal.QueueRequest.#ctor(System.String,System.String,System.String,System.String[])">
+            <summary>One queue request, matching the native stdin schema.</summary>
+            <param name="RunId">Non-empty identifier the queue attaches to every event for this run.</param>
+            <param name="DeckFile">Full deck path; the queue validates existence and extension.</param>
+            <param name="RunnerPath">Full path to the runner executable used for this request.</param>
+            <param name="RunnerArgs">Arguments forwarded to the runner.</param>
+        </member>
+        <member name="P:TRNRun.Internal.QueueRequest.RunId">
+            <summary>Non-empty identifier the queue attaches to every event for this run.</summary>
+        </member>
+        <member name="P:TRNRun.Internal.QueueRequest.DeckFile">
+            <summary>Full deck path; the queue validates existence and extension.</summary>
+        </member>
+        <member name="P:TRNRun.Internal.QueueRequest.RunnerPath">
+            <summary>Full path to the runner executable used for this request.</summary>
+        </member>
+        <member name="P:TRNRun.Internal.QueueRequest.RunnerArgs">
+            <summary>Arguments forwarded to the runner.</summary>
+        </member>
+        <member name="T:TRNRun.Internal.QueueJsonContext">
+            <summary>Serializes queue requests without reflection, keeping the library trim- and AOT-safe.</summary>
+        </member>
+        <member name="P:TRNRun.Internal.QueueJsonContext.QueueRequest">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:TRNRun.Internal.QueueJsonContext.String">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:TRNRun.Internal.QueueJsonContext.StringArray">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:TRNRun.Internal.QueueJsonContext.Default">
+            <summary>
+            The default <see cref="T:System.Text.Json.Serialization.JsonSerializerContext"/> associated with a default <see cref="T:System.Text.Json.JsonSerializerOptions"/> instance.
+            </summary>
+        </member>
+        <member name="P:TRNRun.Internal.QueueJsonContext.GeneratedSerializerOptions">
+            <summary>
+            The source-generated options associated with this context.
+            </summary>
+        </member>
+        <member name="M:TRNRun.Internal.QueueJsonContext.#ctor">
+            <inheritdoc/>
+        </member>
+        <member name="M:TRNRun.Internal.QueueJsonContext.#ctor(System.Text.Json.JsonSerializerOptions)">
+            <inheritdoc/>
+        </member>
+        <member name="M:TRNRun.Internal.QueueJsonContext.GetTypeInfo(System.Type)">
+            <inheritdoc/>
+        </member>
+        <member name="T:TRNRun.Simulation">
+            <summary>Tracks state and events for one queued simulation.</summary>
+            <remarks>
+            The owning manager folds queue output into this object as it reads. State access is
+            thread-safe; hold <see cref="P:TRNRun.Simulation.Lock"/> to read multiple properties coherently. Queue
+            completion, rather than terminal runner status, finishes the simulation. Abandonment
+            releases waiters without recording completion.
+            </remarks>
+        </member>
+        <member name="M:TRNRun.Simulation.#ctor(System.String,System.String,TRNRun.SimulationConfig)">
+            <summary>Creates pending state for one submitted simulation.</summary>
+        </member>
+        <member name="P:TRNRun.Simulation.Lock">
+            <summary>Gets the shared synchronization object for simulation state.</summary>
+            <remarks>
+            Use <c>lock (simulation.Lock)</c> for coherent multi-property reads. State getters
+            and updates acquire this same reentrant lock. Wait methods release it while blocking.
+            </remarks>
+        </member>
+        <member name="P:TRNRun.Simulation.Id">
+            <summary>Gets the case-sensitive queue request identifier.</summary>
+        </member>
+        <member name="P:TRNRun.Simulation.DeckPath">
+            <summary>Gets the submitted deck path.</summary>
+        </member>
+        <member name="P:TRNRun.Simulation.Config">
+            <summary>Gets the submitted simulation configuration.</summary>
+        </member>
+        <member name="P:TRNRun.Simulation.IsAccepted">
+            <summary>Gets whether a queue worker has accepted the simulation.</summary>
+        </member>
+        <member name="P:TRNRun.Simulation.IsFinished">
+            <summary>Gets whether the queue has completed the simulation.</summary>
+        </member>
+        <member name="P:TRNRun.Simulation.IsAbandoned">
+            <summary>Gets whether the unfinished simulation has been abandoned.</summary>
+            <remarks>Abandonment does not fabricate queue completion or acceptance.</remarks>
+        </member>
+        <member name="P:TRNRun.Simulation.IsRunning">
+            <summary>Gets whether the simulation is waiting or running and has not been abandoned.</summary>
+        </member>
+        <member name="P:TRNRun.Simulation.HasTerminalStatus">
+            <summary>Gets whether the latest runner status is terminal.</summary>
+        </member>
+        <member name="P:TRNRun.Simulation.Succeeded">
+            <summary>
+            Gets whether the queue completed the simulation with status <see cref="F:TRNRun.SimulationStatus.Done"/>.
+            </summary>
+            <remarks>Exit codes and progress do not determine success. Abandoned runs never succeed.</remarks>
+        </member>
+        <member name="P:TRNRun.Simulation.Status">
+            <summary>Gets the latest runner status event.</summary>
+        </member>
+        <member name="P:TRNRun.Simulation.Progress">
+            <summary>Gets the latest progress event.</summary>
+        </member>
+        <member name="P:TRNRun.Simulation.ConfigEvent">
+            <summary>Gets the latest native simulation configuration event.</summary>
+        </member>
+        <member name="P:TRNRun.Simulation.SettingEvent">
+            <summary>Gets the latest effective runner settings event.</summary>
+        </member>
+        <member name="P:TRNRun.Simulation.CompletionEvent">
+            <summary>Gets the queue completion event.</summary>
+            <remarks>
+            A null event means the run is unfinished, including when abandoned. A null exit
+            code can indicate that the runner could not be launched.
+            </remarks>
+        </member>
+        <member name="P:TRNRun.Simulation.Logs">
+            <summary>Gets a snapshot array of all retained log events, oldest first.</summary>
+            <remarks>
+            Logs are retained without limit. Each access returns a new array; subsequent events
+            and modifications to the returned array do not change each other's contents.
+            </remarks>
+        </member>
+        <member name="P:TRNRun.Simulation.LogCount">
+            <summary>Gets the total number of received log events.</summary>
+        </member>
+        <member name="P:TRNRun.Simulation.Notices">
+            <summary>Gets the number of notice events.</summary>
+        </member>
+        <member name="P:TRNRun.Simulation.Warnings">
+            <summary>Gets the number of warning events.</summary>
+        </member>
+        <member name="P:TRNRun.Simulation.Fatals">
+            <summary>Gets the number of fatal events.</summary>
+        </member>
+        <member name="M:TRNRun.Simulation.Wait(System.Nullable{System.TimeSpan})">
+            <summary>Waits until the simulation completes or is abandoned.</summary>
+            <param name="timeout">
+            The maximum wait, or null or <see cref="F:System.Threading.Timeout.InfiniteTimeSpan"/> for no limit.
+            Finite values must be nonnegative and no greater than <see cref="F:System.Int32.MaxValue"/> milliseconds.
+            Zero polls the current state without blocking.
+            </param>
+            <returns>True on completion or abandonment; false if the timeout expires first.</returns>
+            <remarks>
+            This method does not read queue output. Check <see cref="P:TRNRun.Simulation.IsFinished"/> and
+            <see cref="P:TRNRun.Simulation.IsAbandoned"/> to distinguish completion from abandonment.
+            </remarks>
+            <exception cref="T:System.ArgumentOutOfRangeException">The timeout is outside the supported range.</exception>
+        </member>
+        <member name="M:TRNRun.Simulation.WaitAccepted(System.Nullable{System.TimeSpan})">
+            <summary>Waits until a queue worker accepts the simulation or it is abandoned.</summary>
+            <param name="timeout">
+            The maximum wait, or null or <see cref="F:System.Threading.Timeout.InfiniteTimeSpan"/> for no limit.
+            Finite values must be nonnegative and no greater than <see cref="F:System.Int32.MaxValue"/> milliseconds.
+            Zero polls the current state without blocking.
+            </param>
+            <returns>True on acceptance or abandonment; false if the timeout expires first.</returns>
+            <remarks>
+            This method does not read queue output. Check <see cref="P:TRNRun.Simulation.IsAccepted"/> and
+            <see cref="P:TRNRun.Simulation.IsAbandoned"/> to distinguish acceptance from abandonment.
+            </remarks>
+            <exception cref="T:System.ArgumentOutOfRangeException">The timeout is outside the supported range.</exception>
+        </member>
+        <member name="M:TRNRun.Simulation.MarkAccepted">
+            <summary>Records that a queue worker accepted the simulation.</summary>
+        </member>
+        <member name="M:TRNRun.Simulation.MarkCompleted(TRNRun.QueueEvent)">
+            <summary>Records queue completion for the simulation.</summary>
+        </member>
+        <member name="M:TRNRun.Simulation.Abandon">
+            <summary>Releases both kinds of waiters without recording completion or acceptance.</summary>
+            <remarks>Completed or already abandoned simulations are left unchanged.</remarks>
+        </member>
+        <member name="M:TRNRun.Simulation.ApplyRunnerEvent(TRNRun.TrnRunEvent)">
+            <summary>Applies a routed runner event to the simulation state.</summary>
+        </member>
+        <member name="M:TRNRun.Simulation.WaitForState(System.Boolean,System.Nullable{System.TimeSpan})">
+            <summary>Waits on the shared monitor with a single monotonic timeout budget.</summary>
+        </member>
+        <member name="M:TRNRun.Simulation.Accepts(TRNRun.TrnRunEvent)">
+            <summary>Checks that an event belongs to this simulation and still applies to it.</summary>
+            <remarks>
+            The caller holds <see cref="P:TRNRun.Simulation.Lock"/>. Misrouted events and events after completion
+            or abandonment are ignored.
+            </remarks>
+        </member>
+        <member name="M:TRNRun.Simulation.RecordLog(TRNRun.LogEvent)">
+            <summary>Retains a log event and updates the severity counters.</summary>
+            <remarks>
+            The caller holds <see cref="P:TRNRun.Simulation.Lock"/>. Unrecognized severities are counted by
+            <see cref="P:TRNRun.Simulation.LogCount"/> alone.
+            </remarks>
+        </member>
+        <member name="T:TRNRun.GuiVisibility">
+            <summary>Specifies how the native runner displays the TRNSYS windows.</summary>
+        </member>
+        <member name="F:TRNRun.GuiVisibility.KeepOpen">
+            <summary>Shows the windows and leaves them open after the simulation.</summary>
+        </member>
+        <member name="F:TRNRun.GuiVisibility.AutoClose">
+            <summary>Shows the windows and closes them after the simulation.</summary>
+        </member>
+        <member name="F:TRNRun.GuiVisibility.Minimized">
+            <summary>Minimizes the windows after launch and leaves them open after the simulation.</summary>
+        </member>
+        <member name="F:TRNRun.GuiVisibility.MinimizedAuto">
+            <summary>Minimizes the windows after launch and closes them after the simulation.</summary>
+        </member>
+        <member name="F:TRNRun.GuiVisibility.Hidden">
+            <summary>Hides the windows and closes TRNSYS after the simulation.</summary>
+        </member>
+        <member name="T:TRNRun.LogSeverity">
+            <summary>Specifies the minimum severity of emitted TRNSYS log entries.</summary>
+        </member>
+        <member name="F:TRNRun.LogSeverity.Notice">
+            <summary>Emits notice, warning, and fatal entries.</summary>
+        </member>
+        <member name="F:TRNRun.LogSeverity.Warning">
+            <summary>Emits warning and fatal entries.</summary>
+        </member>
+        <member name="F:TRNRun.LogSeverity.Fatal">
+            <summary>Emits only fatal entries.</summary>
+        </member>
+        <member name="T:TRNRun.SimulationConfig">
+            <summary>Launch, monitoring, and output settings for a simulation.</summary>
+            <remarks>
+            Settings are validated when submitted. Paths must be unquoted, and durations must be whole
+            milliseconds. Timeout and stall handling can wait indefinitely when process termination is disabled.
+            </remarks>
+        </member>
+        <member name="P:TRNRun.SimulationConfig.TrnRunPath">
+            <summary>Runner executable path, or <see langword="null"/> to discover bundled <c>trnrun.exe</c>.</summary>
+        </member>
+        <member name="P:TRNRun.SimulationConfig.TrnExePath">
+            <summary>Installed TRNSYS executable path.</summary>
+        </member>
+        <member name="P:TRNRun.SimulationConfig.GuiVisibility">
+            <summary>TRNSYS window visibility and automatic closing behavior.</summary>
+        </member>
+        <member name="P:TRNRun.SimulationConfig.WaitForGui">
+            <summary>Waits for the TRNSYS window during launch, including in hidden mode.</summary>
+        </member>
+        <member name="P:TRNRun.SimulationConfig.WaitForLst">
+            <summary>Waits for the component-order header in the deck's <c>.lst</c> file during launch.</summary>
+        </member>
+        <member name="P:TRNRun.SimulationConfig.WaitForTmp">
+            <summary>Waits for the Type3830 <c>.tmp</c> file to exist during launch; does not enable progress monitoring.</summary>
+        </member>
+        <member name="P:TRNRun.SimulationConfig.DetectionTimeout">
+            <summary>Shared readiness timeout, excluding mutex waiting and extra delay; <see langword="null"/> or zero means unlimited.</summary>
+        </member>
+        <member name="P:TRNRun.SimulationConfig.ExtraDelay">
+            <summary>Delay after readiness succeeds, while the launch mutex remains held.</summary>
+        </member>
+        <member name="P:TRNRun.SimulationConfig.PollInterval">
+            <summary>Runtime poll interval and minimum positive watch/stall timeout; independent of readiness checks.</summary>
+        </member>
+        <member name="P:TRNRun.SimulationConfig.WatchLog">
+            <summary>Streams TRNSYS log events; when disabled, fatal checks still run at process exit unless monitoring has already stopped.</summary>
+        </member>
+        <member name="P:TRNRun.SimulationConfig.WatchTmp">
+            <summary>Reads Type3830 <c>.tmp</c> snapshots for progress events, stall detection, and incomplete-run detection.</summary>
+        </member>
+        <member name="P:TRNRun.SimulationConfig.WatchTimeout">
+            <summary>Timeout from the start of runtime monitoring; <see langword="null"/> or zero means unlimited.</summary>
+        </member>
+        <member name="P:TRNRun.SimulationConfig.StallTimeout">
+            <summary>No-progress timeout requiring <see cref="P:TRNRun.SimulationConfig.WatchTmp"/> and valid, incomplete Type3830 progress; null or zero disables it.</summary>
+        </member>
+        <member name="P:TRNRun.SimulationConfig.CleanOnSuccess">
+            <summary>Deletes .tmp, .log, .lst, and .PTI files after success; stale copies are always removed before launch.</summary>
+        </member>
+        <member name="P:TRNRun.SimulationConfig.KillOnTimeout">
+            <summary>Terminates TRNSYS on a launch-readiness or runtime-monitoring timeout.</summary>
+        </member>
+        <member name="P:TRNRun.SimulationConfig.KillOnStall">
+            <summary>Terminates TRNSYS when a stall is detected.</summary>
+        </member>
+        <member name="P:TRNRun.SimulationConfig.Severity">
+            <summary>Minimum severity for emitted log events; does not affect fatal-error detection.</summary>
+        </member>
+        <member name="P:TRNRun.SimulationConfig.WriteEvents">
+            <summary>Writes runner events to the deck's <c>.jsonl</c> file, truncating any existing file at run start.</summary>
+        </member>
+        <member name="M:TRNRun.SimulationConfig.ToCliArgs(System.String@)">
+            <summary>Validates and converts the settings to native command-line arguments.</summary>
+        </member>
+        <member name="M:TRNRun.SimulationConfig.ResolveExecutable(System.String,System.String,System.String)">
+            <summary>Resolves and validates an executable path.</summary>
+        </member>
+        <member name="M:TRNRun.SimulationConfig.ValidateDuration(System.Nullable{System.TimeSpan},System.String,System.Boolean)">
+            <summary>Validates a duration against native millisecond limits.</summary>
+        </member>
+        <member name="M:TRNRun.SimulationConfig.ToGuiVisibility(TRNRun.GuiVisibility,System.String)">
+            <summary>Formats a GUI visibility as its native CLI keyword.</summary>
+        </member>
+        <member name="M:TRNRun.SimulationConfig.ToSeverity(TRNRun.LogSeverity,System.String)">
+            <summary>Formats a log severity as its native CLI keyword.</summary>
+        </member>
+        <member name="M:TRNRun.SimulationConfig.ToMilliseconds(System.Nullable{System.TimeSpan})">
+            <summary>Formats a duration as whole milliseconds.</summary>
+        </member>
+        <member name="M:TRNRun.SimulationConfig.ToBoolean(System.Boolean)">
+            <summary>Formats a Boolean as a lowercase native value.</summary>
+        </member>
+        <member name="T:TRNRun.SimulationManager">
+            <summary>Submits and monitors simulations synchronously through one queue process.</summary>
+            <remarks>
+            Not thread-safe; use one operation or Follow enumeration at a time.
+            State advances only while calls read stdout; pausing can fill the pipe and stall the queue.
+            Call <see cref="M:TRNRun.SimulationManager.Shutdown"/> explicitly, usually in a finally block; Wait does not close the queue.
+            Premature EOF is an error; no recovery or simulation outcomes are synthesized.
+            Display errors propagate. Call Shutdown only once; operations after shutdown are unsupported.
+            </remarks>
+        </member>
+        <member name="M:TRNRun.SimulationManager.#ctor(System.Nullable{System.Int32},System.Nullable{System.TimeSpan},System.String)">
+            <summary>Starts the queue process and configures progress rendering.</summary>
+            <param name="maxConcurrent">Positive worker count; defaults to processor count minus one, at least one.</param>
+            <param name="refreshInterval">Positive display refresh interval; defaults to one second, independent of pipe reading.</param>
+            <param name="trnRunQueuePath">Unquoted queue executable path, or null to use the bundled executable.</param>
+        </member>
+        <member name="P:TRNRun.SimulationManager.ShowProgress">
+            <summary>Gets or sets whether to render console progress during manager calls; defaults to false.</summary>
+        </member>
+        <member name="P:TRNRun.SimulationManager.Simulations">
+            <summary>Gets a copy of queue-accepted simulations in acceptance order.</summary>
+        </member>
+        <member name="P:TRNRun.SimulationManager.Succeeded">
+            <summary>Gets a copy of simulations that completed successfully.</summary>
+        </member>
+        <member name="P:TRNRun.SimulationManager.Failed">
+            <summary>Gets a copy of finished simulations that did not succeed.</summary>
+        </member>
+        <member name="M:TRNRun.SimulationManager.Add(System.String,TRNRun.SimulationConfig)">
+            <summary>Submits a deck and blocks until a queue worker accepts it, before runner launch.</summary>
+            <remarks>
+            Processes other runs' events while waiting for an available worker.
+            Validates the deck file and configuration before sending. Write errors propagate without retry.
+            </remarks>
+        </member>
+        <member name="M:TRNRun.SimulationManager.Wait(TRNRun.Simulation)">
+            <summary>Reads queue output until the selected simulation, or all accepted simulations, finish.</summary>
+            <remarks>
+            The selection must belong to this manager; other runs still update.
+            Already-finished runs return immediately. There is no client-side timeout.
+            </remarks>
+        </member>
+        <member name="M:TRNRun.SimulationManager.Follow(TRNRun.Simulation)">
+            <summary>Yields updates for the selected simulation, or all simulations when omitted.</summary>
+            <remarks>
+            The selection must belong to this manager. All runs still update; past events are not replayed.
+            Yields live objects, not snapshots, until QUEUE/COMPLETED.
+            Validation and reading begin when enumerated.
+            </remarks>
+        </member>
+        <member name="M:TRNRun.SimulationManager.Shutdown">
+            <summary>Drains submitted work, waits for queue exit, and releases resources.</summary>
+            <remarks>
+            Drains rather than cancels and may block indefinitely. Call only once, after finishing other operations.
+            Reports EOF and exit failures. Display and read errors propagate without recovery.
+            </remarks>
+        </member>
+        <member name="M:TRNRun.SimulationManager.ReadNextUpdate">
+            <summary>Reads and applies the next update; EOF is normal only with no outstanding runs.</summary>
+        </member>
+    </members>
+</doc>
