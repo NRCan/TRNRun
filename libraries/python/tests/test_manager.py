@@ -821,12 +821,13 @@ def test_shutdown_rejects_future_operations(
 
 
 @pytest.mark.parametrize("callback", ["simulation_started", "refresh", "simulation_finished"])
-def test_display_failures_warn_and_do_not_escape(
+def test_display_failures_are_silent_and_do_not_escape(
     harness: Harness,
     valid_inputs: tuple[Path, SimulationConfig],
     callback: str,
+    recwarn: pytest.WarningsRecorder,
 ) -> None:
-    """Display update failures warn without disrupting simulation results."""
+    """Display update failures are silent without disrupting simulation results."""
     failure = RuntimeError(f"{callback} display failed")
     getattr(harness.display, callback).side_effect = failure
 
@@ -837,8 +838,8 @@ def test_display_failures_warn_and_do_not_escape(
         harness.start(harness.manager.shutdown).result()
         return simulation
 
-    with pytest.warns(RuntimeWarning, match=f"Display update failed: {callback} display failed"):
-        simulation = run_with_broken_display()
+    simulation = run_with_broken_display()
+    assert not recwarn
     assert simulation.succeeded
     assert harness.manager.succeeded == [simulation]
 

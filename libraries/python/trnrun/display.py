@@ -44,13 +44,7 @@ MS_PER_SECOND = 1000
 
 
 class DisplayCallback(Protocol):
-    """Callback surface used by ``SimulationManager``.
-
-    Simulation notifications and refreshes run on the manager's reader thread
-    and must be nonblocking: do not wait for simulations or perform lengthy work.
-    Callbacks still receive live ``Simulation`` objects; capture a snapshot when
-    deferring work. GUI integrations must dispatch updates to their UI thread.
-    """
+    """Callback surface used by ``SimulationManager``."""
 
     def simulation_started(self, simulation: Simulation) -> None:
         """Show a newly accepted simulation."""

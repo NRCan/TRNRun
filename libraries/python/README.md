@@ -214,19 +214,6 @@ config = SimulationConfig(
 ## `SimulationManager`
 
 `SimulationManager` owns one queue process and a background stdout reader.
-Simulation state continues to advance even when your code is not calling
-`add()` or `wait()`. Submissions and observers may use separate
-threads; stdin requests are serialized and waiters sleep on a condition rather
-than polling. `add()` still blocks until a queue worker accepts the request.
-
-If queue stdout closes unexpectedly, pending `add()` and `wait()` calls wake
-with a `RuntimeError`; already completed runs remain available. A reader failure
-is also reported through the thread exception hook. Shutdown still cleans up
-the process and display.
-
-Returned `Simulation` objects are live handles. Individual state properties are
-synchronized, but use `simulation.snapshot()` when multiple fields must describe
-the same instant. Do not mutate a managed simulation or its input attributes.
 
 ### Parameters
 

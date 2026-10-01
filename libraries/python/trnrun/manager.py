@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import warnings
 from dataclasses import replace
 from pathlib import Path
 from threading import Condition
@@ -206,5 +205,5 @@ class SimulationManager:
                 self._display.simulation_finished(simulation)
             else:
                 self._display.refresh()
-        except Exception as exc:  # noqa: BLE001 - display failures must not stop the queue reader
-            warnings.warn(f"Display update failed: {exc}", RuntimeWarning, stacklevel=2)
+        except Exception:  # noqa: BLE001 - display failures must not stop the queue reader
+            pass
