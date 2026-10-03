@@ -5,7 +5,7 @@ line into a typed event, which is also how a ``--writeEvents`` ``.jsonl``
 file is read back. Queue lifecycle objects are one more ``kind`` in
 ``TrnRunEvent`` and go through the same parser. ``parse_stream_line``
 decodes the merged queue stdout stream, where runner and queue events
-arrive interleaved and tagged with a ``runID``.
+arrive interleaved and tagged with a ``runId``.
 """
 
 from __future__ import annotations
@@ -69,9 +69,9 @@ class ProgressEvent:
         Current simulation time.
     percent : float
         Completion of the run as a fraction from 0 to 1.
-    elapsed : float
+    elapsed_ms : float
         Wall-clock milliseconds elapsed since the run started.
-    eta : float
+    eta_ms : float
         Estimated wall-clock milliseconds remaining.
     timestamp : str
         Timestamp attached to the event by TRNRun.
@@ -79,8 +79,8 @@ class ProgressEvent:
 
     time: float
     percent: float
-    elapsed: float
-    eta: float
+    elapsed_ms: float
+    eta_ms: float
     timestamp: str
 
 
@@ -289,8 +289,8 @@ def _parse_progress(data: dict[str, object]) -> ProgressEvent:
     return ProgressEvent(
         time=_require_float(data, "time"),
         percent=_require_float(data, "percent"),
-        elapsed=_require_float(data, "elapsed"),
-        eta=_require_float(data, "eta"),
+        elapsed_ms=_require_float(data, "elapsedMs"),
+        eta_ms=_require_float(data, "etaMs"),
         timestamp=_require_str(data, "timestamp"),
     )
 
@@ -335,8 +335,8 @@ def _parse_log(data: dict[str, object]) -> LogEvent:
         severity=_require_str(data, "severity"),
         timestamp=_require_str(data, "timestamp"),
         time=_optional_float(data, "time"),
-        unit_id=_optional_int(data, "unitID"),
-        type_id=_optional_int(data, "typeID"),
+        unit_id=_optional_int(data, "unitId"),
+        type_id=_optional_int(data, "typeId"),
         message_code=_optional_int(data, "messageCode"),
         message=_optional_str(data, "message"),
         information=_optional_str(data, "information"),
@@ -347,7 +347,7 @@ def _parse_queue(data: dict[str, object]) -> QueueEvent:
     """Parse a QUEUE event."""
     return QueueEvent(
         event=_require_str(data, "event"),
-        run_id=_require_str(data, "runID"),
+        run_id=_require_str(data, "runId"),
         timestamp=_require_str(data, "timestamp"),
         exit_code=_optional_int(data, "exitCode"),
     )
@@ -399,7 +399,7 @@ def parse_stream_line(line: str) -> tuple[str, TrnRunEvent] | None:
     ----------
     line : str
         A single line of queue stdout, carrying either a queue lifecycle
-        object or one runner event tagged with its ``runID``.
+        object or one runner event tagged with its ``runId``.
 
     Returns
     -------
@@ -420,7 +420,7 @@ def parse_stream_line(line: str) -> tuple[str, TrnRunEvent] | None:
 
     if type(data) is not dict:
         return None
-    run_id = data.get("runID")
+    run_id = data.get("runId")
     kind = data.get("kind")
     if not isinstance(run_id, str) or not isinstance(kind, str):
         return None

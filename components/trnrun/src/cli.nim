@@ -12,12 +12,12 @@ type
   CliInput* = object
     ## User input gathered from the command line.
     deckFile*: string
-    runID*: string
+    runId*: string
     settings*: RunnerSettings
 
 const DefaultCliInput* = CliInput(
     deckFile: "",
-    runID: "",
+    runId: "",
     settings: DefaultRunnerSettings,
   )
   ## Starting point for parsing: no deck selected, stock settings.
@@ -48,8 +48,8 @@ proc applyOption*(input: var CliInput, key, value: string): bool =
   case key
   of "deckFile":
     input.deckFile = value
-  of "runID":
-    input.runID = value
+  of "runId":
+    input.runId = value
   of "trnexePath":
     input.settings.trnexePath = value
   of "guiVisibility":

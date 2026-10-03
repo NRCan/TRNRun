@@ -9,7 +9,7 @@ classdef QueueProcessTest < matlab.unittest.TestCase
 
     properties (Constant)
         % A request the queue parses but rejects, because deckFile is absent.
-        RejectedRequest = struct('runID', '1')
+        RejectedRequest = struct('runId', '1')
         RejectedExitCode = 2
     end
 
@@ -158,7 +158,7 @@ classdef QueueProcessTest < matlab.unittest.TestCase
         function pollLineReturnsReadyStdoutLine(testCase)
             queue = testCase.startQueue(1);
             queue.send(struct( ...
-                'runID', 'polled-run', ...
+                'runId', 'polled-run', ...
                 'deckFile', 'missing.dck', ...
                 'runnerPath', 'missing.exe', ...
                 'runnerArgs', {{}}));
@@ -177,7 +177,7 @@ classdef QueueProcessTest < matlab.unittest.TestCase
             event = jsondecode(line);
             testCase.verifyEqual(string(event.kind), "QUEUE");
             testCase.verifyEqual(string(event.event), "ACCEPTED");
-            testCase.verifyEqual(string(event.runID), "polled-run");
+            testCase.verifyEqual(string(event.runId), "polled-run");
         end
 
         function pollLineReturnsNumericEmptyAtEof(testCase)
@@ -205,10 +205,10 @@ classdef QueueProcessTest < matlab.unittest.TestCase
 
             queue = testCase.startQueue(1);
 
-            testCase.verifyError(@() queue.send('{"runID":"1"}'), ...
+            testCase.verifyError(@() queue.send('{"runId":"1"}'), ...
                 'MATLAB:validation:UnableToConvert');
             testCase.verifyError(@() queue.send( ...
-                [struct('runID', '1'), struct('runID', '2')]), ...
+                [struct('runId', '1'), struct('runId', '2')]), ...
                 'MATLAB:validation:IncompatibleSize');
         end
 

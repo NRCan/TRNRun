@@ -417,7 +417,7 @@ constructing or updating it directly.
 - _`progress`_ (`struct` or `[]`)
 
   Latest Type3830 progress event, or `[]` when progress has not been reported.
-  `percent` is a fraction from `0` to `1`; `elapsed` and `eta` are milliseconds.
+  `percent` is a fraction from `0` to `1`; `elapsedMs` and `etaMs` are milliseconds.
 
 - _`configEvent`_ (`struct` or `[]`)
 

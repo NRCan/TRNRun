@@ -101,7 +101,7 @@ class SimulationManager:
             # A full stdin pipe must not prevent the reader from acquiring the condition.
             self._process.send(
                 {
-                    "runID": run_id,
+                    "runId": run_id,
                     "deckFile": str(deck_path),
                     "runnerPath": str(config.trnrun_path),
                     "runnerArgs": runner_args,

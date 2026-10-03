@@ -7,7 +7,7 @@ suite "CLI options":
   test "defines empty input with default runner settings":
     check DefaultCliInput == CliInput(
       deckFile: "",
-      runID: "",
+      runId: "",
       settings: DefaultRunnerSettings,
     )
 
@@ -15,7 +15,7 @@ suite "CLI options":
     var input = DefaultCliInput
 
     check input.applyOption("deckFile", "model.dck")
-    check input.applyOption("runID", "run-42")
+    check input.applyOption("runId", "run-42")
     check input.applyOption("trnexePath", r"D:\TRNSYS\TrnEXE64.exe")
     check input.applyOption("guiVisibility", "minimizedauto")
     check input.applyOption("waitForGui", "false")
@@ -36,7 +36,7 @@ suite "CLI options":
 
     check input == CliInput(
       deckFile: "model.dck",
-      runID: "run-42",
+      runId: "run-42",
       settings: RunnerSettings(
         trnexePath: r"D:\TRNSYS\TrnEXE64.exe",
         guiVisibility: guiMinimizedAuto,

@@ -38,7 +38,7 @@ proc captureStdout(
     path: string,
     events: openArray[SimulationEvent],
     writer: JsonlWriter = nil,
-    runID: string = "",
+    runId: string = "",
 ): string =
   var captureFile: File = nil
   if not open(captureFile, path, fmWrite, bufSize = 0):
@@ -60,7 +60,7 @@ proc captureStdout(
     raise newException(IOError, "Could not redirect stdout")
 
   try:
-    let sink = stdoutEventSink(writer, runID)
+    let sink = stdoutEventSink(writer, runId)
     for event in events:
       sink(event)
   finally:
@@ -160,7 +160,7 @@ suite "JSONL event sinks":
 
         check readFile(mirrorPath) == stdoutContent
         for line in stdoutContent.parseJsonLines():
-          check line["runID"].getStr() == "run-42"
+          check line["runId"].getStr() == "run-42"
 
   test "gives each event sink an independent sequence":
     let

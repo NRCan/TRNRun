@@ -97,9 +97,9 @@ milliseconds.
   Path to an existing `.dck` or `.trd` file. The deck path can also be passed
   directly without `--deckFile`. With no deck, open the native file picker.
 
-- _`--runID`_ (`string`, default: empty)
+- _`--runId`_ (`string`, default: empty)
 
-  Opaque identifier included as `runID` on every subsequently emitted event.
+  Opaque identifier included as `runId` on every subsequently emitted event.
   The field is omitted when the value is empty.
 
 - _`--trnexePath`_ (`string`, default:
@@ -210,7 +210,7 @@ A run with every option set explicitly:
 
 ```powershell
 trnrun --deckFile:"C:\path\to\deck.dck" `
-    --runID:batch-42 `
+    --runId:batch-42 `
     --trnexePath:"C:\TRNSYS18\Exe\TrnEXE64.exe" `
     --guiVisibility:hidden `
     --waitForGui:true `
@@ -250,7 +250,7 @@ stream.
 
 ### Common fields
 
-Every event contains `kind`, `timestamp`, and `seq`. Events also contain `runID`
+Every event contains `kind`, `timestamp`, and `seq`. Events also contain `runId`
 when the caller supplies one.
 
 - _`kind`_ (`string`)
@@ -269,10 +269,10 @@ when the caller supplies one.
   increments once for every emitted event, allowing consumers to preserve order
   and detect missing lines.
 
-- _`runID`_ (`string`, optional)
+- _`runId`_ (`string`, optional)
 
   Opaque caller-provided identifier used to correlate events with an external
-  request. It is included only when a non-empty `--runID` was supplied.
+  request. It is included only when a non-empty `--runId` was supplied.
 
 ### `SETTING` events
 
@@ -411,11 +411,11 @@ Reports Type3830 progress. The first valid snapshot emits a progress event after
 
   Completion from `0` to `1`, rounded to four decimals.
 
-- _`elapsed`_ (`number`, milliseconds)
+- _`elapsedMs`_ (`number`, milliseconds)
 
   Wall-clock time since TrnEXE launch, rounded to two decimals.
 
-- _`eta`_ (`number`, milliseconds)
+- _`etaMs`_ (`number`, milliseconds)
 
   Estimated remaining wall-clock time, rounded to two decimals.
 
@@ -432,11 +432,11 @@ the configured severity threshold.
 
   Simulation time associated with the entry, rounded to two decimals.
 
-- _`unitID`_ (`integer`, optional)
+- _`unitId`_ (`integer`, optional)
 
   TRNSYS unit that emitted the entry.
 
-- _`typeID`_ (`integer`, optional)
+- _`typeId`_ (`integer`, optional)
 
   TRNSYS component type associated with the entry.
 
@@ -462,8 +462,8 @@ Optional fields are omitted when unavailable; they are not emitted as `null`.
 {"kind":"STATUS","timestamp":"2026-06-19T19:37:14","status":"LAUNCHING","message":"","seq":3}
 {"kind":"STATUS","timestamp":"2026-06-19T19:37:15","status":"RUNNING","message":"","seq":4}
 {"kind":"CONFIG","timestamp":"2026-06-19T19:37:15","start":0.0,"stop":8760.0,"step":0.25,"seq":5}
-{"kind":"PROGRESS","timestamp":"2026-06-19T19:37:15","time":24.0,"percent":0.0027,"elapsed":287.0,"eta":104468.0,"seq":6}
-{"kind":"LOG","timestamp":"2026-06-19T19:37:15","severity":"Warning","time":24.0,"unitID":5,"typeID":139,"messageCode":101,"message":"Example warning","information":"Example details","seq":7}
+{"kind":"PROGRESS","timestamp":"2026-06-19T19:37:15","time":24.0,"percent":0.0027,"elapsedMs":287.0,"etaMs":104468.0,"seq":6}
+{"kind":"LOG","timestamp":"2026-06-19T19:37:15","severity":"Warning","time":24.0,"unitId":5,"typeId":139,"messageCode":101,"message":"Example warning","information":"Example details","seq":7}
 {"kind":"STATUS","timestamp":"2026-06-19T19:37:16","status":"DONE","message":"","seq":8}
 ```
 

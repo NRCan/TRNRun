@@ -9,18 +9,18 @@ const
   HeldPipeLine = "inherited stdout remained open"
 
 
-proc fakeRunID(): string =
+proc fakeRunId(): string =
   result = ""
   if paramCount() >= 2:
     for index in 2 .. paramCount():
       let argument = paramStr(index)
-      if argument.startsWith("--runID:"):
+      if argument.startsWith("--runId:"):
         return argument[8 .. ^1]
 
 proc runFakeRunner(deckFile: string) =
   let
     mode = deckFile.splitFile().name.toLowerAscii()
-    runID = fakeRunID()
+    runId = fakeRunId()
   case mode
   of "silent":
     quit(0)
@@ -37,7 +37,7 @@ proc runFakeRunner(deckFile: string) =
       "status": "CANCELLED",
       "message": "",
       "seq": 1,
-      "runID": runID,
+      "runId": runId,
     }))
     stdout.flushFile()
     quit(130)
@@ -53,7 +53,7 @@ proc runFakeRunner(deckFile: string) =
       "status": "DONE",
       "message": "",
       "seq": 1,
-      "runID": runID,
+      "runId": runId,
     }))
     stdout.flushFile()
     quit(0)
@@ -64,7 +64,7 @@ proc runFakeRunner(deckFile: string) =
       "status": "RUNNING",
       "message": "",
       "seq": 1,
-      "runID": runID,
+      "runId": runId,
     }))
     stdout.flushFile()
     if mode == "slow":
@@ -78,7 +78,7 @@ proc runFakeRunner(deckFile: string) =
       "status": "DONE",
       "message": "",
       "seq": 2,
-      "runID": runID,
+      "runId": runId,
     }))
     stdout.flushFile()
     quit(0)
@@ -131,9 +131,9 @@ proc runCommand(
   finally:
     process.close()
 
-proc requestLine(runID, deckFile, runnerPath: string): string =
+proc requestLine(runId, deckFile, runnerPath: string): string =
   $(%*{
-    "runID": runID,
+    "runId": runId,
     "deckFile": deckFile,
     "runnerPath": runnerPath,
   })
@@ -175,10 +175,10 @@ proc queueEvents(
         message["event"].getStr() == eventName:
       result.add(message)
 
-proc acceptedRunIDs(messages: openArray[JsonNode]): seq[string] =
+proc acceptedRunIds(messages: openArray[JsonNode]): seq[string] =
   result = @[]
   for message in messages.queueEvents("ACCEPTED"):
-    result.add(message["runID"].getStr())
+    result.add(message["runId"].getStr())
 
 proc nonEmptyLines(content: string): seq[string] =
   result = @[]
@@ -245,13 +245,13 @@ proc runTests() =
         checkpoint("stdout:\n" & command.stdout & "\nstderr:\n" & command.stderr)
         check command.exitCode == 0
         check command.stderr.len == 0
-        check messages.acceptedRunIDs() == @["queued-1", "queued-2", "queued-3"]
+        check messages.acceptedRunIds() == @["queued-1", "queued-2", "queued-3"]
         check messages.queueEvents("COMPLETED").len == 3
         check events.len == 6
-        for runID in ["queued-1", "queued-2", "queued-3"]:
+        for runId in ["queued-1", "queued-2", "queued-3"]:
           var statuses: seq[string] = @[]
           for event in events:
-            if event["runID"].getStr() == runID:
+            if event["runId"].getStr() == runId:
               statuses.add(event["status"].getStr())
           check statuses == @["RUNNING", "DONE"]
 
@@ -288,7 +288,7 @@ proc runTests() =
         checkpoint("stdout:\n" & command.stdout & "\nstderr:\n" & command.stderr)
         check command.exitCode == 0
         check command.stderr.len == 0
-        check messages.acceptedRunIDs().sorted() ==
+        check messages.acceptedRunIds().sorted() ==
           @["slow-1", "slow-2", "slow-3", "slow-4"]
         check messages.queueEvents("COMPLETED").len == 4
         check events.len == 8
@@ -333,7 +333,7 @@ proc runTests() =
 
         var lifecycle: seq[string] = @[]
         for event in messages.messagesOfKind("QUEUE"):
-          lifecycle.add(event["runID"].getStr() & ":" & event["event"].getStr())
+          lifecycle.add(event["runId"].getStr() & ":" & event["event"].getStr())
         check lifecycle == @[
           "bounded-1:ACCEPTED", "bounded-1:COMPLETED",
           "bounded-2:ACCEPTED", "bounded-2:COMPLETED",
@@ -361,13 +361,13 @@ proc runTests() =
         check command.exitCode == 0
         check command.stderr.len == 0
         check not command.stdout.contains(HeldPipeLine)
-        check messages.acceptedRunIDs() == @["cancelled", "next"]
+        check messages.acceptedRunIds() == @["cancelled", "next"]
         check events.len == 3
-        check events[0]["runID"].getStr() == "cancelled"
+        check events[0]["runId"].getStr() == "cancelled"
         check events[0]["status"].getStr() == "CANCELLED"
-        check events[1]["runID"].getStr() == "next"
+        check events[1]["runId"].getStr() == "next"
         check events[1]["status"].getStr() == "RUNNING"
-        check events[2]["runID"].getStr() == "next"
+        check events[2]["runId"].getStr() == "next"
         check events[2]["status"].getStr() == "DONE"
 
       test "preserves child output order and completes after output":
@@ -391,17 +391,17 @@ proc runTests() =
         check command.exitCode == 0
         check command.stderr.len == 0
         check messages.len == lines.len
-        check messages.acceptedRunIDs().len == requests.len
+        check messages.acceptedRunIds().len == requests.len
         check completed.len == requests.len
 
         for index in 1 .. 4:
-          let runID = "ordering-" & $index
+          let runId = "ordering-" & $index
           var
             acceptedIndex = -1
             completedIndex = -1
             outputIndices: seq[int] = @[]
           for messageIndex, message in messages:
-            if message["runID"].getStr() != runID:
+            if message["runId"].getStr() != runId:
               continue
             if message["kind"].getStr() == "QUEUE" and
                 message["event"].getStr() == "ACCEPTED":
@@ -425,12 +425,12 @@ proc runTests() =
           missingRunner = testDirectory / "missing-runner.exe"
         var
           requests: seq[string] = @[]
-          runIDs: seq[string] = @[]
+          runIds: seq[string] = @[]
         # Keep batches small: runCommand waits for exit before draining stdout.
         for index in 1 .. 6:
-          let runID = "admission-" & $index
-          runIDs.add(runID)
-          requests.add(requestLine(runID, deckFile, missingRunner))
+          let runId = "admission-" & $index
+          runIds.add(runId)
+          requests.add(requestLine(runId, deckFile, missingRunner))
 
         let
           command = runPoolCommand(executable, testDirectory, 4, requests)
@@ -441,12 +441,12 @@ proc runTests() =
         check command.stderr.len == 0
         check messages.len == command.stdout.nonEmptyLines().len
         check messages.len == requests.len * 3
-        check messages.acceptedRunIDs().sorted() == runIDs
+        check messages.acceptedRunIds().sorted() == runIds
 
-        for runID in runIDs:
+        for runId in runIds:
           var runMessages: seq[JsonNode] = @[]
           for message in messages:
-            if message["runID"].getStr() == runID:
+            if message["runId"].getStr() == runId:
               runMessages.add(message)
 
           require runMessages.len == 3
@@ -486,7 +486,7 @@ proc runTests() =
         check completed.len == 3
 
         for event in completed:
-          case event["runID"].getStr()
+          case event["runId"].getStr()
           of "silent":
             check event["exitCode"].kind == JInt
             check event["exitCode"].getInt() == 0
@@ -499,12 +499,12 @@ proc runTests() =
             check false
 
         for event in completed:
-          let runID = event["runID"].getStr()
+          let runId = event["runId"].getStr()
           var completedIndex = -1
           for index, message in messages:
             if message == event:
               completedIndex = index
-            elif message["runID"].getStr() == runID:
+            elif message["runId"].getStr() == runId:
               check completedIndex < 0
 
 
@@ -532,15 +532,15 @@ proc runTests() =
         check command.stderr.len == 0
         check outputLines.len == 12
         check messages.len == 9
-        check messages.acceptedRunIDs() == @["good", "failed", "malformed"]
+        check messages.acceptedRunIds() == @["good", "failed", "malformed"]
         check messages.queueEvents("COMPLETED").len == 3
         check outputLines.contains("fake runner diagnostic")
         check outputLines.contains("fake native crash diagnostic")
         check outputLines.contains("{not valid JSON}")
         check events.len == 3
-        check events[0]["runID"].getStr() == "good"
-        check events[1]["runID"].getStr() == "good"
-        check events[2]["runID"].getStr() == "malformed"
+        check events[0]["runId"].getStr() == "good"
+        check events[1]["runId"].getStr() == "good"
+        check events[2]["runId"].getStr() == "malformed"
         for message in events:
           check message["kind"].getStr() == "STATUS"
           check not message.hasKey("queueSeq")

@@ -152,8 +152,8 @@ suite "simulation event JSON serialization":
       "timestamp": "2026-06-19T19:37:13",
       "time": 12.35,
       "percent": 0.1235,
-      "elapsed": 987.65,
-      "eta": 1234.57,
+      "elapsedMs": 987.65,
+      "etaMs": 1234.57,
     }
 
   test "serializes a log event with every optional field":
@@ -176,8 +176,8 @@ suite "simulation event JSON serialization":
       "timestamp": "2026-06-19T19:37:13",
       "severity": "Warning",
       "time": 24.13,
-      "unitID": 5,
-      "typeID": 139,
+      "unitId": 5,
+      "typeId": 139,
       "messageCode": 101,
       "message": "Example warning",
       "information": "Example details",

@@ -11,13 +11,19 @@ var
   eventTimeFormat {.threadvar.}: TimeFormat
   eventTimeFormatInitialized {.threadvar.}: bool
 
-proc formatEventTimestamp(timestamp: DateTime): string {.gcsafe.} =
+proc getEventTimeFormat(): TimeFormat {.gcsafe.} =
   ## Reuses a parsed timestamp format without sharing GC-managed state between
   ## threads.
   if not eventTimeFormatInitialized:
     eventTimeFormat = initTimeFormat(EventTimestampFormat)
     eventTimeFormatInitialized = true
-  timestamp.format(eventTimeFormat)
+  eventTimeFormat
+
+proc formatEventTimestamp(timestamp: DateTime): string {.gcsafe.} =
+  timestamp.format(getEventTimeFormat())
+
+proc parseEventTimestamp(value: string): DateTime {.gcsafe.} =
+  value.parse(getEventTimeFormat())
 
 type
   SimStatus* = enum
@@ -37,8 +43,7 @@ type
     Warning = "Warning"
     Fatal = "Fatal"
 
-  SettingEvent* = object
-    ## Runner settings applied to a simulation.
+  SettingEvent* = object ## Runner settings applied to a simulation.
     timestamp*: DateTime
     trnexePath*: string
     guiVisibility*: string
@@ -58,29 +63,25 @@ type
     severity*: LogSeverity
     writeEvents*: bool
 
-  StatusEvent* = object
-    ## A simulation lifecycle transition with outcome details.
+  StatusEvent* = object ## A simulation lifecycle transition with outcome details.
     timestamp*: DateTime
     status*: SimStatus
     message*: string
 
-  ConfigEvent* = object
-    ## Fixed parameters for a simulation run.
+  ConfigEvent* = object ## Fixed parameters for a simulation run.
     timestamp*: DateTime
     start*: float
     stop*: float
     step*: float
 
-  ProgressEvent* = object
-    ## Current simulation progress and wall-clock timing.
+  ProgressEvent* = object ## Current simulation progress and wall-clock timing.
     timestamp*: DateTime
     time*: float
     percent*: float
     elapsedMs*: float
     etaMs*: float
 
-  LogEvent* = object
-    ## A severity-tagged message parsed from the TRNSYS log.
+  LogEvent* = object ## A severity-tagged message parsed from the TRNSYS log.
     timestamp*: DateTime
     severity*: LogSeverity
     time*: float
@@ -99,8 +100,7 @@ type
     eventProgress = "PROGRESS"
     eventLog = "LOG"
 
-  SimulationEvent* = object
-    ## A closed union of events produced during one simulation.
+  SimulationEvent* = object ## A closed union of events produced during one simulation.
     case kind*: SimulationEventKind
     of eventSetting:
       settingData*: SettingEvent
@@ -112,7 +112,6 @@ type
       progressData*: ProgressEvent
     of eventLog:
       logData*: LogEvent
-
 
 proc addIfSome[T](node: JsonNode, key: string, value: Option[T]) =
   ## Adds an optional field only when it has a value.
@@ -163,8 +162,8 @@ proc `%`(event: ProgressEvent): JsonNode =
   result["timestamp"] = %event.timestamp.formatEventTimestamp()
   result["time"] = %event.time.round(2)
   result["percent"] = %event.percent.round(4)
-  result["elapsed"] = %event.elapsedMs.round(2)
-  result["eta"] = %event.etaMs.round(2)
+  result["elapsedMs"] = %event.elapsedMs.round(2)
+  result["etaMs"] = %event.etaMs.round(2)
 
 proc `%`(event: LogEvent): JsonNode =
   ## Serializes a log event, omitting fields that are not present.
@@ -173,8 +172,8 @@ proc `%`(event: LogEvent): JsonNode =
   result["timestamp"] = %event.timestamp.formatEventTimestamp()
   result["severity"] = %($event.severity)
   result["time"] = %event.time.round(2)
-  result.addIfSome("unitID", event.unitId)
-  result.addIfSome("typeID", event.typeId)
+  result.addIfSome("unitId", event.unitId)
+  result.addIfSome("typeId", event.typeId)
   result.addIfSome("messageCode", event.messageCode)
   result.addIfSome("message", event.message)
   result.addIfSome("information", event.information)

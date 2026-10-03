@@ -151,7 +151,7 @@ def make_harness(monkeypatch: pytest.MonkeyPatch) -> Iterator[Callable[..., Harn
         harnesses.append(harness)
 
         def accept_immediately(request: dict[str, object]) -> None:
-            run_id = request["runID"]
+            run_id = request["runId"]
             assert isinstance(run_id, str)
             output(accepted(run_id))
 
@@ -210,7 +210,7 @@ def valid_inputs(tmp_path: Path) -> tuple[Path, SimulationConfig]:
 
 def stream(run_id: str, kind: str, **payload: object) -> str:
     """Encode one tagged queue stream line."""
-    return json.dumps({"runID": run_id, "kind": kind, "timestamp": TIMESTAMP, **payload})
+    return json.dumps({"runId": run_id, "kind": kind, "timestamp": TIMESTAMP, **payload})
 
 
 def accepted(run_id: str) -> str:
@@ -225,7 +225,7 @@ def completed(run_id: str, exit_code: int | None = 0) -> str:
 
 def progress(run_id: str, percent: float) -> str:
     """Encode a valid runner progress update."""
-    return stream(run_id, "PROGRESS", time=percent * 10, percent=percent, elapsed=1000, eta=1000)
+    return stream(run_id, "PROGRESS", time=percent * 10, percent=percent, elapsedMs=1000, etaMs=1000)
 
 
 def test_constructor_captures_output_callback_and_injects_display(harness: Harness) -> None:
@@ -279,7 +279,7 @@ def test_add_registers_before_immediate_acceptance_and_copies_config(
     registered: list[Simulation] = []
 
     def send(request: dict[str, object]) -> None:
-        run_id = request["runID"]
+        run_id = request["runId"]
         assert isinstance(run_id, str)
         assert harness.manager.simulations == []
         (simulation,) = harness.manager.active
@@ -304,7 +304,7 @@ def test_add_registers_before_immediate_acceptance_and_copies_config(
     assert harness.manager.active == [simulation]
     harness.process.send.assert_called_once_with(
         {
-            "runID": "1",
+            "runId": "1",
             "deckFile": str(deck.absolute()),
             "runnerPath": str(simulation.config.trnrun_path),
             "runnerArgs": simulation.config.to_cli_args(),
@@ -322,7 +322,7 @@ def test_completion_before_add_resumes_returns_the_finished_handle(
     release = harness.gate()
 
     def send(request: dict[str, object]) -> None:
-        assert request["runID"] == "1"
+        assert request["runId"] == "1"
         sending.set()
         assert release.wait(TEST_TIMEOUT)
 
@@ -636,7 +636,7 @@ def test_send_failure_rolls_back_only_unaccepted_runs(
     registered: list[Simulation] = []
 
     def send(request: dict[str, object]) -> None:
-        run_id = request["runID"]
+        run_id = request["runId"]
         assert isinstance(run_id, str)
         assert harness.manager.simulations == []
         (simulation,) = harness.manager.active
@@ -644,7 +644,7 @@ def test_send_failure_rolls_back_only_unaccepted_runs(
         registered.append(simulation)
         assert harness.manager.submitted == [simulation]
         if accept_before_error:
-            harness.output(accepted(str(request["runID"])))
+            harness.output(accepted(str(request["runId"])))
         raise failure
 
     harness.process.send.side_effect = send

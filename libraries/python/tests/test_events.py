@@ -64,8 +64,8 @@ SETTING_PAYLOAD: dict[str, object] = {
                 "kind": "PROGRESS",
                 "time": 2,
                 "percent": 0.25,
-                "elapsed": 1500,
-                "eta": 4500.5,
+                "elapsedMs": 1500,
+                "etaMs": 4500.5,
                 "timestamp": TIMESTAMP,
             },
             ProgressEvent(2.0, 0.25, 1500.0, 4500.5, TIMESTAMP),
@@ -103,8 +103,8 @@ SETTING_PAYLOAD: dict[str, object] = {
                 "severity": "Fatal",
                 "timestamp": TIMESTAMP,
                 "time": 12,
-                "unitID": 3,
-                "typeID": 56,
+                "unitId": 3,
+                "typeId": 56,
                 "messageCode": 42,
                 "message": "Failure",
                 "information": "Details",
@@ -115,7 +115,7 @@ SETTING_PAYLOAD: dict[str, object] = {
             {
                 "kind": "QUEUE",
                 "event": "completed",
-                "runID": "run-123",
+                "runId": "run-123",
                 "timestamp": TIMESTAMP,
                 "exitCode": 0,
             },
@@ -157,7 +157,7 @@ def test_queue_exit_code_defaults_to_none() -> None:
     payload: dict[str, object] = {
         "kind": "QUEUE",
         "event": "accepted",
-        "runID": "run-1",
+        "runId": "run-1",
         "timestamp": TIMESTAMP,
     }
 
@@ -185,7 +185,7 @@ def test_parse_event_rejects_invalid_json_or_non_objects(line: str) -> None:
             "unknown simulation status 'FUTURE'",
         ),
         (
-            {"kind": "PROGRESS", "time": True, "percent": 0, "elapsed": 0, "eta": 0, "timestamp": TIMESTAMP},
+            {"kind": "PROGRESS", "time": True, "percent": 0, "elapsedMs": 0, "etaMs": 0, "timestamp": TIMESTAMP},
             "field 'time' must be a number",
         ),
         (
@@ -196,7 +196,7 @@ def test_parse_event_rejects_invalid_json_or_non_objects(line: str) -> None:
             {
                 "kind": "QUEUE",
                 "event": "completed",
-                "runID": "run-1",
+                "runId": "run-1",
                 "timestamp": TIMESTAMP,
                 "exitCode": True,
             },
@@ -257,7 +257,7 @@ def test_parse_event_data_rejects_unknown_statuses(status: str) -> None:
         "[]",
         "{}",
         '{"kind": "STATUS", "status": "RUNNING", "timestamp": "now"}',
-        '{"kind": "STATUS", "runID": 7, "status": "RUNNING", "timestamp": "now"}',
+        '{"kind": "STATUS", "runId": 7, "status": "RUNNING", "timestamp": "now"}',
     ],
 )
 def test_parse_stream_line_ignores_unroutable_lines(line: str) -> None:
@@ -266,7 +266,7 @@ def test_parse_stream_line_ignores_unroutable_lines(line: str) -> None:
 
 def test_parse_stream_line_routes_runner_event() -> None:
     line = json.dumps(
-        {"kind": "STATUS", "runID": "run-9", "status": "RUNNING", "timestamp": TIMESTAMP},
+        {"kind": "STATUS", "runId": "run-9", "status": "RUNNING", "timestamp": TIMESTAMP},
     )
 
     parsed = parse_stream_line(line)
@@ -280,14 +280,14 @@ def test_parse_stream_line_routes_runner_event() -> None:
 
 def test_parse_stream_line_routes_queue_event() -> None:
     line = json.dumps(
-        {"kind": "QUEUE", "event": "accepted", "runID": "run-9", "timestamp": TIMESTAMP},
+        {"kind": "QUEUE", "event": "accepted", "runId": "run-9", "timestamp": TIMESTAMP},
     )
 
     assert parse_stream_line(line) == ("run-9", QueueEvent("accepted", "run-9", TIMESTAMP))
 
 
 def test_parse_stream_line_rejects_malformed_routable_event() -> None:
-    line = json.dumps({"kind": "PROGRESS", "runID": "run-9"})
+    line = json.dumps({"kind": "PROGRESS", "runId": "run-9"})
 
     with pytest.raises(EventParseError, match="field 'time' must be a number"):
         _ = parse_stream_line(line)

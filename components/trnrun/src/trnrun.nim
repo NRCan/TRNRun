@@ -23,7 +23,7 @@ Usage:
   -h, --help              Show this help and exit
   -v, --version           Show version and exit
   --deckFile:PATH         Deck path; same as the positional argument
-  --runID:ID              Attach an opaque run identifier to every event
+  --runId:ID              Attach an opaque run identifier to every event
   --trnexePath:PATH       Path to TrnEXE64.exe
   --guiVisibility:MODE    keep | auto | min | minauto | hidden   (default: hidden)
   --waitForGui:BOOL       (default: true)
@@ -44,10 +44,10 @@ Usage:
 
 Exit codes: 0 done  1 fatal  2 usage error  124 timeout  125 stalled  130 cancelled"""
 
-proc reportOutcome(outcome: SimResult, message: string, runID: string = ""): int =
+proc reportOutcome(outcome: SimResult, message: string, runId: string = ""): int =
   ## Emits one structured terminal status for command paths that cannot enter
   ## `simulate`, then returns the matching process exit code.
-  let eventSink = stdoutEventSink(runID = runID)
+  let eventSink = stdoutEventSink(runId = runId)
   eventSink(statusEvent(outcome.status, message = message))
   return outcome.exitCode()
 
@@ -83,28 +83,28 @@ proc main(): int =
             return reportOutcome(
               simInvalid,
               "Unknown option: " & parser.key,
-              input.runID,
+              input.runId,
             )
         except CatchableError:
-          return reportOutcome(simInvalid, getCurrentExceptionMsg(), input.runID)
+          return reportOutcome(simInvalid, getCurrentExceptionMsg(), input.runId)
     of cmdArgument:
       if input.deckFile != "":
         return reportOutcome(
           simInvalid,
           "Unexpected argument: " & parser.key,
-          input.runID,
+          input.runId,
         )
       input.deckFile = parser.key
 
   if input.deckFile == "":
     input.deckFile = openDeckFileDialog()
     if input.deckFile == "":
-      return reportOutcome(simCancelled, "No file selected", input.runID)
+      return reportOutcome(simCancelled, "No file selected", input.runId)
 
   return exitCode(simulate(
     deckFile = input.deckFile,
     settings = input.settings,
-    runID = input.runID,
+    runId = input.runId,
   ))
 
 when isMainModule:

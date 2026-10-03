@@ -593,7 +593,7 @@ function event = progressEvent(percent, time, elapsed, eta)
     %PROGRESSEVENT Build the PROGRESS fields the display reads, in milliseconds.
 
     event = struct('kind', "PROGRESS", 'percent', percent, 'time', time, ...
-        'elapsed', elapsed, 'eta', eta);
+        'elapsedMs', elapsed, 'etaMs', eta);
 end
 
 function event = configEvent(stop)

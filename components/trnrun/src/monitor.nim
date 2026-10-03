@@ -5,11 +5,11 @@
 ##
 ## ```
 ## {"kind":"CONFIG",   "timestamp":…, "start":…, "stop":…, "step":…}
-## {"kind":"PROGRESS", "timestamp":…, "time":…, "percent":…, "elapsed":…, "eta":…}
+## {"kind":"PROGRESS", "timestamp":…, "time":…, "percent":…, "elapsedMs":…, "etaMs":…}
 ## {"kind":"LOG",      "timestamp":…, "severity":…, "time":…, …}
 ## ```
 ##
-## `elapsed` and `eta` are milliseconds; `percent` is in `[0, 1]`.
+## `elapsedMs` and `etaMs` are milliseconds; `percent` is in `[0, 1]`.
 ## `monitor` blocks until process exit, a fatal log entry, timeout, or stall,
 ## and returns the corresponding `SimResult`.
 

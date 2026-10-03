@@ -354,7 +354,7 @@ moments. Use `snapshot()` when you need a consistent set of fields.
 - _`progress`_ (`ProgressEvent | None`)
 
   Latest Type3830 progress event, or `None` when progress has not been reported.
-  `percent` is a fraction from `0` to `1`; `elapsed` and `eta` are milliseconds.
+  `percent` is a fraction from `0` to `1`; `elapsed_ms` and `eta_ms` are milliseconds.
 
 - _`config_event`_ (`ConfigEvent | None`)
 

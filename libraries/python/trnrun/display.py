@@ -88,8 +88,8 @@ def _render_line(sim: Simulation) -> Text:
 
     progress = snapshot.progress
 
-    elapsed = format_hhmmss(progress.elapsed / MS_PER_SECOND if progress else None)
-    eta = format_hhmmss(progress.eta / MS_PER_SECOND if progress else None)
+    elapsed = format_hhmmss(progress.elapsed_ms / MS_PER_SECOND if progress else None)
+    eta = format_hhmmss(progress.eta_ms / MS_PER_SECOND if progress else None)
 
     sim_time = progress.time if progress else None
     percent = progress.percent if progress else None

@@ -28,13 +28,13 @@ try {
             Start-Sleep -Seconds $SubmissionIntervalSeconds
         }
 
-        $RunID = 'example-{0:D2}' -f $_
-        $DeckFile = Join-Path $RunDirectory "$RunID.dck"
+        $RunId = 'example-{0:D2}' -f $_
+        $DeckFile = Join-Path $RunDirectory "$RunId.dck"
 
         Copy-Item -LiteralPath $SourceDeck -Destination $DeckFile
 
         @{
-            runID = $RunID
+            runId = $RunId
             deckFile = $DeckFile
             runnerPath = $RunnerPath
             runnerArgs = @(

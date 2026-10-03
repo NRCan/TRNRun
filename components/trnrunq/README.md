@@ -10,7 +10,7 @@ simulation events to one stdout stream. Its responsibilities are to:
 - accept simulation requests incrementally without loading the full batch
 - limit the number of `trnrun.exe` processes running at the same time
 - report when each request is accepted and completed
-- forward runner events unchanged and identify each run by `runID`
+- forward runner events unchanged and identify each run by `runId`
 
 ## Table of Contents
 
@@ -64,7 +64,7 @@ Create one request, serialize it as a JSON line, and pipe it into the queue:
 
 ```powershell
 $Request = @{
-    runID = 'building-a'
+    runId = 'building-a'
     deckFile = 'C:\models\building-a.dck'
     runnerPath = 'C:\bin\trnrun.exe'
     runnerArgs = @('--watchTmp:true')
@@ -83,7 +83,7 @@ $Decks = Get-ChildItem 'C:\models\*.dck'
 
 $RequestsJson = foreach ($Deck in $Decks) {
     $Request = @{
-        runID = $Deck.BaseName
+        runId = $Deck.BaseName
         deckFile = $Deck.FullName
         runnerPath = 'C:\bin\trnrun.exe'
         runnerArgs = @('--watchTmp:true')
@@ -115,10 +115,10 @@ Options accept either `--name:value` or `--name=value`.
 Write one JSON object per line to queue stdin:
 
 ```json
-{"runID":"building-a","deckFile":"C:\\models\\building-a.dck","runnerPath":"C:\\bin\\trnrun.exe","runnerArgs":["--guiVisibility:auto","--watchTmp:true"]}
+{"runId":"building-a","deckFile":"C:\\models\\building-a.dck","runnerPath":"C:\\bin\\trnrun.exe","runnerArgs":["--guiVisibility:auto","--watchTmp:true"]}
 ```
 
-- _`runID`_ (`string`, required)
+- _`runId`_ (`string`, required)
 
   Non-empty caller-generated identifier used to route all events for the
   request.
@@ -165,11 +165,11 @@ The queue emits two lifecycle events for each request:
 - `COMPLETED` after the runner exits or a pre-launch failure occurs
 
 ```json
-{"kind":"QUEUE","event":"ACCEPTED","timestamp":"2026-06-19T19:37:15","runID":"building-a"}
-{"kind":"QUEUE","event":"COMPLETED","timestamp":"2026-06-19T19:37:17","runID":"building-a","exitCode":0}
+{"kind":"QUEUE","event":"ACCEPTED","timestamp":"2026-06-19T19:37:15","runId":"building-a"}
+{"kind":"QUEUE","event":"COMPLETED","timestamp":"2026-06-19T19:37:17","runId":"building-a","exitCode":0}
 ```
 
-Both events contain `kind`, `event`, `timestamp`, and `runID`. `COMPLETED` also
+Both events contain `kind`, `event`, `timestamp`, and `runId`. `COMPLETED` also
 contains the runner's `exitCode`, or `null` if the runner could not be launched.
 A completed request is not necessarily a successful simulation; use the runner's
 terminal `STATUS` and
@@ -181,7 +181,7 @@ to determine the outcome.
 Between `ACCEPTED` and `COMPLETED`, child output is forwarded unchanged. Valid
 runner events use the schemas documented by
 [TRNRun Runner](https://github.com/NRCan/TRNRun/tree/main/components/trnrun#output-protocol)
-and include the request's `runID`.
+and include the request's `runId`.
 If validation or launch fails, the queue emits a synthetic `STATUS/ERROR` event
 and completes the request with `exitCode:null`.
 
@@ -190,14 +190,14 @@ and completes the request with `exitCode:null`.
 Events for concurrent requests may interleave:
 
 ```json
-{"kind":"QUEUE","event":"ACCEPTED","timestamp":"2026-06-19T19:37:13","runID":"building-a"}
-{"kind":"QUEUE","event":"ACCEPTED","timestamp":"2026-06-19T19:37:13","runID":"building-b"}
-{"kind":"STATUS","timestamp":"2026-06-19T19:37:14","status":"RUNNING","message":"","seq":4,"runID":"building-a"}
-{"kind":"STATUS","timestamp":"2026-06-19T19:37:14","status":"RUNNING","message":"","seq":4,"runID":"building-b"}
-{"kind":"STATUS","timestamp":"2026-06-19T19:37:16","status":"DONE","message":"","seq":8,"runID":"building-b"}
-{"kind":"QUEUE","event":"COMPLETED","timestamp":"2026-06-19T19:37:16","runID":"building-b","exitCode":0}
-{"kind":"STATUS","timestamp":"2026-06-19T19:37:17","status":"DONE","message":"","seq":9,"runID":"building-a"}
-{"kind":"QUEUE","event":"COMPLETED","timestamp":"2026-06-19T19:37:17","runID":"building-a","exitCode":0}
+{"kind":"QUEUE","event":"ACCEPTED","timestamp":"2026-06-19T19:37:13","runId":"building-a"}
+{"kind":"QUEUE","event":"ACCEPTED","timestamp":"2026-06-19T19:37:13","runId":"building-b"}
+{"kind":"STATUS","timestamp":"2026-06-19T19:37:14","status":"RUNNING","message":"","seq":4,"runId":"building-a"}
+{"kind":"STATUS","timestamp":"2026-06-19T19:37:14","status":"RUNNING","message":"","seq":4,"runId":"building-b"}
+{"kind":"STATUS","timestamp":"2026-06-19T19:37:16","status":"DONE","message":"","seq":8,"runId":"building-b"}
+{"kind":"QUEUE","event":"COMPLETED","timestamp":"2026-06-19T19:37:16","runId":"building-b","exitCode":0}
+{"kind":"STATUS","timestamp":"2026-06-19T19:37:17","status":"DONE","message":"","seq":9,"runId":"building-a"}
+{"kind":"QUEUE","event":"COMPLETED","timestamp":"2026-06-19T19:37:17","runId":"building-a","exitCode":0}
 ```
 
 ## Exit codes
