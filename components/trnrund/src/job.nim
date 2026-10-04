@@ -14,6 +14,7 @@ import std/[oserrors, winlean]
 # Win32 API
 type
   JOBOBJECT_BASIC_LIMIT_INFORMATION = object
+    ## Mirrors the Win32 struct of the same name.
     perProcessUserTimeLimit: int64
     perJobUserTimeLimit: int64
     limitFlags: uint32
@@ -25,6 +26,7 @@ type
     schedulingClass: uint32
 
   IO_COUNTERS = object
+    ## Mirrors the Win32 struct of the same name.
     readOperationCount: uint64
     writeOperationCount: uint64
     otherOperationCount: uint64
@@ -33,6 +35,7 @@ type
     otherTransferCount: uint64
 
   JOBOBJECT_EXTENDED_LIMIT_INFORMATION = object
+    ## Mirrors the Win32 struct of the same name.
     basicLimitInformation: JOBOBJECT_BASIC_LIMIT_INFORMATION
     ioInfo: IO_COUNTERS
     processMemoryLimit: uint
@@ -46,6 +49,7 @@ const
 
 proc createJobObjectW(lpJobAttributes, lpName: pointer): Handle
   {.importc: "CreateJobObjectW", dynlib: "kernel32", stdcall.}
+  ## Creates a Job Object; returns 0 on failure.
 
 proc setInformationJobObject(
     hJob: Handle,
@@ -53,12 +57,14 @@ proc setInformationJobObject(
     lpInfo: pointer,
     cbLen: uint32,
 ): int32 {.importc: "SetInformationJobObject", dynlib: "kernel32", stdcall.}
+  ## Sets one class of Job Object limits; returns 0 on failure.
 
 proc assignProcessToJobObject(hJob, hProcess: Handle): int32
   {.importc: "AssignProcessToJobObject", dynlib: "kernel32", stdcall.}
+  ## Adds a process to a Job Object; returns 0 on failure.
 
 # Module state
-var jobHandle: Handle = 0
+var jobHandle: Handle = 0 ## This process's job; 0 until `initJobGuard` succeeds.
 
 # Public API
 proc initJobGuard*() =

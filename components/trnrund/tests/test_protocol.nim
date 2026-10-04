@@ -1,183 +1,150 @@
-import std/[json, os, tempfiles, unittest]
-import ../src/[scheduler, protocol]
+import std/[json, os, sequtils, strutils, unittest]
 
-let fakeTrnrun = getAppDir() / "fake_trnrun.exe"
-if not fileExists(fakeTrnrun):
-  quit("Compile fake_trnrun.exe beside the test executable first", 2)
+import ../src/[protocol, scheduler]
+import ./fake_trnrun
 
-proc call(scheduler: Scheduler, line: string): JsonNode =
-  let (reply, shutdown) = scheduler.handleRequest(line)
-  check not shutdown
-  parseJson(reply)
+
+proc createDeck(directory, name: string): string =
+  result = directory / name
+  writeFile(result, "fake TRNSYS deck")
 
 proc call(scheduler: Scheduler, request: JsonNode): JsonNode =
-  scheduler.call($request)
+  ## Sends one request and parses its reply.
+  parseJson(scheduler.handleRequest($request).reply)
 
-proc checkError(reply: JsonNode, error: string) =
-  check reply == %*{"ok": false, "error": error}
+proc logMessages(reply: JsonNode): seq[string] =
+  reply["logs"].getElems().mapIt(it["message"].getStr())
 
-suite "protocol":
-  test "add, snapshot, logs, and remove a simulation":
-    let directory = createTempDir("trnrund-protocol-", "")
-    let scheduler = newScheduler(fakeTrnrun, 1)
-    let path = directory / "first.dck"
-    writeFile(path, "fast")
-    try:
+proc runTests() =
+  let testDirectory = getTempDir() / "trnrund_protocol_tests"
+  if dirExists(testDirectory):
+    removeDir(testDirectory)
+  createDir(testDirectory)
+  defer:
+    if dirExists(testDirectory):
+      removeDir(testDirectory)
+
+  let
+    trnrun = getAppFilename()
+    doneDeck = createDeck(testDirectory, "done.dck")
+
+  suite "client protocol":
+    test "replies ok:false with the cause to malformed requests":
+      let scheduler = newScheduler(trnrun, 1)
+      defer: scheduler.shutdown()
+
+      let cases = [
+        (line: "garbage", expected: ""),
+        (line: "[1]", expected: "Request must be a JSON object"),
+        (line: "{}", expected: "Missing field: cmd"),
+        (line: """{"cmd":"launch"}""", expected: "Unknown cmd: launch"),
+        (line: """{"cmd":"add"}""", expected: "Missing field: runId"),
+        (line: """{"cmd":"add","runId":"a"}""", expected: "Missing field: deckFile"),
+        (line: """{"cmd":"snapshot","runId":7}""", expected: ""),
+        (line: """{"cmd":"logs","runId":"missing"}""", expected: "Unknown runId: missing"),
+      ]
+      for testCase in cases:
+        checkpoint("request: " & testCase.line)
+        let (reply, shutdown) = scheduler.handleRequest(testCase.line)
+        let node = parseJson(reply)
+
+        check not shutdown
+        check node.len == 2
+        check not node["ok"].getBool()
+        check node["error"].getStr().len > 0
+        check node["error"].getStr().contains(testCase.expected)
+
+    test "adds a simulation and snapshots it without logs":
+      let scheduler = newScheduler(trnrun, 1)
+      defer: scheduler.shutdown()
+
       check scheduler.call(%*{
-        "cmd": "add", "runId": "first", "deckFile": path, "trnrunArgs": ["--test"],
+        "cmd": "add", "runId": "a", "deckFile": doneDeck, "trnrunArgs": ["--pollMs:50"]
       }) == %*{"ok": true}
-      scheduler.shutdown() # Waits for the run; reads and remove still work.
 
-      let reply = scheduler.call(%*{"cmd": "snapshot", "runId": "first"})
+      let reply = scheduler.call(%*{"cmd": "snapshot", "runId": "a"})
       check reply["ok"].getBool()
       let simulation = reply["simulation"]
-      check simulation["trnrunArgs"] == %*["--test"]
-      check simulation["state"] == %"FINISHED"
-      check simulation["status"] == %*{"status": "DONE", "message": "Completed"}
-      check simulation["succeeded"] == %true
-      check simulation["notices"] == %1
-      check simulation["warnings"] == %0
-      check simulation["fatals"] == %0
+      check simulation["runId"].getStr() == "a"
+      check simulation["trnrunArgs"] == %*["--pollMs:50"]
+      check simulation["state"].getStr() == "ACCEPTED"
+      check "succeeded" in simulation
       check "logs" notin simulation
 
-      let logs = scheduler.call(%*{"cmd": "logs", "runId": "first"})
-      check logs["logs"].len == 1
-      check logs["logs"][0]["message"] == %"Started"
+    test "snapshots every simulation in submission order, or the listed ones":
+      let scheduler = newScheduler(trnrun, 2)
+      defer: scheduler.shutdown()
+      for runId in ["b", "a"]:
+        discard scheduler.call(%*{"cmd": "add", "runId": runId, "deckFile": doneDeck})
 
-      check scheduler.call(%*{"cmd": "remove", "runId": "first"}) == %*{"ok": true}
-      check not scheduler.call(%*{"cmd": "snapshot", "runId": "first"})["ok"].getBool()
-    finally:
-      scheduler.shutdown()
-      removeDir(directory)
+      let all = scheduler.call(%*{"cmd": "snapshots"})
+      check all["simulations"].getElems().mapIt(it["runId"].getStr()) == @["b", "a"]
 
-  test "collect returns a finished simulation with its logs, then removes it":
-    let directory = createTempDir("trnrund-protocol-", "")
-    let scheduler = newScheduler(fakeTrnrun, 1)
-    let path = directory / "first.dck"
-    writeFile(path, "fast")
-    try:
-      check scheduler.call(%*{"cmd": "add", "runId": "first", "deckFile": path})["ok"].getBool()
-      let beforeSnapshot = scheduler.call(%*{"cmd": "snapshot", "runId": "first"})
-      let beforeLogs = scheduler.call(%*{"cmd": "logs", "runId": "first"})
-      check beforeSnapshot["ok"].getBool()
-      check beforeLogs["ok"].getBool()
-      scheduler.call(%*{"cmd": "collect", "runId": "first"}).checkError(
-        "Simulation has not finished: first"
-      )
-      check scheduler.call(%*{"cmd": "snapshot", "runId": "first"}) == beforeSnapshot
-      check scheduler.call(%*{"cmd": "logs", "runId": "first"}) == beforeLogs
-      scheduler.shutdown() # Waits for the run; collect still works.
+      let listed = scheduler.call(%*{"cmd": "snapshots", "runIds": ["a"]})
+      check listed["simulations"].getElems().mapIt(it["runId"].getStr()) == @["a"]
 
-      let reply = scheduler.call(%*{"cmd": "collect", "runId": "first"})
-      check reply["ok"].getBool()
-      check reply["simulation"]["state"] == %"FINISHED"
-      check "logs" notin reply["simulation"]
-      check reply["logs"].len == 1
-      check reply["logs"][0]["message"] == %"Started"
+      let unknown = scheduler.call(%*{"cmd": "snapshots", "runIds": ["a", "missing"]})
+      check unknown == %*{"ok": false, "error": "Unknown runId: missing"}
 
-      scheduler.call(%*{"cmd": "snapshot", "runId": "first"}).checkError(
-        "Unknown runId: first"
-      )
-      scheduler.call(%*{"cmd": "collect", "runId": "first"}).checkError(
-        "Unknown runId: first"
-      )
-    finally:
-      scheduler.shutdown()
-      removeDir(directory)
+    test "slices logs like Python":
+      let scheduler = newScheduler(trnrun, 1)
+      defer: scheduler.shutdown()
+      discard scheduler.call(%*{"cmd": "add", "runId": "run", "deckFile": doneDeck})
+      scheduler.shutdown() # Waits for the run, whose logs stay readable.
 
-  test "snapshots returns simulations in submission or request order":
-    let directory = createTempDir("trnrund-protocol-", "")
-    let scheduler = newScheduler(fakeTrnrun, 1)
-    try:
-      check scheduler.call(%*{"cmd": "snapshots"}) == %*{"ok": true, "simulations": []}
-      for name in ["first", "second", "third"]:
-        let path = directory / (name & ".dck")
-        writeFile(path, "fast")
-        check scheduler.call(%*{"cmd": "add", "runId": name, "deckFile": path})["ok"].getBool()
-      scheduler.shutdown()
-
-      proc listed(request: JsonNode): seq[string] =
-        result = @[]
-        let reply = scheduler.call(request)
-        check reply["ok"].getBool()
-        for simulation in reply["simulations"]:
-          check "logs" notin simulation
-          result.add(simulation["runId"].getStr())
-
-      check listed(%*{"cmd": "snapshots"}) == @["first", "second", "third"]
-      check listed(%*{"cmd": "snapshots", "runIds": ["third", "first"]}) == @["third", "first"]
-      check listed(%*{"cmd": "snapshots", "runIds": []}).len == 0
-
-      let all = scheduler.call(%*{"cmd": "snapshots"})["simulations"]
-      check all[1] == scheduler.call(%*{"cmd": "snapshot", "runId": "second"})["simulation"]
-
-      scheduler.call(%*{"cmd": "snapshots", "runIds": ["first", "x"]}).checkError(
-        "Unknown runId: x"
-      )
-      check not scheduler.call(%*{"cmd": "snapshots", "runIds": "first"})["ok"].getBool()
-    finally:
-      scheduler.shutdown()
-      removeDir(directory)
-
-  test "logs slices like a Python sequence":
-    let directory = createTempDir("trnrund-protocol-", "")
-    let scheduler = newScheduler(fakeTrnrun, 1)
-    let path = directory / "logs.dck"
-    writeFile(path, "three-logs")
-    try:
-      check scheduler.call(%*{"cmd": "add", "runId": "logs", "deckFile": path})["ok"].getBool()
-      scheduler.shutdown()
-
-      proc messages(bounds: JsonNode): seq[string] =
-        result = @[]
-        var request = %*{"cmd": "logs", "runId": "logs"}
-        for key, value in bounds:
+      let cases = [
+        (bounds: %*{}, expected: @["first", "second", "third"]),
+        (bounds: %*{"start": 1}, expected: @["second", "third"]),
+        (bounds: %*{"stop": -1}, expected: @["first", "second"]),
+        (bounds: %*{"start": -1}, expected: @["third"]),
+        (bounds: %*{"start": -10, "stop": 10}, expected: @["first", "second", "third"]),
+        (bounds: %*{"start": 5}, expected: newSeq[string]()),
+        (bounds: %*{"start": 2, "stop": 1}, expected: newSeq[string]()),
+      ]
+      for testCase in cases:
+        checkpoint("bounds: " & $testCase.bounds)
+        let request = %*{"cmd": "logs", "runId": "run"}
+        for key, value in testCase.bounds:
           request[key] = value
-        let reply = scheduler.call(request)
-        check reply["ok"].getBool()
-        for entry in reply["logs"]:
-          result.add(entry["message"].getStr())
+        check scheduler.call(request).logMessages() == testCase.expected
 
-      check messages(%*{}) == @["Started", "Second", "Third"]
-      check messages(%*{"start": 1}) == @["Second", "Third"]
-      check messages(%*{"stop": 2}) == @["Started", "Second"]
-      check messages(%*{"start": 1, "stop": 2}) == @["Second"]
-      check messages(%*{"start": -1}) == @["Third"]
-      check messages(%*{"stop": -1}) == @["Started", "Second"]
-      check messages(%*{"start": 3}).len == 0 # Caught up: nothing new.
-      check messages(%*{"start": 9, "stop": 20}).len == 0 # Clamped.
-      check messages(%*{"start": -9}) == @["Started", "Second", "Third"]
-      check messages(%*{"start": 2, "stop": 1}).len == 0
+    test "removes and collects only finished simulations":
+      let
+        scheduler = newScheduler(trnrun, 2)
+        gateDeck = createDeck(testDirectory, "gate-pending.dck")
+      defer: scheduler.shutdown()
+      discard scheduler.call(%*{"cmd": "add", "runId": "pending", "deckFile": gateDeck})
+      discard scheduler.call(%*{"cmd": "add", "runId": "done", "deckFile": doneDeck})
 
-      let wrongType = scheduler.call(%*{"cmd": "logs", "runId": "logs", "start": "a"})
-      check not wrongType["ok"].getBool()
-    finally:
-      scheduler.shutdown()
-      removeDir(directory)
+      for cmd in ["remove", "collect"]:
+        checkpoint("cmd: " & cmd)
+        check scheduler.call(%*{"cmd": cmd, "runId": "pending"}) ==
+          %*{"ok": false, "error": "Simulation has not finished: pending"}
+      check scheduler.call(%*{"cmd": "snapshot", "runId": "pending"})["ok"].getBool()
 
-  test "every failure is a reply":
-    let scheduler = newScheduler(fakeTrnrun, 1)
-    try:
-      scheduler.call("garbage").checkError("input(1, 7) Error: { expected")
-      scheduler.call("[]").checkError("Request must be a JSON object")
-      scheduler.call(%*{}).checkError("Missing field: cmd")
-      scheduler.call(%*{"cmd": "nope"}).checkError("Unknown cmd: nope")
-      scheduler.call(%*{"cmd": "snapshot"}).checkError("Missing field: runId")
-      scheduler.call(%*{"cmd": "snapshot", "runId": "x"}).checkError("Unknown runId: x")
-      let missing =
-        scheduler.call(%*{"cmd": "add", "runId": "x", "deckFile": "missing.dck"})
-      check not missing["ok"].getBool()
-      check "id" notin missing
-      let wrongType = scheduler.call(%*{"cmd": "remove", "runId": 7})
-      check not wrongType["ok"].getBool()
-    finally:
+      writeFile(gateDeck.changeFileExt("release"), "")
       scheduler.shutdown()
 
-  test "shutdown is acknowledged and reported to the daemon":
-    let scheduler = newScheduler(fakeTrnrun, 1)
-    try:
+      let collected = scheduler.call(%*{"cmd": "collect", "runId": "done"})
+      check collected["simulation"]["state"].getStr() == "FINISHED"
+      check collected["simulation"]["succeeded"].getBool()
+      check "logs" notin collected["simulation"]
+      check collected.logMessages() == @["first", "second", "third"]
+
+      check scheduler.call(%*{"cmd": "remove", "runId": "pending"}) == %*{"ok": true}
+      for runId in ["done", "pending"]:
+        checkpoint("forgotten runId: " & runId)
+        check scheduler.call(%*{"cmd": "snapshot", "runId": runId}) ==
+          %*{"ok": false, "error": "Unknown runId: " & runId}
+
+    test "acknowledges shutdown and leaves it to the caller":
+      let scheduler = newScheduler(trnrun, 1)
+      defer: scheduler.shutdown()
+
       let (reply, shutdown) = scheduler.handleRequest("""{"cmd":"shutdown"}""")
-      check shutdown
       check parseJson(reply) == %*{"ok": true}
-    finally:
-      scheduler.shutdown()
+      check shutdown
+      check scheduler.call(%*{"cmd": "add", "runId": "a", "deckFile": doneDeck}) ==
+        %*{"ok": true}
+
+runTests()

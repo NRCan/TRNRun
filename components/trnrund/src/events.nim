@@ -65,8 +65,7 @@ type
     information*: Option[string]
 
   SimulationEventKind* = enum
-    ## Discriminant for a structured simulation event. Values are JSON `kind`
-    ## tags.
+    ## Discriminant of a `SimulationEvent`; values are JSON `kind` tags.
     eventSetting = "SETTING"
     eventStatus = "STATUS"
     eventConfig = "CONFIG"
@@ -87,9 +86,10 @@ type
       logData*: LogEvent
 
 proc parseSimulationEvent*(node: JsonNode): SimulationEvent =
-  ## Parses one TRNRun event line. Raises `ValueError` when `node` is not a
-  ## known event or has a wrong field type, and `KeyError` when it misses a
-  ## required field.
+  ## Parses one TRNRun event line into a `SimulationEvent`.
+  ##
+  ## Raises `ValueError` when `node` is not a known event or has a wrong field
+  ## type, and `KeyError` when it misses a required field.
   if node.kind != JObject:
     raise newException(ValueError, "Event must be a JSON object")
 

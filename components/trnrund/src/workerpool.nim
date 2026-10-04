@@ -12,13 +12,16 @@ import ./trnrun
 
 type
   WorkerContext = object
+    ## What each worker thread receives at start.
     work: ptr Channel[Work]
     inbox: ptr Channel[Message]
     trnrunPath: string
 
   WorkerPool* = object
-    ## Owned by the scheduler thread. Its address must remain stable while
-    ## workers are running because each worker receives `ptr Channel[Work]`.
+    ## Fixed set of worker threads fed from one shared work channel.
+    ##
+    ## Owned by the scheduler thread. Its address must stay stable while
+    ## workers run, since each holds a `ptr Channel[Work]` into it.
     work: Channel[Work]
     threads: seq[Thread[WorkerContext]]
     started: bool ## Remains true after shutdown or a failed thread startup.
@@ -26,8 +29,10 @@ type
 # Worker
 
 proc runSimulation(context: WorkerContext, work: Work) =
-  ## Runs one simulation, posting `mkLaunched` once the child exists, one
-  ## `mkOutput` per line, then exactly one `mkExited`.
+  ## Runs one simulation and reports it to the scheduler inbox.
+  ##
+  ## Posts `mkLaunched` once the child exists, one `mkOutput` per line, then
+  ## exactly one `mkExited`, even when TRNRun fails to launch.
   let
     inbox = context.inbox
     runId = work.runId
@@ -63,22 +68,24 @@ proc runWorker(context: WorkerContext) {.thread.} =
 # Public API
 
 proc shutdown*(pool: var WorkerPool) =
-  ## Runs work submitted before this call, then stops and joins every worker.
-  ## Safe before `start` and after an earlier shutdown.
+  ## Finishes submitted work, then stops and joins every worker. Safe to repeat.
   if pool.threads.len == 0:
     return
 
-  for index in 0 ..< pool.threads.len:
+  for _ in pool.threads:
     pool.work.send(Work(kind: wkStop))
-  for index in 0 ..< pool.threads.len:
-    joinThread(pool.threads[index])
+  for thread in pool.threads.mitems:
+    joinThread(thread)
   pool.threads.setLen(0)
 
 proc start*(
     pool: var WorkerPool, trnrunPath: string, workers: int, inbox: ptr Channel[Message]
 ) =
-  ## Starts `workers` threads that run the TRNRun at `trnrunPath` and report to
-  ## `inbox`. Raises ValueError if already started, workers < 1, or inbox is nil.
+  ## Starts `workers` threads that run the TRNRun at `trnrunPath`.
+  ##
+  ## Workers report to `inbox`. Raises `ValueError` if the pool was already
+  ## started, `workers` < 1, or `inbox` is nil. If a thread fails to start,
+  ## the ones already running are stopped before the error propagates.
   if pool.started:
     raise newException(ValueError, "Worker pool has already been started")
   if workers < 1:
@@ -103,8 +110,7 @@ proc start*(
   {.pop.}
 
 proc submit*(pool: var WorkerPool, work: Work) =
-  ## Hands run work to the next free worker.
-  ## Raises ValueError if the pool is not running or work is not wkRun.
+  ## Hands `wkRun` work to the next free worker; `ValueError` otherwise or if stopped.
   if pool.threads.len == 0:
     raise newException(ValueError, "Worker pool is not running")
   if work.kind != wkRun:

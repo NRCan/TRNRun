@@ -7,7 +7,7 @@
 ## scheduler so every worker is joined. The inbox remains open because of the
 ## Nim 2.2 ORC channel-close issue.
 
-import std/[deques, options, tables]
+import std/[deques, options, sequtils, strutils, tables]
 import ./events
 import ./job
 import ./messages
@@ -19,7 +19,10 @@ export simulation
 
 type
   Scheduler* = ref object
-    ## Stable allocation for the channels whose addresses workers retain.
+    ## Daemon-side state of every simulation, plus the pool that runs them.
+    ##
+    ## A `ref` so the inbox and work channel keep the stable addresses that
+    ## the workers and the request reader retain.
     pool: WorkerPool
     inbox: Channel[Message]
 
@@ -32,6 +35,7 @@ type
     queue: Deque[string]
 
 proc dispatch(self: Scheduler) =
+  ## Hands queued runs to the pool while a worker is free.
   while self.queue.len > 0 and self.runningCount < self.maxConcurrent:
     let runId = self.queue.popFirst()
     self.pool.submit(Work(
@@ -44,6 +48,7 @@ proc dispatch(self: Scheduler) =
     inc self.runningCount
 
 proc apply(self: Scheduler, message: Message) =
+  ## Applies one worker message; an exit frees a worker for the next queued run.
   case message.kind
   of mkLaunched:
     self.registry[message.runId].state = ssRunning
@@ -59,8 +64,7 @@ proc apply(self: Scheduler, message: Message) =
 # Public API
 
 proc newScheduler*(trnrunPath: string, maxConcurrent: int): Scheduler =
-  ## Creates and starts a scheduler that runs every simulation with the TRNRun
-  ## at `trnrunPath`. Always call shutdown before dropping it.
+  ## Starts a scheduler that runs the TRNRun at `trnrunPath`; `ValueError` on bad input.
   if maxConcurrent < 1:
     raise newException(ValueError, "'maxConcurrent' must be at least 1")
   let trnrunPath = validateTrnrun(trnrunPath)
@@ -75,27 +79,26 @@ proc add*(self: Scheduler, runId, deckFile: string, trnrunArgs: seq[string] = @[
     raise newException(ValueError, "Scheduler is shut down")
   if runId.len == 0 or runId in self.registry:
     raise newException(ValueError, "Invalid or duplicate runId: " & runId)
+  if trnrunArgs.anyIt(it.startsWith("--deckFile")):
+    raise newException(ValueError, "Pass the deck as deckFile, not in trnrunArgs")
 
   self.registry[runId] = initSimulation(runId, validateDeck(deckFile), trnrunArgs)
   self.queue.addLast(runId)
   self.dispatch()
 
 proc `[]`*(self: Scheduler, runId: string): lent Simulation =
-  ## Borrows one simulation, logs included, for immediate reading on the owner
-  ## thread. Assign the result to keep a copy. KeyError if unknown.
+  ## Borrows one simulation for immediate reading; `KeyError` if unknown.
   if runId notin self.registry:
     raise newException(KeyError, "Unknown runId: " & runId)
   self.registry[runId]
 
 iterator items*(self: Scheduler): lent Simulation =
-  ## Borrows every simulation in submission order, for immediate reading on the
-  ## owner thread. A removed runId submitted again counts as a new submission.
+  ## Borrows every simulation in submission order; a re-added runId goes last.
   for simulation in self.registry.values:
     yield simulation
 
 proc remove*(self: Scheduler, runId: string) =
-  ## Forgets a finished simulation so its memory is freed and its runId can be
-  ## reused. KeyError if unknown, ValueError if it has not finished.
+  ## Forgets a finished simulation, freeing its runId. Raises if unknown or unfinished.
   if self[runId].state != ssFinished:
     raise newException(ValueError, "Simulation has not finished: " & runId)
   self.registry.del(runId)
@@ -105,17 +108,17 @@ proc requestInbox*(self: Scheduler): ptr Channel[Message] =
   addr self.inbox
 
 proc nextRequest*(self: Scheduler): Message =
-  ## Applies worker messages as they arrive until a client message does, then
-  ## returns it. Blocks the owner thread.
+  ## Applies worker messages until a client message arrives, then returns it.
   result = self.inbox.recv()
   while result.kind notin {mkRequest, mkClosed}:
     self.apply(result)
     result = self.inbox.recv()
 
 proc shutdown*(self: Scheduler) =
-  ## Rejects new work and finishes queued runs as CANCELLED without starting
-  ## them. Then waits for the running ones and joins the pool. Idempotent. It
-  ## can wait indefinitely for TRNRun; running work cannot be cancelled.
+  ## Rejects new work, waits for running work, then joins the pool.
+  ##
+  ## Queued runs finish as CANCELLED without starting. Idempotent. It can wait
+  ## indefinitely for TRNRun, since running work cannot be cancelled.
   self.isShutDown = true
   while self.queue.len > 0:
     let runId = self.queue.popFirst()

@@ -13,6 +13,7 @@ import std/options
 
 type
   WorkKind* = enum
+    ## Kind of `Work` sent to a worker.
     wkRun ## runId, deckFile, trnrunArgs.
     wkStop ## No fields. Sent once per worker during shutdown.
 
@@ -24,6 +25,7 @@ type
     trnrunArgs*: seq[string]
 
   MessageKind* = enum
+    ## Kind of `Message` posted to the scheduler inbox.
     mkLaunched ## runId. A worker started the TRNRun process.
     mkOutput ## runId, line. One line written by TRNRun.
     mkExited ## runId, exitCode, error. A simulation finished; its submission

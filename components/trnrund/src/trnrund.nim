@@ -31,22 +31,21 @@ Read one JSON request per stdin line and write one JSON reply per stdout line:
   {"cmd":"add","runId":"1","deckFile":"model.dck"}
 Replies come in request order, one per request.
 
-Commands: add, snapshot, snapshots, logs, remove, collect, shutdown. snapshots takes
-optional "runIds" and returns every simulation by default. logs takes optional "start"
-and "stop" bounds that slice like Python. Closing stdin exits at once
-and kills running simulations. Startup failures are written to stderr.
+Commands: add, snapshot, snapshots, logs, remove, collect, shutdown.
+snapshots takes optional "runIds" and returns every simulation by default.
+logs takes optional "start" and "stop" bounds that slice like Python.
+Closing stdin exits at once and kills running simulations. Startup failures
+are written to stderr.
 
 Exit codes: 0 ok  1 fatal  2 usage error"""
 
 var daemonScheduler: Scheduler
-  ## Retained until process exit: reader and workers keep pointers to its channels,
-  ## even after `main` returns or unwinds to the top-level error handler.
+  ## Global so its channels outlive `main`; the reader and workers point into them.
 var reader: Thread[ptr Channel[Message]]
   ## Global so it outlives `main`. Never joined: it blocks on stdin until exit.
 
 proc readRequests(inbox: ptr Channel[Message]) {.thread.} =
-  ## Posts each stdin line to the scheduler, then reports that the client closed
-  ## its input.
+  ## Posts each stdin line to the scheduler, then reports that the client left.
   var line = ""
   try:
     while stdin.readLine(line):
@@ -58,7 +57,8 @@ proc readRequests(inbox: ptr Channel[Message]) {.thread.} =
 proc main(): int =
   ## Collects user input from the command line and serves client requests.
   ##
-  ## Returns the process exit code: 0 ok, 1 fatal, 2 usage error.
+  ## Returns 0. Failures raise instead: `ValueError` for usage errors, mapped
+  ## to exit code 2 at the top level, and anything else to 1.
   result = 0
   var input = defaultCliInput()
 

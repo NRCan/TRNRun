@@ -8,6 +8,7 @@
 import std/[os, strformat, strutils]
 
 proc validateFile(path, label: string): string =
+  ## Returns `path` absolute and normalized; `ValueError` if no file is there.
   result = path.absolutePath().normalizedPath()
   if not fileExists(result):
     raise newException(ValueError, fmt"{label} not found: '{result}'")

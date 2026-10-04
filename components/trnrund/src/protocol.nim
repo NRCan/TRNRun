@@ -39,6 +39,7 @@ import std/json
 import ./scheduler
 
 proc requireField(request: JsonNode, name: string): JsonNode =
+  ## Returns `request[name]`; `ValueError` if it is missing.
   if name notin request:
     raise newException(ValueError, "Missing field: " & name)
   request[name]
@@ -58,8 +59,7 @@ proc handleSnapshot(scheduler: Scheduler, request, reply: JsonNode) =
   reply["simulation"] = %scheduler[runId]
 
 proc handleSnapshots(scheduler: Scheduler, request, reply: JsonNode) =
-  ## Replies with the requested simulations in request order, or every one in
-  ## submission order, without their logs. Fails whole on an unknown runId.
+  ## Replies with the listed simulations, or all of them, without their logs.
   var simulations = newJArray()
   if "runIds" in request:
     for runId in request["runIds"].to(seq[string]):
@@ -91,8 +91,7 @@ proc handleRemove(scheduler: Scheduler, request: JsonNode) =
   scheduler.remove(runId)
 
 proc handleCollect(scheduler: Scheduler, request, reply: JsonNode) =
-  ## Replies with a finished simulation and every log entry, then forgets it so
-  ## its runId can be reused.
+  ## Replies with a finished simulation and all its logs, then forgets it.
   let runId = request.requireField("runId").to(string)
   if scheduler[runId].state != ssFinished:
     raise newException(ValueError, "Simulation has not finished: " & runId)
@@ -109,8 +108,10 @@ proc parseRequest(line: string): JsonNode =
 proc handleRequest*(
     scheduler: Scheduler, line: string
 ): tuple[reply: string, shutdown: bool] =
-  ## Runs one request line. Returns its reply line and whether the client asked
-  ## the daemon to shut down.
+  ## Runs one request line and returns its reply line.
+  ##
+  ## `shutdown` is true when the client asked the daemon to shut down. Any
+  ## failure becomes an `ok: false` reply instead of an exception.
   result = (reply: "", shutdown: false)
   var reply = %*{"ok": true}
   try:

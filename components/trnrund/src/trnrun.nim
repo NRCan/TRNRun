@@ -14,10 +14,11 @@ when not defined(windows):
 import std/[options, os, osproc, streams]
 
 type
-  LaunchCallback* = proc() {.gcsafe, raises: [].}
-  OutputCallback* = proc(line: string) {.gcsafe, raises: [].}
+  LaunchCallback* = proc() {.gcsafe, raises: [].} ## Runs once TRNRun has started.
+  OutputCallback* = proc(line: string) {.gcsafe, raises: [].} ## Gets one TRNRun line.
 
   RunResult* = tuple
+    ## Outcome of one `runTrnrun` call.
     exitCode: Option[int] ## None when TRNRun never launched.
     error: string ## Launch or capture failure; empty otherwise.
 
@@ -36,12 +37,12 @@ proc launch(
   )
 
 proc forwardLine(process: Process, line: var string, onOutput: OutputCallback) =
+  ## Forwards the next output line, unless the pipe has reached its end.
   if process.outputStream.readLine(line):
     onOutput(line)
 
 proc capture(process: Process, onOutput: OutputCallback): int =
-  ## Forwards output until TRNRun exits, then drains the pipe and returns
-  ## the exit code.
+  ## Forwards output until TRNRun exits, drains the pipe, and returns the exit code.
   var line = ""
   while process.running:
     if process.hasData():

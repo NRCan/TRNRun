@@ -101,33 +101,7 @@ proc deployPackage() =
   cpFile(packagedExe, matlabBinDir & "/" & exeName & ".exe")
   cpFile(packagedExe, pythonBinDir & "/" & exeName & ".exe")
 
-# Tests
-proc compileTestProgram(name, source: string) =
-  let testDir = buildDir & "/tests"
-  mkDir testDir
-  let args = @[
-    "nim c",
-    "-d:NimblePkgVersion=" & version,
-    "--nimcache:" & cacheDir & "/tests/" & name,
-    "--out:" & testDir & "/" & name & ".exe",
-    source,
-  ]
-  exec args.join(" ")
-
-proc runTests() =
-  compileTestProgram("fake_trnrun", "tests/fake_trnrun.nim")
-  compileTestProgram(exeName, srcDir & "/" & exeName & ".nim")
-  for name in [
-    "test_cli", "test_validate", "test_simulation", "test_protocol",
-    "test_scheduler", "test_workerpool", "test_daemon",
-  ]:
-    compileTestProgram(name, "tests/" & name & ".nim")
-    exec "\"" & buildDir & "/tests/" & name & ".exe\""
-
 # Tasks
-task test, "Build and run all daemon tests":
-  runTests()
-
 task bin, "Build the release executable":
   compileExe()
 

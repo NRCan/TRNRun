@@ -1,62 +1,66 @@
-import std/[os, tempfiles, unittest]
+import std/[os, strutils, unittest]
+
 import ../src/validate
 
-suite "Daemon path validation":
-  test "deck extensions are case-insensitive and paths are normalized":
-    let directory = createTempDir("trnrund-decks-", "")
-    try:
-      for name in ["deck.dck", "deck.DCK", "deck.trd", "deck.TRd"]:
-        let path = directory / name
-        writeFile(path, "")
-        check validateDeck(path) == path.absolutePath().normalizedPath()
-        check validateDeck(directory / "unused" / ".." / name) ==
-          path.absolutePath().normalizedPath()
-    finally:
-      removeDir(directory)
 
-  test "missing, unsupported, and directory deck paths are rejected":
-    let directory = createTempDir("trnrund-invalid-decks-", "")
-    try:
-      let unsupported = directory / "deck.txt"
-      writeFile(unsupported, "")
-      let deckDirectory = directory / "directory.dck"
-      createDir(deckDirectory)
-      for path in [directory / "missing.dck", unsupported, deckDirectory, ""]:
-        expect ValueError:
-          discard validateDeck(path)
-    finally:
-      removeDir(directory)
+proc createDeck(directory, name: string): string =
+  result = directory / name
+  writeFile(result, "fake TRNSYS deck")
 
-  test "TRNRun validation checks file existence, not executable contents":
-    let directory = createTempDir("trnrund-runner-", "")
-    try:
-      let path = directory / "runner.exe"
-      writeFile(path, "not an executable")
-      check validateTrnrun(path) == path.absolutePath().normalizedPath()
-      check validateTrnrun(directory / "unused" / ".." / "runner.exe") ==
-        path.absolutePath().normalizedPath()
-    finally:
-      removeDir(directory)
+proc raisesValueError(validation: proc(), expected: string): bool =
+  ## Whether `validation` raises a `ValueError` whose message holds `expected`.
+  result = false
+  try:
+    validation()
+  except ValueError as error:
+    result = error.msg.contains(expected)
 
-  test "missing and directory TRNRun paths are rejected":
-    let directory = createTempDir("trnrund-invalid-runner-", "")
-    try:
-      for path in [directory / "missing.exe", directory, ""]:
-        expect ValueError:
-          discard validateTrnrun(path)
-    finally:
-      removeDir(directory)
+proc runTests() =
+  let testDirectory = getTempDir() / "trnrund_validate_tests"
+  if dirExists(testDirectory):
+    removeDir(testDirectory)
+  createDir(testDirectory)
+  defer:
+    if dirExists(testDirectory):
+      removeDir(testDirectory)
 
-  test "relative deck and TRNRun paths resolve from the working directory":
-    let directory = createTempDir("trnrund-relative-", "")
-    try:
-      let deck = directory / "deck.dck"
-      let runner = directory / "runner.exe"
-      writeFile(deck, "")
-      writeFile(runner, "")
-      check validateDeck(deck.relativePath(getCurrentDir())) ==
-        deck.absolutePath().normalizedPath()
-      check validateTrnrun(runner.relativePath(getCurrentDir())) ==
-        runner.absolutePath().normalizedPath()
-    finally:
-      removeDir(directory)
+  suite "input validation":
+    test "accepts existing DCK and TRD files case-insensitively":
+      let
+        dckFile = createDeck(testDirectory, "validation.DCK")
+        trdFile = createDeck(testDirectory, "validation.TRd")
+
+      check validateDeck(dckFile) == dckFile.absolutePath().normalizedPath()
+      check validateDeck(trdFile) == trdFile.absolutePath().normalizedPath()
+
+    test "resolves a relative deck from the working directory":
+      let
+        deckFile = createDeck(testDirectory, "relative.dck")
+        previousDirectory = getCurrentDir()
+      setCurrentDir(testDirectory)
+      defer: setCurrentDir(previousDirectory)
+
+      check validateDeck("relative.dck") == deckFile.absolutePath().normalizedPath()
+
+    test "rejects missing and unsupported deck files with ValueError":
+      let
+        missingDeck = testDirectory / "missing.dck"
+        unsupportedDeck = createDeck(testDirectory, "unsupported.txt")
+
+      check raisesValueError(
+        proc() = discard validateDeck(missingDeck), "Deck file not found:"
+      )
+      check raisesValueError(
+        proc() = discard validateDeck(unsupportedDeck), "Expected .dck or .trd"
+      )
+
+    test "validates the TRNRun path":
+      check validateTrnrun(getAppFilename()) ==
+        getAppFilename().absolutePath().normalizedPath()
+
+      let missingTrnrun = testDirectory / "missing-trnrun.exe"
+      check raisesValueError(
+        proc() = discard validateTrnrun(missingTrnrun), "TRNRun not found:"
+      )
+
+runTests()

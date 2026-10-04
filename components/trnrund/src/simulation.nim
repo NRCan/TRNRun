@@ -42,6 +42,7 @@ type
 
 const TerminalStatuses =
   {statusDone, statusCancelled, statusError, statusTimeout, statusStalled}
+  ## TRNRun statuses that end a run.
 
 # Lifecycle
 
@@ -52,8 +53,11 @@ proc initSimulation*(runId, deckFile: string, trnrunArgs: seq[string]): Simulati
   )
 
 proc applyLine*(self: var Simulation, line: string) =
-  ## Folds one TRNRun output line into the simulation. Invalid lines are
-  ## ignored without changing state.
+  ## Folds one TRNRun output line into the simulation.
+  ##
+  ## `SETTING`, `STATUS`, `CONFIG` and `PROGRESS` replace the previous value;
+  ## each `LOG` is appended and counted by severity. Lines that are not valid
+  ## events are ignored without changing state.
   let event =
     try:
       parseSimulationEvent(parseJson(line))
@@ -77,6 +81,7 @@ proc applyLine*(self: var Simulation, line: string) =
     of Fatal: inc self.fatals
 
 proc hasTerminalStatus(self: Simulation): bool =
+  ## Whether TRNRun already reported a status in `TerminalStatuses`.
   self.status.isSome and self.status.get().status in TerminalStatuses
 
 proc finish*(self: var Simulation, exitCode: Option[int], error: string) =
@@ -101,9 +106,7 @@ proc succeeded*(self: Simulation): bool =
     self.exitCode == some(0) and self.error.len == 0
 
 proc `%`*(self: Simulation): JsonNode =
-  ## Serializes every field except `logs`, which only grow and are read
-  ## separately, adding the success verdict. Serialize `logs` on its own when
-  ## they are needed.
+  ## Serializes every field but the ever-growing `logs`, plus `succeeded`.
   result = newJObject()
   for name, value in self.fieldPairs:
     when name != "logs":
