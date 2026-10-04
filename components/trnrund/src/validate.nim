@@ -7,16 +7,17 @@
 
 import std/[os, strformat, strutils]
 
+proc validateFile(path, label: string): string =
+  result = path.absolutePath().normalizedPath()
+  if not fileExists(result):
+    raise newException(ValueError, fmt"{label} not found: '{result}'")
+
 proc validateDeck*(deckFile: string): string =
   ## Returns an existing absolute `.dck` or `.trd` path.
-  result = deckFile.absolutePath().normalizedPath()
-  if not fileExists(result):
-    raise newException(ValueError, fmt"Deck file not found: '{result}'")
+  result = validateFile(deckFile, "Deck file")
   if result.splitFile().ext.toLowerAscii() notin [".dck", ".trd"]:
     raise newException(ValueError, fmt"Expected .dck or .trd, got: '{deckFile}'")
 
 proc validateTrnrun*(trnrunPath: string): string =
   ## Returns an existing absolute TRNRun path.
-  result = trnrunPath.absolutePath().normalizedPath()
-  if not fileExists(result):
-    raise newException(ValueError, fmt"TRNRun not found: '{result}'")
+  result = validateFile(trnrunPath, "TRNRun")

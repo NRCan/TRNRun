@@ -1,6 +1,6 @@
-import std/[options, os, tempfiles, times, unittest]
-import ../src/events
-import ../src/scheduler
+import std/[os, tempfiles, times, unittest]
+# Included rather than imported so tests can apply messages without blocking.
+include ../src/scheduler
 
 let fakeTrnrun = getAppDir() / "fake_trnrun.exe"
 if not fileExists(fakeTrnrun):
@@ -13,11 +13,24 @@ proc deck(directory, name: string, mode: string = "fast"): string =
 proc releaseDeck(path: string) =
   writeFile(path & ".release", "")
 
+proc applyAvailable(scheduler: Scheduler) =
+  ## Applies every message already in the inbox without waiting.
+  while true:
+    let (available, message) = scheduler.inbox.tryRecv()
+    if not available:
+      break
+    scheduler.apply(message)
+
+proc wait(scheduler: Scheduler) =
+  ## Applies messages until all work finishes.
+  while scheduler.queue.len > 0 or scheduler.runningCount > 0:
+    scheduler.apply(scheduler.inbox.recv())
+
 template pollUntil(scheduler: Scheduler, condition: untyped, failure: string) =
   ## Applies scheduler messages until `condition` holds, failing after 4 s.
   let deadline = epochTime() + 4
   while true:
-    discard scheduler.poll()
+    scheduler.applyAvailable()
     if condition:
       break
     if epochTime() > deadline:
@@ -29,9 +42,17 @@ proc awaitReady(scheduler: Scheduler, path: string) =
 
 proc awaitStatus(scheduler: Scheduler, runId: string, status: SimStatus) =
   scheduler.pollUntil(
-    scheduler.snapshot(runId).status.get(StatusEvent()).status == status,
+    scheduler[runId].status.get(StatusEvent()).status == status,
     "TRNRun did not report expected status",
   )
+
+proc awaitFinished(scheduler: Scheduler, runId: string) =
+  scheduler.pollUntil(scheduler[runId].state == ssFinished, "Run did not finish: " & runId)
+
+proc runIds(scheduler: Scheduler): seq[string] =
+  result = @[]
+  for simulation in scheduler:
+    result.add(simulation.runId)
 
 proc checkLaunchFailed(simulation: Simulation) =
   check simulation.state == ssFinished
@@ -47,10 +68,8 @@ suite "Scheduler":
     expect ValueError:
       discard newScheduler(getAppDir() / "missing.exe", 1)
     let scheduler = newScheduler(fakeTrnrun, 1)
-    check scheduler.poll() == 0
     scheduler.shutdown()
     scheduler.shutdown()
-    check scheduler.poll() == 0
 
   test "invalid submissions do not change the registry":
     let directory = createTempDir("trnrund-validation-", "")
@@ -67,15 +86,13 @@ suite "Scheduler":
         scheduler.add("extension", unsupported)
       for runId in ["missing", "extension"]:
         expect KeyError:
-          discard scheduler.snapshot(runId)
-      expect KeyError:
-        scheduler.wait("unknown")
+          discard scheduler[runId]
 
       scheduler.add("valid", path)
       expect ValueError:
         scheduler.add("valid", path)
       scheduler.wait()
-      check scheduler.snapshot("valid").succeeded()
+      check scheduler["valid"].succeeded()
     finally:
       scheduler.shutdown()
       removeDir(directory)
@@ -90,27 +107,27 @@ suite "Scheduler":
       scheduler.add("first", first)
       scheduler.add("second", second)
       scheduler.add("third", third)
-      check scheduler.snapshot("first").state == ssAccepted
-      check scheduler.snapshot("second").state == ssQueued
-      check scheduler.snapshot("third").state == ssQueued
+      check scheduler["first"].state == ssAccepted
+      check scheduler["second"].state == ssQueued
+      check scheduler["third"].state == ssQueued
 
       scheduler.awaitReady(first)
       scheduler.awaitStatus("first", statusDone)
-      check scheduler.snapshot("first").state == ssRunning
-      check not scheduler.snapshot("first").succeeded()
-      check scheduler.snapshot("second").state == ssQueued
+      check scheduler["first"].state == ssRunning
+      check not scheduler["first"].succeeded()
+      check scheduler["second"].state == ssQueued
       check not fileExists(second & ".ready")
 
       releaseDeck(first)
-      scheduler.wait("first")
-      check scheduler.snapshot("first").succeeded()
-      check scheduler.snapshot("second").state == ssAccepted
-      check scheduler.snapshot("third").state == ssQueued
+      scheduler.awaitFinished("first")
+      check scheduler["first"].succeeded()
+      check scheduler["second"].state == ssAccepted
+      check scheduler["third"].state == ssQueued
       scheduler.awaitReady(second)
       releaseDeck(second)
       scheduler.wait()
       for runId in ["first", "second", "third"]:
-        check scheduler.snapshot(runId).succeeded()
+        check scheduler[runId].succeeded()
     finally:
       releaseDeck(first)
       releaseDeck(second)
@@ -129,12 +146,12 @@ suite "Scheduler":
       scheduler.add("third", third)
       scheduler.awaitReady(first)
       scheduler.awaitReady(second)
-      check scheduler.snapshot("third").state == ssQueued
+      check scheduler["third"].state == ssQueued
       check not fileExists(third & ".ready")
       releaseDeck(first)
-      scheduler.wait("third")
-      check scheduler.snapshot("third").succeeded()
-      check scheduler.snapshot("second").state != ssFinished
+      scheduler.awaitFinished("third")
+      check scheduler["third"].succeeded()
+      check scheduler["second"].state != ssFinished
       releaseDeck(second)
       scheduler.wait()
     finally:
@@ -143,7 +160,7 @@ suite "Scheduler":
       scheduler.shutdown()
       removeDir(directory)
 
-  test "launch failures finish and free capacity for the next queued run":
+  test "a failed run finishes and frees capacity for the next queued run":
     let directory = createTempDir("trnrund-failure-", "")
     let scheduler = newScheduler(fakeTrnrun, 1)
     let first = deck(directory, "first", "hold")
@@ -155,8 +172,11 @@ suite "Scheduler":
       removeFile(removed)
       releaseDeck(first)
       scheduler.wait()
-      scheduler.snapshot("removed").checkLaunchFailed()
-      check scheduler.snapshot("last").succeeded()
+      # TRNRun still launches and reports the missing deck itself.
+      check scheduler["removed"].state == ssFinished
+      check scheduler["removed"].status.get().status == statusError
+      check not scheduler["removed"].succeeded()
+      check scheduler["last"].succeeded()
     finally:
       releaseDeck(first)
       scheduler.shutdown()
@@ -172,13 +192,13 @@ suite "Scheduler":
       scheduler.add("second", deck(directory, "second"))
       scheduler.wait()
       for runId in ["first", "second"]:
-        scheduler.snapshot(runId).checkLaunchFailed()
+        scheduler[runId].checkLaunchFailed()
     finally:
       scheduler.shutdown()
       removeDir(directory)
 
-  test "snapshots and logs are copies, and snapshots leave logs out":
-    let directory = createTempDir("trnrund-snapshot-", "")
+  test "a stored simulation is a copy, independent of the scheduler's":
+    let directory = createTempDir("trnrund-copy-", "")
     let scheduler = newScheduler(fakeTrnrun, 1)
     let path = deck(directory, "first")
     try:
@@ -186,22 +206,18 @@ suite "Scheduler":
       scheduler.add("first", path, args)
       args[0] = "caller change"
       scheduler.wait()
-      var snapshot = scheduler.snapshot("first")
-      check snapshot.logs.len == 0
-      check snapshot.notices == 1
-      snapshot.trnrunArgs[0][0] = 'X'
-      snapshot.status.get().message = "changed"
-      var entries = scheduler.logs("first")
-      entries[0].message = some("changed")
-      entries.add(LogEvent(severity: Fatal))
+      var copy = scheduler["first"]
+      check copy.notices == 1
+      copy.trnrunArgs[0][0] = 'X'
+      copy.status.get().message = "changed"
+      copy.logs[0].message = some("changed")
+      copy.logs.add(LogEvent(severity: Fatal))
 
-      let original = scheduler.snapshot("first")
+      let original = scheduler["first"]
       check original.trnrunArgs == @["--test"]
       check original.status.get().message == "Completed"
-      check scheduler.logs("first").len == 1
-      check scheduler.logs("first")[0].message == some("Started")
-      expect KeyError:
-        discard scheduler.logs("unknown")
+      check original.logs.len == 1
+      check original.logs[0].message == some("Started")
     finally:
       scheduler.shutdown()
       removeDir(directory)
@@ -223,39 +239,56 @@ suite "Scheduler":
 
       releaseDeck(held)
       scheduler.wait()
+      check scheduler.runIds == @["held", "fast"]
       scheduler.remove("held")
       expect KeyError:
-        discard scheduler.snapshot("held")
-      check scheduler.snapshot("fast").succeeded()
+        discard scheduler["held"]
+      check scheduler["fast"].succeeded()
+      check scheduler.runIds == @["fast"]
 
-      # A removed runId can be submitted again.
+      # A removed runId can be submitted again, as a new submission.
       scheduler.add("held", fast)
-      scheduler.wait("held")
-      check scheduler.snapshot("held").succeeded()
+      scheduler.awaitFinished("held")
+      check scheduler["held"].succeeded()
+      check scheduler.runIds == @["fast", "held"]
     finally:
       releaseDeck(held)
       scheduler.shutdown()
       removeDir(directory)
 
-  test "poll is bounded and shutdown cancels queued work but finishes running work":
+  test "iteration follows submission order, not hash order":
+    let directory = createTempDir("trnrund-order-", "")
+    let scheduler = newScheduler(fakeTrnrun, 1)
+    try:
+      let path = deck(directory, "fast")
+      var expected: seq[string] = @[]
+      for index in countdown(49, 0):
+        expected.add("run" & $index)
+        scheduler.add(expected[^1], path)
+      scheduler.shutdown() # Cancels the queued runs, so all finish at once.
+      check scheduler.runIds == expected
+
+      for runId in ["run30", "run10", "run49"]:
+        scheduler.remove(runId)
+        expected.delete(expected.find(runId))
+      check scheduler.runIds == expected
+    finally:
+      scheduler.shutdown()
+      removeDir(directory)
+
+  test "shutdown cancels queued work but finishes running work":
     let directory = createTempDir("trnrund-shutdown-", "")
     let scheduler = newScheduler(fakeTrnrun, 1)
     let held = deck(directory, "held", "hold")
     try:
       scheduler.add("held", held)
       scheduler.add("queued", deck(directory, "queued"))
-      # Without polling, the launch and output messages pile up in the inbox.
-      let deadline = epochTime() + 4
-      while not fileExists(held & ".ready") and epochTime() < deadline:
-        sleep(5)
-      sleep(100)
-      check scheduler.poll(1) == 1
-      check scheduler.poll() > 0
+      scheduler.awaitReady(held)
       # The held run's exit is not processed yet, so "queued" is still queued.
       releaseDeck(held)
       scheduler.shutdown()
-      check scheduler.snapshot("held").succeeded()
-      let queued = scheduler.snapshot("queued")
+      check scheduler["held"].succeeded()
+      let queued = scheduler["queued"]
       check queued.state == ssFinished
       check queued.status.get().status == statusCancelled
       check queued.exitCode.isNone

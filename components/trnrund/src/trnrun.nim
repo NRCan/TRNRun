@@ -1,8 +1,9 @@
-## Runs one trnrun process from launch through output capture and exit.
+## Runs one TRNRun process from launch through output capture and exit.
 ##
-## `runTrnrun` blocks the calling worker thread for the whole run: it validates
-## and launches TRNRun, forwards each line of its merged stdout and stderr
-## unchanged, and returns the outcome.
+## `runTrnrun` blocks the calling worker thread for the whole run: it launches
+## TRNRun, forwards each line of its merged stdout and stderr unchanged, and
+## returns the outcome. TRNRun validates the deck itself and reports a missing
+## one as an `ERROR` status.
 ##
 ## Children inherit the daemon's kill-on-close Job Object, so they cannot
 ## outlive it.
@@ -11,7 +12,6 @@ when not defined(windows):
   {.error: "trnrun.nim is Windows-only.".}
 
 import std/[options, os, osproc, streams]
-import ./validate
 
 type
   LaunchCallback* = proc() {.gcsafe, raises: [].}
@@ -19,7 +19,7 @@ type
 
   RunResult* = tuple
     exitCode: Option[int] ## None when TRNRun never launched.
-    error: string ## Validation, launch, or capture failure; empty otherwise.
+    error: string ## Launch or capture failure; empty otherwise.
 
 const PollMs = 10 ## Wait between output polls while TRNRun is silent.
 
@@ -28,13 +28,10 @@ const PollMs = 10 ## Wait between output polls while TRNRun is silent.
 proc launch(
     runId, deckFile, trnrunPath: string, trnrunArgs: openArray[string]
 ): Process =
-  ## Validates the inputs and starts TRNRun. Raises on failure.
-  let
-    deck = validateDeck(deckFile)
-    executable = validateTrnrun(trnrunPath)
+  ## Starts TRNRun. Raises when the process cannot start.
   result = startProcess(
-    executable,
-    args = @[deck] & @trnrunArgs & @["--runId:" & runId],
+    trnrunPath,
+    args = @[deckFile] & @trnrunArgs & @["--runId:" & runId],
     options = {poStdErrToStdOut, poDaemon},
   )
 
@@ -74,48 +71,26 @@ proc runTrnrun*(
 ): RunResult =
   ## Runs one TRNRun process synchronously and returns its outcome.
   ##
-  ## Validation and launch failures return no exit code. `onLaunch` runs once
-  ## the child exists and before any output. Callbacks run on the calling
-  ## thread and must return promptly.
+  ## A launch failure returns no exit code. `onLaunch` runs once the child
+  ## exists and before any output. Callbacks run on the calling thread and must
+  ## return promptly.
   result = (exitCode: none(int), error: "")
 
   let process =
     try:
       launch(runId, deckFile, trnrunPath, trnrunArgs)
-    except CatchableError:
-      result.error = getCurrentExceptionMsg()
+    except CatchableError as error:
+      result.error = error.msg
       return
 
   onLaunch()
   try:
     result.exitCode = some(process.capture(onOutput))
-  except CatchableError:
-    result.error = getCurrentExceptionMsg()
+  except CatchableError as error:
+    result.error = error.msg
 
   try:
     process.release()
-  except CatchableError:
+  except CatchableError as error:
     if result.error.len == 0:
-      result.error = getCurrentExceptionMsg()
-
-# Direct-run example
-when isMainModule:
-  import ./job
-
-  proc onLaunch() {.gcsafe, raises: [].} =
-    echo "launched"
-
-  proc onOutput(line: string) {.gcsafe, raises: [].} =
-    echo line
-
-  initJobGuard()
-
-  let outcome = runTrnrun(
-    runId = "example",
-    deckFile = r"C:\Users\alexl\Documents\Project\Coding\NRCan\TRNRun_V6\TRNRun\components\trnrund\examples\dck\example_w_plot_w_tracking.dck",
-    trnrunPath = r"C:\Users\alexl\Documents\Project\Coding\NRCan\TRNRun_V6\TRNRun\components\trnrun\build\trnrun.exe",
-    trnrunArgs = ["--guiVisibility:minAuto", "--watchTmp:true"],
-    onLaunch = onLaunch,
-    onOutput = onOutput,
-  )
-  echo "exitCode: ", outcome.exitCode, ", error: '", outcome.error, "'"
+      result.error = error.msg

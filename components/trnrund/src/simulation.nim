@@ -11,7 +11,8 @@ type
     ## Lifecycle of a simulation, independent of TRNRun `STATUS`.
     ##
     ## `QUEUED → ACCEPTED → RUNNING → FINISHED`. A simulation whose TRNRun
-    ## fails validation or launch goes from `ACCEPTED` to `FINISHED`.
+    ## fails to launch goes from `ACCEPTED` to `FINISHED`; one still queued at
+    ## shutdown goes from `QUEUED` to `FINISHED`, cancelled.
     ssQueued = "QUEUED" ## Submitted, waiting for an idle worker.
     ssAccepted = "ACCEPTED" ## A pool slot is reserved; worker pickup may be pending.
     ssRunning = "RUNNING" ## The TRNRun process started.
@@ -50,14 +51,14 @@ proc initSimulation*(runId, deckFile: string, trnrunArgs: seq[string]): Simulati
     runId: runId, deckFile: deckFile, trnrunArgs: trnrunArgs, state: ssQueued
   )
 
-proc applyLine*(self: var Simulation, line: string): bool {.discardable.} =
-  ## Folds one TRNRun output line into the simulation. Returns true for an
-  ## applied protocol event, or false for an invalid line without changing state.
+proc applyLine*(self: var Simulation, line: string) =
+  ## Folds one TRNRun output line into the simulation. Invalid lines are
+  ## ignored without changing state.
   let event =
     try:
       parseSimulationEvent(parseJson(line))
     except ValueError, KeyError:
-      return false
+      return
 
   case event.kind
   of eventSetting:
@@ -74,7 +75,6 @@ proc applyLine*(self: var Simulation, line: string): bool {.discardable.} =
     of Notice: inc self.notices
     of Warning: inc self.warnings
     of Fatal: inc self.fatals
-  result = true
 
 proc hasTerminalStatus(self: Simulation): bool =
   self.status.isSome and self.status.get().status in TerminalStatuses
@@ -100,11 +100,10 @@ proc succeeded*(self: Simulation): bool =
     self.status.isSome and self.status.get().status == statusDone and
     self.exitCode == some(0) and self.error.len == 0
 
-# Serialization
-
-proc toJson*(self: Simulation): JsonNode =
+proc `%`*(self: Simulation): JsonNode =
   ## Serializes every field except `logs`, which only grow and are read
-  ## separately, adding the success verdict.
+  ## separately, adding the success verdict. Serialize `logs` on its own when
+  ## they are needed.
   result = newJObject()
   for name, value in self.fieldPairs:
     when name != "logs":

@@ -13,15 +13,14 @@ import std/options
 
 type
   WorkKind* = enum
-    wkRun ## runId, deckFile, trnrunPath, trnrunArgs.
-    wkStop ## No fields. Passed from worker to worker until all have stopped.
+    wkRun ## runId, deckFile, trnrunArgs.
+    wkStop ## No fields. Sent once per worker during shutdown.
 
   Work* = object
     ## One unit handed from the scheduler to a worker.
     kind*: WorkKind
     runId*: string
     deckFile*: string
-    trnrunPath*: string
     trnrunArgs*: seq[string]
 
   MessageKind* = enum
@@ -38,4 +37,4 @@ type
     runId*: string
     line*: string ## TRNRun output or client request.
     exitCode*: Option[int] ## TRNRun exit code; none when it never launched.
-    error*: string ## Validation, launch, or capture failure; empty otherwise.
+    error*: string ## Launch or capture failure; empty otherwise.

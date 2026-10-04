@@ -7,10 +7,15 @@ echo "ordinary diagnostic output"
 echo "{\"kind\":\"STATUS\",\"status\":\"RUNNING\",\"message\":\"Started\"}"
 echo "{\"kind\":\"PROGRESS\",\"time\":1,\"percent\":0.1,\"elapsedMs\":20,\"etaMs\":180}"
 echo "{\"kind\":\"LOG\",\"severity\":\"Notice\",\"time\":1,\"message\":\"Started\"}"
+if mode == "three-logs":
+  echo "{\"kind\":\"LOG\",\"severity\":\"Notice\",\"time\":2,\"message\":\"Second\"}"
+  echo "{\"kind\":\"LOG\",\"severity\":\"Notice\",\"time\":3,\"message\":\"Third\"}"
 
 if mode == "done-first":
   echo "{\"kind\":\"STATUS\",\"status\":\"DONE\",\"message\":\"Completed\"}"
 stdout.flushFile()
+if mode == "hold":
+  writeFile(deck & ".pid", $getCurrentProcessId())
 writeFile(deck & ".ready", "")
 
 if mode in ["hold", "done-first"]:
