@@ -1,6 +1,6 @@
 """State for one simulation submitted to the TRNRun daemon.
 
-A per-simulation lock synchronizes poller updates and state reads. Use
+A per-simulation lock synchronizes manager updates and state reads. Use
 ``snapshot()`` to read multiple fields coherently. The daemon owns the
 lifecycle, outcome, and log counters; this object mirrors its latest reply
 and accumulates the complete log history.
@@ -9,7 +9,6 @@ and accumulates the complete log history.
 from __future__ import annotations
 
 from _thread import LockType
-from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from pathlib import Path
 from threading import Lock
@@ -20,9 +19,9 @@ from trnrun.events import (
     LogEvent,
     ProgressEvent,
     SettingEvent,
+    SimulationReply,
     SimulationState,
     SimulationStatus,
-    SimulationUpdate,
     StatusEvent,
 )
 
@@ -31,25 +30,18 @@ from trnrun.events import (
 class SimulationSnapshot:
     """Immutable display state captured under the simulation lock.
 
-    Log history and detailed runner metadata stay on ``Simulation``.
+    Outcome details, log history, and detailed runner metadata stay on ``Simulation``.
     Capturing this view never copies logs, regardless of history size.
-    ``revision`` increases with every change, so an unchanged revision means
-    nothing needs redrawing. The first finished snapshot is also the last:
-    a finished simulation never changes again.
+    The first finished snapshot is also the last: a finished simulation
+    never changes again.
     """
 
     id: int
     deck_path: Path
-    revision: int
     state: SimulationState
-    succeeded: bool
     status: SimulationStatus | None
-    message: str
-    exit_code: int | None
-    error: str
     progress: ProgressEvent | None
     config_event: ConfigEvent | None
-    log_count: int
     notices: int
     warnings: int
     fatals: int
@@ -66,15 +58,23 @@ class SimulationSnapshot:
 
     @property
     def is_running(self) -> bool:
-        """Return whether the simulation is waiting or running."""
-        return not self.is_finished
+        """Return whether the daemon lifecycle state is RUNNING."""
+        return self.state is SimulationState.RUNNING
 
 
 class Simulation:
     """Synchronized daemon state for one submitted simulation.
 
+    Mirrors the trnrund ``Simulation``, in the same order. The submission is
+    ``id``, ``deck_path``, and ``config``, from which the runner arguments are
+    built. The daemon state follows, from ``state`` to ``succeeded``; the
+    ``setting``, ``status``, and ``config`` events are named ``setting_event``,
+    ``status_event``, and ``config_event``, and ``status`` gives the status
+    alone. ``log_count``, ``is_accepted``, ``is_running``, and ``is_finished``
+    are conveniences derived from them.
+
     Individual state reads are safe; use ``snapshot()`` for a coherent view of
-    multiple fields. Public input attributes ``id``, ``deck_path``, and ``config``
+    display fields. Public input attributes ``id``, ``deck_path``, and ``config``
     remain caller-owned and should not be mutated concurrently.
     """
 
@@ -90,119 +90,101 @@ class Simulation:
         self.config: SimulationConfig = config
 
         self._lock: LockType = Lock()
-        self._update: SimulationUpdate = SimulationUpdate(SimulationState.QUEUED)
-        self._revision: int = 0
-        # ponytail: Full history uses O(n) memory; spool to disk if logs outgrow RAM.
+        self._reply: SimulationReply = SimulationReply(SimulationState.QUEUED)
         self._logs: list[LogEvent] = []
 
-    def apply_update(self, update: SimulationUpdate, logs: Iterable[LogEvent] = ()) -> bool:
-        """Replace the daemon state and append new logs, returning whether anything changed.
+    def apply(self, reply: SimulationReply) -> bool:
+        """Replace the daemon state and append the reply's logs, returning whether anything changed.
 
-        `logs` are the entries after those already held, up to the update's
-        `log_count`, so the counters always describe the held logs. A finished
-        simulation is frozen: later updates return False without changing state.
+        The manager calls this with each daemon reply; read the handle instead.
+        `reply.logs` start at index `reply.log_start` of the daemon's history:
+        entries already held are skipped, so a repeated reply appends nothing,
+        and the rest join the history rather than the stored state. A finished
+        simulation is frozen: later replies return False without changing state.
+
+        Raises
+        ------
+        ValueError
+            If the reply starts after the held entries, which would leave a gap.
         """
-        new_logs = list(logs)
+        state = replace(reply, logs=(), log_start=0)
         with self._lock:
-            if self._update.state is SimulationState.FINISHED:
+            if self._reply.state is SimulationState.FINISHED:
                 return False
-            if update == self._update and not new_logs:
+            held = len(self._logs) - reply.log_start
+            if held < 0:
+                raise ValueError(f"TRNRun daemon sent log entries from {reply.log_start}, after the {len(self._logs)} held")
+            new_logs = reply.logs[held:]
+            if state == self._reply and not new_logs:
                 return False
 
-            self._update = update
+            self._reply = state
             self._logs.extend(new_logs)
-            self._revision += 1
-            return True
-
-    def abandon(self, status: SimulationStatus, reason: str) -> bool:
-        """Finish a run the daemon can no longer report, returning whether it was unfinished.
-
-        The last polled progress, configuration, and logs are kept. The run
-        becomes unsuccessful, with `reason` as both its status message and error.
-        """
-        with self._lock:
-            if self._update.state is SimulationState.FINISHED:
-                return False
-
-            self._update = replace(
-                self._update,
-                state=SimulationState.FINISHED,
-                succeeded=False,
-                error=reason,
-                status=StatusEvent(status, reason),
-            )
-            self._revision += 1
             return True
 
     def snapshot(self) -> SimulationSnapshot:
         """Capture coherent display state without copying log history."""
         with self._lock:
-            update = self._update
+            reply = self._reply
             return SimulationSnapshot(
                 id=self.id,
                 deck_path=self.deck_path,
-                revision=self._revision,
-                state=update.state,
-                succeeded=update.succeeded,
-                status=update.status.status if update.status is not None else None,
-                message=update.status.message if update.status is not None else "",
-                exit_code=update.exit_code,
-                error=update.error,
-                progress=update.progress,
-                config_event=update.config,
-                log_count=len(self._logs),
-                notices=update.notices,
-                warnings=update.warnings,
-                fatals=update.fatals,
+                state=reply.state,
+                status=reply.status.status if reply.status is not None else None,
+                progress=reply.progress,
+                config_event=reply.config,
+                notices=reply.notices,
+                warnings=reply.warnings,
+                fatals=reply.fatals,
             )
 
     @property
     def state(self) -> SimulationState:
         """Return the daemon lifecycle state."""
         with self._lock:
-            return self._update.state
+            return self._reply.state
 
     @property
     def exit_code(self) -> int | None:
         """Return the runner exit code, or None until it exits or if it never launched."""
         with self._lock:
-            return self._update.exit_code
+            return self._reply.exit_code
 
     @property
     def error(self) -> str:
         """Return the daemon execution error, or an empty string."""
         with self._lock:
-            return self._update.error
-
-    @property
-    def status(self) -> SimulationStatus | None:
-        """Return the latest runner status."""
-        with self._lock:
-            return self._update.status.status if self._update.status is not None else None
-
-    @property
-    def status_event(self) -> StatusEvent | None:
-        """Return the latest status event, including its message."""
-        with self._lock:
-            return self._update.status
-
-    @property
-    def progress(self) -> ProgressEvent | None:
-        """Return the latest progress event."""
-        with self._lock:
-            return self._update.progress
-
-    @property
-    def config_event(self) -> ConfigEvent | None:
-        """Return the latest simulation configuration event."""
-        with self._lock:
-            return self._update.config
+            return self._reply.error
 
     @property
     def setting_event(self) -> SettingEvent | None:
         """Return the latest runner setting event."""
         with self._lock:
-            return self._update.setting
+            return self._reply.setting
+
+    @property
+    def status(self) -> SimulationStatus | None:
+        """Return the latest runner status."""
+        with self._lock:
+            return self._reply.status.status if self._reply.status is not None else None
+
+    @property
+    def status_event(self) -> StatusEvent | None:
+        """Return the latest status event, including its message."""
+        with self._lock:
+            return self._reply.status
+
+    @property
+    def config_event(self) -> ConfigEvent | None:
+        """Return the latest simulation configuration event."""
+        with self._lock:
+            return self._reply.config
+
+    @property
+    def progress(self) -> ProgressEvent | None:
+        """Return the latest progress event."""
+        with self._lock:
+            return self._reply.progress
 
     @property
     def logs(self) -> list[LogEvent]:
@@ -211,27 +193,28 @@ class Simulation:
             return list(self._logs)
 
     @property
-    def is_running(self) -> bool:
-        """Return whether the simulation is waiting or running."""
-        return not self.is_finished
+    def notices(self) -> int:
+        """Return the notice count."""
+        with self._lock:
+            return self._reply.notices
 
     @property
-    def is_accepted(self) -> bool:
-        """Return whether a daemon worker slot was reserved for the run."""
+    def warnings(self) -> int:
+        """Return the warning count."""
         with self._lock:
-            return self._update.state is not SimulationState.QUEUED
+            return self._reply.warnings
 
     @property
-    def is_finished(self) -> bool:
-        """Return whether the daemon finished the run and its logs were collected."""
+    def fatals(self) -> int:
+        """Return the fatal count."""
         with self._lock:
-            return self._update.state is SimulationState.FINISHED
+            return self._reply.fatals
 
     @property
     def succeeded(self) -> bool:
         """Return whether the run finished with `DONE`, exit code 0, and no error."""
         with self._lock:
-            return self._update.succeeded
+            return self._reply.succeeded
 
     @property
     def log_count(self) -> int:
@@ -240,19 +223,19 @@ class Simulation:
             return len(self._logs)
 
     @property
-    def notices(self) -> int:
-        """Return the notice count."""
+    def is_accepted(self) -> bool:
+        """Return whether a daemon worker slot was reserved for the run."""
         with self._lock:
-            return self._update.notices
+            return self._reply.state is not SimulationState.QUEUED
 
     @property
-    def warnings(self) -> int:
-        """Return the warning count."""
+    def is_running(self) -> bool:
+        """Return whether the daemon lifecycle state is RUNNING."""
         with self._lock:
-            return self._update.warnings
+            return self._reply.state is SimulationState.RUNNING
 
     @property
-    def fatals(self) -> int:
-        """Return the fatal count."""
+    def is_finished(self) -> bool:
+        """Return whether the daemon finished the run and its final logs were received."""
         with self._lock:
-            return self._update.fatals
+            return self._reply.state is SimulationState.FINISHED

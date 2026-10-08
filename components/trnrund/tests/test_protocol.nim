@@ -12,8 +12,8 @@ proc call(scheduler: Scheduler, request: JsonNode): JsonNode =
   ## Sends one request and parses its reply.
   parseJson(scheduler.handleRequest($request).reply)
 
-proc logMessages(reply: JsonNode): seq[string] =
-  reply["logs"].getElems().mapIt(it["message"].getStr())
+proc logMessages(simulation: JsonNode): seq[string] =
+  simulation["logs"].getElems().mapIt(it["message"].getStr())
 
 proc runTests() =
   let testDirectory = getTempDir() / "trnrund_protocol_tests"
@@ -40,9 +40,17 @@ proc runTests() =
         (line: """{"cmd":"launch"}""", expected: "Unknown cmd: launch"),
         (line: """{"cmd":"add"}""", expected: "Missing field: runId"),
         (line: """{"cmd":"add","runId":"a"}""", expected: "Missing field: deckFile"),
-        (line: """{"cmd":"snapshot","runId":7}""", expected: ""),
-        (line: """{"cmd":"logs","runId":"missing"}""", expected: "Unknown runId: missing"),
+        (line: """{"cmd":"changes","since":"1"}""", expected: ""),
+        (line: """{"cmd":"changes","since":-1}""", expected: "since must not be negative: -1"),
+        (line: """{"cmd":"remove","runId":"missing"}""", expected: "Unknown runId: missing"),
+        (line: """{"cmd":"logs","runId":"a"}""", expected: "Unknown cmd: logs"),
+        (line: """{"cmd":"collect","runId":"a"}""", expected: "Unknown cmd: collect"),
       ]
+      # Replaced by `changes`, which covers all three.
+      for cmd in ["states", "snapshot", "snapshots"]:
+        checkpoint("removed cmd: " & cmd)
+        check scheduler.call(%*{"cmd": cmd, "runId": "a"}) ==
+          %*{"ok": false, "error": "Unknown cmd: " & cmd}
       for testCase in cases:
         checkpoint("request: " & testCase.line)
         let (reply, shutdown) = scheduler.handleRequest(testCase.line)
@@ -54,61 +62,62 @@ proc runTests() =
         check node["error"].getStr().len > 0
         check node["error"].getStr().contains(testCase.expected)
 
-    test "adds a simulation and snapshots it without logs":
+    test "adds a simulation and reports it, queued ones included, in submission order":
       let scheduler = newScheduler(trnrun, 1)
       defer: scheduler.shutdown()
 
       check scheduler.call(%*{
-        "cmd": "add", "runId": "a", "deckFile": doneDeck, "trnrunArgs": ["--pollMs:50"]
+        "cmd": "add", "runId": "b", "deckFile": doneDeck, "trnrunArgs": ["--pollMs:50"]
       }) == %*{"ok": true}
+      discard scheduler.call(%*{"cmd": "add", "runId": "a", "deckFile": doneDeck})
 
-      let reply = scheduler.call(%*{"cmd": "snapshot", "runId": "a"})
-      check reply["ok"].getBool()
-      let simulation = reply["simulation"]
-      check simulation["runId"].getStr() == "a"
+      let simulations = scheduler.call(%*{"cmd": "changes"})["simulations"]
+      check simulations.getElems().mapIt(it["runId"].getStr()) == @["b", "a"]
+      check simulations.getElems().mapIt(it["state"].getStr()) == @["ACCEPTED", "QUEUED"]
+      let simulation = simulations[0]
       check simulation["trnrunArgs"] == %*["--pollMs:50"]
-      check simulation["state"].getStr() == "ACCEPTED"
       check "succeeded" in simulation
-      check "logs" notin simulation
+      check simulation["logStart"].getInt() == 0
+      check simulation["logs"] == newJArray()
 
-    test "snapshots every simulation in submission order, or the listed ones":
+    test "changes return the simulations changed after since, with only newer logs":
       let scheduler = newScheduler(trnrun, 2)
       defer: scheduler.shutdown()
+      check scheduler.call(%*{"cmd": "changes"}) ==
+        %*{"ok": true, "revision": 0, "simulations": []}
+
       for runId in ["b", "a"]:
         discard scheduler.call(%*{"cmd": "add", "runId": runId, "deckFile": doneDeck})
+      let submitted = scheduler.call(%*{"cmd": "changes"})
+      let revision = submitted["revision"].getInt()
+      check revision > 0
+      check submitted["simulations"].getElems().mapIt(it["runId"].getStr()) == @["b", "a"]
+      check scheduler.call(%*{"cmd": "changes", "since": revision}) ==
+        %*{"ok": true, "revision": revision, "simulations": []}
 
-      let all = scheduler.call(%*{"cmd": "snapshots"})
-      check all["simulations"].getElems().mapIt(it["runId"].getStr()) == @["b", "a"]
+      scheduler.shutdown() # Waits for both runs, three log entries each.
+      let finished = scheduler.call(%*{"cmd": "changes", "since": revision})
+      let latest = finished["revision"].getInt()
+      check latest > revision
+      check finished["simulations"].getElems().mapIt(it["runId"].getStr()) == @["b", "a"]
+      for simulation in finished["simulations"]:
+        checkpoint("runId: " & simulation["runId"].getStr())
+        check simulation["state"].getStr() == "FINISHED"
+        check simulation["revision"].getInt() > revision
+        check simulation["logStart"].getInt() == 0
+        check simulation.logMessages() == @["first", "second", "third"]
 
-      let listed = scheduler.call(%*{"cmd": "snapshots", "runIds": ["a"]})
-      check listed["simulations"].getElems().mapIt(it["runId"].getStr()) == @["a"]
+      # The latest change is the last run's exit, after all its log entries, so
+      # a client up to date until then gets the outcome without repeated entries.
+      let exit = scheduler.call(%*{"cmd": "changes", "since": latest - 1})["simulations"]
+      check exit.len == 1
+      check exit[0]["revision"].getInt() == latest
+      check exit[0]["logStart"].getInt() == 3
+      check exit[0]["logs"] == newJArray()
+      # Counters always cover every entry, whatever logs leaves out.
+      check exit[0]["notices"].getInt() + exit[0]["warnings"].getInt() == 3
 
-      let unknown = scheduler.call(%*{"cmd": "snapshots", "runIds": ["a", "missing"]})
-      check unknown == %*{"ok": false, "error": "Unknown runId: missing"}
-
-    test "slices logs like Python":
-      let scheduler = newScheduler(trnrun, 1)
-      defer: scheduler.shutdown()
-      discard scheduler.call(%*{"cmd": "add", "runId": "run", "deckFile": doneDeck})
-      scheduler.shutdown() # Waits for the run, whose logs stay readable.
-
-      let cases = [
-        (bounds: %*{}, expected: @["first", "second", "third"]),
-        (bounds: %*{"start": 1}, expected: @["second", "third"]),
-        (bounds: %*{"stop": -1}, expected: @["first", "second"]),
-        (bounds: %*{"start": -1}, expected: @["third"]),
-        (bounds: %*{"start": -10, "stop": 10}, expected: @["first", "second", "third"]),
-        (bounds: %*{"start": 5}, expected: newSeq[string]()),
-        (bounds: %*{"start": 2, "stop": 1}, expected: newSeq[string]()),
-      ]
-      for testCase in cases:
-        checkpoint("bounds: " & $testCase.bounds)
-        let request = %*{"cmd": "logs", "runId": "run"}
-        for key, value in testCase.bounds:
-          request[key] = value
-        check scheduler.call(request).logMessages() == testCase.expected
-
-    test "removes and collects only finished simulations":
+    test "removes only finished simulations":
       let
         scheduler = newScheduler(trnrun, 2)
         gateDeck = createDeck(testDirectory, "gate-pending.dck")
@@ -116,26 +125,19 @@ proc runTests() =
       discard scheduler.call(%*{"cmd": "add", "runId": "pending", "deckFile": gateDeck})
       discard scheduler.call(%*{"cmd": "add", "runId": "done", "deckFile": doneDeck})
 
-      for cmd in ["remove", "collect"]:
-        checkpoint("cmd: " & cmd)
-        check scheduler.call(%*{"cmd": cmd, "runId": "pending"}) ==
-          %*{"ok": false, "error": "Simulation has not finished: pending"}
-      check scheduler.call(%*{"cmd": "snapshot", "runId": "pending"})["ok"].getBool()
+      check scheduler.call(%*{"cmd": "remove", "runId": "pending"}) ==
+        %*{"ok": false, "error": "Simulation has not finished: pending"}
+      check scheduler.call(%*{"cmd": "changes"})["simulations"].len == 2
 
       writeFile(gateDeck.changeFileExt("release"), "")
       scheduler.shutdown()
 
-      let collected = scheduler.call(%*{"cmd": "collect", "runId": "done"})
-      check collected["simulation"]["state"].getStr() == "FINISHED"
-      check collected["simulation"]["succeeded"].getBool()
-      check "logs" notin collected["simulation"]
-      check collected.logMessages() == @["first", "second", "third"]
-
-      check scheduler.call(%*{"cmd": "remove", "runId": "pending"}) == %*{"ok": true}
       for runId in ["done", "pending"]:
-        checkpoint("forgotten runId: " & runId)
-        check scheduler.call(%*{"cmd": "snapshot", "runId": runId}) ==
+        checkpoint("removed runId: " & runId)
+        check scheduler.call(%*{"cmd": "remove", "runId": runId}) == %*{"ok": true}
+        check scheduler.call(%*{"cmd": "remove", "runId": runId}) ==
           %*{"ok": false, "error": "Unknown runId: " & runId}
+      check scheduler.call(%*{"cmd": "changes"})["simulations"] == newJArray()
 
     test "acknowledges shutdown and leaves it to the caller":
       let scheduler = newScheduler(trnrun, 1)

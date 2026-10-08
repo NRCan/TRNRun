@@ -160,6 +160,36 @@ proc runTests() =
       scheduler.add("run", deckFile)
       check scheduler["run"].state == ssAccepted
 
+    test "stamps every change with a growing revision, but not removals":
+      let
+        scheduler = newScheduler(trnrun, 1)
+        deckFile = createDeck(testDirectory, "gate-revision.dck")
+      defer: scheduler.shutdown()
+      check scheduler.revision == 0
+
+      scheduler.add("run", deckFile)
+      let accepted = scheduler["run"].revision
+      check accepted == scheduler.revision
+      check accepted >= 2 # Submitted, then accepted.
+
+      scheduler.add("queued", doneDeck)
+      check scheduler["queued"].revision == scheduler.revision
+      check scheduler["queued"].revision > accepted
+
+      scheduler.waitFor("run", ssRunning)
+      check scheduler["run"].revision > scheduler["queued"].revision
+
+      release(deckFile)
+      scheduler.waitFor("run", ssFinished)
+      # The exit frees the worker, so the queued run is accepted right after.
+      check scheduler["queued"].state == ssAccepted
+      check scheduler["run"].revision < scheduler["queued"].revision
+      check scheduler["queued"].revision == scheduler.revision
+
+      let before = scheduler.revision
+      scheduler.remove("run")
+      check scheduler.revision == before
+
     test "shutdown cancels queued runs, waits for running ones, and is idempotent":
       let
         scheduler = newScheduler(trnrun, 1)
@@ -179,6 +209,7 @@ proc runTests() =
         some(StatusEvent(status: statusCancelled, message: "Not started"))
       check queued.exitCode.isNone
       check queued.error == "Not started: the daemon shut down"
+      check queued.revision > 0
 
       expect ValueError:
         scheduler.add("late", doneDeck)

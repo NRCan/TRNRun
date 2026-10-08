@@ -25,9 +25,9 @@ from trnrun.events import (
     ConfigEvent,
     LogEvent,
     ProgressEvent,
+    SimulationReply,
     SimulationState,
     SimulationStatus,
-    SimulationUpdate,
     StatusEvent,
 )
 from trnrun.simulation import Simulation, SimulationSnapshot
@@ -44,7 +44,7 @@ def make_simulation(sim_id: int = 1, deck_path: str = "deck.dck") -> Simulation:
 
 def apply_event(simulation: Simulation, event: StatusEvent | ConfigEvent | ProgressEvent | LogEvent) -> None:
     """Fold one runner event into a running simulation, as a daemon poll would."""
-    current = SimulationUpdate(
+    current = SimulationReply(
         SimulationState.RUNNING,
         status=simulation.status_event,
         config=simulation.config_event,
@@ -55,19 +55,19 @@ def apply_event(simulation: Simulation, event: StatusEvent | ConfigEvent | Progr
     )
     if isinstance(event, LogEvent):
         counter = event.severity.lower() + "s"
-        _ = simulation.apply_update(replace(current, **{counter: getattr(current, counter) + 1}), [event])
+        _ = simulation.apply(replace(current, **{counter: getattr(current, counter) + 1}, logs=(event,)))
     elif isinstance(event, StatusEvent):
-        _ = simulation.apply_update(replace(current, status=event))
+        _ = simulation.apply(replace(current, status=event))
     elif isinstance(event, ConfigEvent):
-        _ = simulation.apply_update(replace(current, config=event))
+        _ = simulation.apply(replace(current, config=event))
     else:
-        _ = simulation.apply_update(replace(current, progress=event))
+        _ = simulation.apply(replace(current, progress=event))
 
 
 def finish(simulation: Simulation, status: SimulationStatus = SimulationStatus.DONE) -> None:
-    """Finish a simulation as a collected daemon reply would."""
-    _ = simulation.apply_update(
-        SimulationUpdate(
+    """Finish a simulation as a finished daemon snapshot would."""
+    _ = simulation.apply(
+        SimulationReply(
             SimulationState.FINISHED,
             exit_code=0,
             succeeded=status is SimulationStatus.DONE,
@@ -584,23 +584,22 @@ def test_auto_renderer_selects_terminal_without_kernel(monkeypatch: pytest.Monke
 # Progress display
 # -----------------------------------------------------------------
 class FakeManager:
-    """Record tracker attachment, as ``SimulationManager`` exposes it."""
+    """Hold submitted runs; ``started`` keeps only unfinished accepted ones, as ``SimulationManager`` does."""
 
-    def __init__(self, unfinished: list[Simulation] | None = None, attach_error: Exception | None = None) -> None:
-        self.unfinished: list[Simulation] = unfinished or []
-        self.attach_error: Exception | None = attach_error
-        self.trackers: list[ProgressDisplay] = []
-        self.detached: list[ProgressDisplay] = []
+    def __init__(self, simulations: list[Simulation] | None = None) -> None:
+        self.simulations: list[Simulation] = simulations or []
 
-    def _attach(self, tracker: ProgressDisplay) -> None:
-        if self.attach_error is not None:
-            raise self.attach_error
-        self.trackers.append(tracker)
-        for simulation in self.unfinished:
-            tracker.track(simulation)
+    @property
+    def started(self) -> list[Simulation]:
+        """Return the unfinished runs a worker took."""
+        return [simulation for simulation in self.simulations if simulation.is_accepted and not simulation.is_finished]
 
-    def _detach(self, tracker: ProgressDisplay) -> None:
-        self.detached.append(tracker)
+
+def make_running(sim_id: int = 1) -> Simulation:
+    """Build a simulation a daemon worker has accepted and started."""
+    simulation = make_simulation(sim_id)
+    _ = simulation.apply(SimulationReply(SimulationState.RUNNING))
+    return simulation
 
 
 @pytest.fixture
@@ -632,30 +631,40 @@ def make_display(renderer: Mock) -> Iterator[Callable[..., ProgressDisplay]]:
 
 @pytest.mark.parametrize("refresh_interval", [0.0, -0.01, float("nan")])
 def test_progress_display_rejects_nonpositive_refresh_intervals(refresh_interval: float) -> None:
-    """Redraws need a positive interval, checked before attaching."""
-    manager = FakeManager()
+    """Redraws need a positive interval."""
     with pytest.raises(ValueError, match="refresh_interval must be positive"):
-        ProgressDisplay(manager, refresh_interval=refresh_interval, renderer=Mock())  # pyright: ignore[reportArgumentType]
-    assert manager.trackers == []
+        ProgressDisplay(FakeManager(), refresh_interval=refresh_interval, renderer=Mock())  # pyright: ignore[reportArgumentType]
 
 
-def test_progress_display_attaches_and_redraws_in_the_background(
+def test_progress_display_follows_accepted_runs_and_redraws_in_the_background(
     make_display: Callable[..., ProgressDisplay],
     renderer: Mock,
 ) -> None:
-    """Construction follows the manager's unfinished runs and starts a daemon redraw thread."""
-    simulation = make_simulation()
-    manager = FakeManager([simulation])
+    """The daemon redraw thread shows the manager's accepted runs, never its queued ones."""
+    running, queued = make_running(1), make_simulation(2)
     drawn = Event()
     renderer.show.side_effect = lambda _active: drawn.set()
 
-    display = make_display(manager, refresh_interval=0.01)
+    display = make_display(FakeManager([running, queued]), refresh_interval=0.01)
 
-    assert manager.trackers == [display]
     assert display._thread.daemon
     assert display._thread.name == "trnrun-progress"
     assert drawn.wait(TEST_TIMEOUT)
-    assert renderer.show.call_args.args == ([simulation.snapshot()],)
+    assert renderer.show.call_args.args == ([running.snapshot()],)
+
+
+def test_progress_display_picks_up_a_queued_run_once_accepted(
+    make_display: Callable[..., ProgressDisplay],
+    renderer: Mock,
+) -> None:
+    """A queued run is drawn from the first redraw after a worker accepts it."""
+    simulation = make_simulation()
+    display = make_display(FakeManager([simulation]))
+    display._tick()
+    _ = simulation.apply(SimulationReply(SimulationState.ACCEPTED))
+    display._tick()
+
+    assert renderer.show.call_args_list == [call([]), call([simulation.snapshot()])]
 
 
 def test_progress_display_prints_each_finished_run_once_then_drops_it(
@@ -663,10 +672,10 @@ def test_progress_display_prints_each_finished_run_once_then_drops_it(
     renderer: Mock,
 ) -> None:
     """Finished runs are printed once and leave the live rows; unfinished ones keep their order."""
-    display = make_display()
-    first, second, third = make_simulation(1), make_simulation(2), make_simulation(3)
-    for simulation in (first, second, third):
-        display.track(simulation)
+    first, second, third = make_running(1), make_running(2), make_running(3)
+    display = make_display(FakeManager([first, second, third]))
+    display._tick()
+    renderer.reset_mock()
     finish(second)
 
     display._tick()
@@ -677,31 +686,16 @@ def test_progress_display_prints_each_finished_run_once_then_drops_it(
     assert list(display._rows) == [1, 3]
 
 
-def test_progress_display_never_misses_a_run_finished_before_its_first_redraw(
-    make_display: Callable[..., ProgressDisplay],
-    renderer: Mock,
-) -> None:
-    """A run tracked already finished is printed, never shown as live."""
-    display = make_display()
-    simulation = make_simulation()
-    finish(simulation, SimulationStatus.ERROR)
-    display.track(simulation)
-
-    display._tick()
-
-    renderer.finished.assert_called_once_with(simulation.snapshot())
-    renderer.show.assert_called_once_with([])
-
-
 def test_progress_display_logs_renderer_failures_without_repeating_lines(
     make_display: Callable[..., ProgressDisplay],
     renderer: Mock,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """A failing renderer is logged; its final line is not retried and redraws continue."""
-    display = make_display()
-    simulation = make_simulation()
-    display.track(simulation)
+    simulation = make_running()
+    display = make_display(FakeManager([simulation]))
+    display._tick()
+    renderer.reset_mock()
     finish(simulation)
     renderer.finished.side_effect = RuntimeError("render failed")
 
@@ -714,28 +708,66 @@ def test_progress_display_logs_renderer_failures_without_repeating_lines(
     renderer.show.assert_called_once_with([])
 
 
-def test_progress_display_close_detaches_draws_last_frame_and_releases_renderer(
+@pytest.mark.parametrize("finished_status", [SimulationStatus.DONE, SimulationStatus.CANCELLED, SimulationStatus.ERROR])
+def test_progress_display_close_clears_rows_and_releases_renderer(
     make_display: Callable[..., ProgressDisplay],
     renderer: Mock,
+    finished_status: SimulationStatus,
 ) -> None:
-    """Close stops the thread, then prints runs finished since the last redraw, exactly once."""
-    manager = FakeManager()
-    display = make_display(manager)
-    running, done = make_simulation(1), make_simulation(2)
-    display.track(running)
-    display.track(done)
-    finish(done)
+    """Close prints only daemon-confirmed finished runs, then clears the live region and rows."""
+    running, done = make_simulation(1), make_running(2)
+    apply_event(running, StatusEvent(SimulationStatus.RUNNING, "still running"))
+    apply_event(running, ProgressEvent(5.0, 0.5, 500.0, 500.0))
+    apply_event(running, LogEvent("Notice", message="retained"))
+    display = make_display(FakeManager([running, done]))
+    display._tick()
+    renderer.reset_mock()
+    finish(done, finished_status)
+    before = [(simulation, simulation._reply, simulation.snapshot(), simulation.logs) for simulation in (running, done)]
 
     display.close()
     display.close()
 
-    assert manager.detached == [display]
     assert not display._thread.is_alive()
     assert renderer.method_calls == [
         call.finished(done.snapshot()),
-        call.show([running.snapshot()]),
+        call.show([]),
         call.close(),
     ]
+    assert display._rows == {}
+    for simulation, reply, snapshot, logs in before:
+        assert simulation._reply is reply
+        assert simulation.snapshot() == snapshot
+        assert simulation.logs == logs
+    assert not running.is_finished
+
+
+@pytest.mark.parametrize("state", [SimulationState.QUEUED, SimulationState.ACCEPTED, SimulationState.RUNNING])
+def test_progress_display_close_suppresses_unfinished_runs(
+    make_display: Callable[..., ProgressDisplay],
+    renderer: Mock,
+    state: SimulationState,
+) -> None:
+    """Unfinished runs never get a final line or remain in the last frame, even with a DONE status."""
+    simulation = make_simulation()
+    _ = simulation.apply(
+        SimulationReply(state, status=StatusEvent(SimulationStatus.DONE), notices=1, logs=(LogEvent("Notice"),)),
+    )
+    reply, snapshot, logs = simulation._reply, simulation.snapshot(), simulation.logs
+    display = make_display(FakeManager([simulation]))
+    display._tick()
+    renderer.reset_mock()
+
+    display.close()
+    display.close()
+
+    assert renderer.method_calls == [call.show([]), call.close()]
+    assert display._rows == {}
+    assert not display._thread.is_alive()
+    assert simulation._reply is reply
+    assert simulation.snapshot() == snapshot
+    assert simulation.logs == logs
+    assert not simulation.is_finished
 
 
 def test_progress_display_context_closes(make_display: Callable[..., ProgressDisplay], renderer: Mock) -> None:
@@ -744,16 +776,6 @@ def test_progress_display_context_closes(make_display: Callable[..., ProgressDis
         assert display._thread.is_alive()
     assert not display._thread.is_alive()
     renderer.close.assert_called_once_with()
-
-
-def test_progress_display_attach_failure_starts_nothing(renderer: Mock) -> None:
-    """A closed manager refuses the display before any thread starts."""
-    manager = FakeManager(attach_error=RuntimeError("SimulationManager is closed"))
-
-    with pytest.raises(RuntimeError, match="closed"):
-        ProgressDisplay(manager, refresh_interval=NEVER, renderer=renderer)  # pyright: ignore[reportArgumentType]
-
-    renderer.assert_not_called()
 
 
 def test_progress_display_selects_a_renderer_automatically(monkeypatch: pytest.MonkeyPatch, renderer: Mock) -> None:

@@ -1,9 +1,11 @@
 ## Holds the daemon-side state of one simulation.
 ##
 ## The daemon thread alone owns every `Simulation`. TRNRun output is folded in
-## one line at a time.
+## one line at a time. The scheduler stamps each change with its revision, and
+## each log entry keeps the revision it arrived in, so a client can ask for
+## what changed since a revision it holds.
 
-import std/[json, options]
+import std/[algorithm, json, options]
 import ./events
 
 type
@@ -26,6 +28,8 @@ type
     trnrunArgs*: seq[string]
     # Daemon bookkeeping
     state*: SimulationState
+    revision*: int ## Scheduler revision of the latest change.
+    logRevisions: seq[int] ## Revision each entry of `logs` arrived in, never serialized.
     # TRNRun results
     exitCode*: Option[int]
       ## TRNRun exit code; none until it exits, or if it never launched.
@@ -52,18 +56,19 @@ proc initSimulation*(runId, deckFile: string, trnrunArgs: seq[string]): Simulati
     runId: runId, deckFile: deckFile, trnrunArgs: trnrunArgs, state: ssQueued
   )
 
-proc applyLine*(self: var Simulation, line: string) =
-  ## Folds one TRNRun output line into the simulation.
+proc applyLine*(self: var Simulation, line: string, revision: int) =
+  ## Folds one TRNRun output line into the simulation as of `revision`.
   ##
   ## `SETTING`, `STATUS`, `CONFIG` and `PROGRESS` replace the previous value;
   ## each `LOG` is appended and counted by severity. Lines that are not valid
-  ## events are ignored without changing state.
+  ## events are ignored without changing state, revision included.
   let event =
     try:
       parseSimulationEvent(parseJson(line))
     except ValueError, KeyError:
       return
 
+  self.revision = revision
   case event.kind
   of eventSetting:
     self.setting = some(event.settingData)
@@ -75,6 +80,7 @@ proc applyLine*(self: var Simulation, line: string) =
     self.progress = some(event.progressData)
   of eventLog:
     self.logs.add(event.logData)
+    self.logRevisions.add(revision)
     case event.logData.severity
     of Notice: inc self.notices
     of Warning: inc self.warnings
@@ -105,10 +111,24 @@ proc succeeded*(self: Simulation): bool =
     self.status.isSome and self.status.get().status == statusDone and
     self.exitCode == some(0) and self.error.len == 0
 
+proc logStartAfter*(self: Simulation, revision: int): int =
+  ## Index of the first log entry that arrived after `revision`.
+  self.logRevisions.lowerBound(revision + 1)
+
 proc `%`*(self: Simulation): JsonNode =
   ## Serializes every field but the ever-growing `logs`, plus `succeeded`.
   result = newJObject()
   for name, value in self.fieldPairs:
-    when name != "logs":
+    when name notin ["logs", "logRevisions"]:
       result[name] = %value
   result["succeeded"] = %self.succeeded()
+
+proc toJson*(self: Simulation, logStart: int): JsonNode =
+  ## Serializes the simulation with its log entries from `logStart` on.
+  ##
+  ## `logStart`, clamped to the entries held, is reported back, so a client
+  ## can tell where the entries it receives belong.
+  let start = min(logStart, self.logs.len)
+  result = %self
+  result["logStart"] = %start
+  result["logs"] = %self.logs[start ..< self.logs.len]

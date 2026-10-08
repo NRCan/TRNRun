@@ -36,11 +36,13 @@ proc request(daemon: Process, request: JsonNode): JsonNode =
   daemon.request($request)
 
 proc waitForState(daemon: Process, runId, state: string): JsonNode =
-  ## Polls `snapshot` until `runId` reaches `state`, returning the last reply.
+  ## Polls `changes` until `runId` reaches `state`, returning its last report.
   result = nil
   for _ in 0 ..< 500:
-    result = daemon.request(%*{"cmd": "snapshot", "runId": runId})
-    if result["simulation"]["state"].getStr() == state:
+    for simulation in daemon.request(%*{"cmd": "changes"})["simulations"]:
+      if simulation["runId"].getStr() == runId:
+        result = simulation
+    if result != nil and result["state"].getStr() == state:
       return
     sleep(10)
 
@@ -142,8 +144,13 @@ proc runTests() =
       check daemon.request(%*{"cmd": "add", "runId": "run", "deckFile": deckFile}) ==
         %*{"ok": true}
       check not daemon.request("garbage")["ok"].getBool()
-      check daemon.waitForState("run", "FINISHED")["simulation"]["succeeded"].getBool()
-      check daemon.request(%*{"cmd": "collect", "runId": "run"})["logs"].len == 3
+      let finished = daemon.waitForState("run", "FINISHED")
+      check finished["succeeded"].getBool()
+      check finished["logs"].len == 3
+      let revision = finished["revision"].getInt()
+      check daemon.request(%*{"cmd": "changes", "since": revision}) ==
+        %*{"ok": true, "revision": revision, "simulations": []}
+      check daemon.request(%*{"cmd": "remove", "runId": "run"}) == %*{"ok": true}
       check daemon.request(%*{"cmd": "shutdown"}) == %*{"ok": true}
       check daemon.waitForExit() == 0
 
@@ -156,8 +163,7 @@ proc runTests() =
 
       check daemon.request(%*{"cmd": "add", "runId": "run", "deckFile": deckFile}) ==
         %*{"ok": true}
-      check daemon.waitForState("run", "RUNNING")["simulation"]["state"].getStr() ==
-        "RUNNING"
+      check daemon.waitForState("run", "RUNNING")["state"].getStr() == "RUNNING"
 
       daemon.inputStream.close()
       check daemon.waitForExit(5_000) == 0

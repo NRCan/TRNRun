@@ -1,8 +1,8 @@
 ## Runs 20 copies of one slow deck through the TRNRun daemon and reports each result.
 ##
 ## Exercises the client protocol against real TRNSYS: adds every copy, polls
-## `snapshots`, prints each state change, collects each run once it finishes,
-## then shuts the daemon down. Build both executables first, then run from the
+## `changes`, prints each state change, removes each run once it
+## finishes, then shuts the daemon down. Build both executables first, then run from the
 ## `trnrund` directory:
 ##
 ##   cd ../trnrun
@@ -77,10 +77,12 @@ proc request(daemon: Process, request: JsonNode): JsonNode =
     )
 
 proc runDaemon(daemon: Process, deckFiles: openArray[string]): Table[string, JsonNode] =
-  ## Adds every deck, then collects each simulation as it finishes.
+  ## Adds every deck, then removes each simulation as it finishes.
   ##
-  ## Prints each state change seen while polling. Returns the `collect` reply
-  ## of every run, keyed by runId.
+  ## Polls `changes` from the previous revision, so each poll brings only the
+  ## runs that changed and the logs not yet received. Prints each state change
+  ## seen while polling. Returns the finished report of every run, with all its
+  ## logs, keyed by runId.
   result = initTable[string, JsonNode]()
   for deckFile in deckFiles:
     discard daemon.request(%*{
@@ -90,17 +92,28 @@ proc runDaemon(daemon: Process, deckFiles: openArray[string]): Table[string, Jso
       "trnrunArgs": TrnrunArgs,
     })
 
-  var states = initTable[string, string]()
+  var
+    revision = 0
+    states = initTable[string, string]()
+    logs = initTable[string, JsonNode]()
+
+  proc note(runId, state: string) =
+    if states.getOrDefault(runId) != state:
+      states[runId] = state
+      styledWriteLine(stdout, fgWhite, "  " & runId & ": " & state)
+
   while result.len < deckFiles.len:
-    for simulation in daemon.request(%*{"cmd": "snapshots"})["simulations"]:
-      let
-        runId = simulation["runId"].getStr()
-        state = simulation["state"].getStr()
-      if states.getOrDefault(runId) != state:
-        states[runId] = state
-        styledWriteLine(stdout, fgWhite, "  " & runId & ": " & state)
-      if state == "FINISHED":
-        result[runId] = daemon.request(%*{"cmd": "collect", "runId": runId})
+    let changes = daemon.request(%*{"cmd": "changes", "since": revision})
+    revision = changes["revision"].getInt()
+    for simulation in changes["simulations"]:
+      let runId = simulation["runId"].getStr()
+      note(runId, simulation["state"].getStr())
+      for entry in simulation["logs"]:
+        logs.mgetOrPut(runId, newJArray()).add(entry)
+      if simulation["state"].getStr() == "FINISHED":
+        simulation["logs"] = logs.getOrDefault(runId, newJArray())
+        result[runId] = simulation
+        discard daemon.request(%*{"cmd": "remove", "runId": runId})
 
     if result.len < deckFiles.len:
       sleep(PollMs)
@@ -112,10 +125,9 @@ proc reportRun(runId: string, collected: Table[string, JsonNode]): bool =
     return false
 
   let
-    reply = collected[runId]
-    simulation = reply["simulation"]
+    simulation = collected[runId]
     summary = runId & ": " & simulation{"status", "status"}.getStr("NO STATUS") &
-      " (" & $reply["logs"].len & " logs, " & $simulation["warnings"].getInt() &
+      " (" & $simulation["logs"].len & " logs, " & $simulation["warnings"].getInt() &
       " warnings, " & $simulation["fatals"].getInt() & " fatals)"
   result = simulation["succeeded"].getBool()
   if result:

@@ -11,12 +11,12 @@ from trnrun.events import (
     LogEvent,
     ProgressEvent,
     SettingEvent,
+    SimulationReply,
     SimulationState,
     SimulationStatus,
-    SimulationUpdate,
     StatusEvent,
     parse_log,
-    parse_simulation_update,
+    parse_simulation_reply,
 )
 
 # Captured from trnrund running a fake TRNRun.
@@ -25,6 +25,7 @@ DAEMON_SIMULATION: dict[str, object] = {
     "deckFile": r"C:\models\done-a.dck",
     "trnrunArgs": ["--watchTmp:true"],
     "state": "FINISHED",
+    "revision": 9,
     "exitCode": 0,
     "error": "",
     "setting": None,
@@ -35,6 +36,8 @@ DAEMON_SIMULATION: dict[str, object] = {
     "warnings": 0,
     "fatals": 0,
     "succeeded": True,
+    "logStart": 0,
+    "logs": [],
 }
 DAEMON_LOG: dict[str, object] = {
     "severity": "Notice",
@@ -79,28 +82,37 @@ def test_simulation_state_has_exact_daemon_values_and_is_exported() -> None:
     assert ExportedSimulationState is SimulationState
 
 
-def test_parse_simulation_update_reads_daemon_state() -> None:
-    assert parse_simulation_update(DAEMON_SIMULATION) == SimulationUpdate(
+def test_parse_simulation_reply_reads_daemon_state() -> None:
+    assert parse_simulation_reply(DAEMON_SIMULATION) == SimulationReply(
         state=SimulationState.FINISHED,
         exit_code=0,
         error="",
-        succeeded=True,
         status=StatusEvent(SimulationStatus.DONE, "Completed"),
         progress=ProgressEvent(1.0, 0.1, 20.0, 180.0),
         notices=1,
+        succeeded=True,
     )
 
 
-def test_update_log_count_totals_severities() -> None:
-    update = parse_simulation_update({**DAEMON_SIMULATION, "notices": 3, "warnings": 2, "fatals": 1})
+def test_parse_simulation_reply_reads_new_logs() -> None:
+    update = parse_simulation_reply({**DAEMON_SIMULATION, "logStart": 4, "logs": [DAEMON_LOG, DAEMON_LOG]})
 
-    assert (update.notices, update.warnings, update.fatals, update.log_count) == (3, 2, 1, 6)
+    assert update.logs == (parse_log(DAEMON_LOG),) * 2
+    assert update.log_start == 4
+    assert update.notices == 1  # Counters cover every entry the daemon holds, not only the new ones.
 
 
-def test_parse_simulation_update_reads_unlaunched_run() -> None:
+def test_parse_simulation_reply_reads_severity_counts() -> None:
+    update = parse_simulation_reply({**DAEMON_SIMULATION, "notices": 3, "warnings": 2, "fatals": 1})
+
+    assert (update.notices, update.warnings, update.fatals) == (3, 2, 1)
+    assert update.logs == ()
+
+
+def test_parse_simulation_reply_reads_unlaunched_run() -> None:
     payload = {**DAEMON_SIMULATION, "exitCode": None, "error": "launch failed", "succeeded": False}
 
-    update = parse_simulation_update(payload)
+    update = parse_simulation_reply(payload)
 
     assert update.exit_code is None
     assert update.error == "launch failed"
@@ -142,8 +154,8 @@ def test_parse_simulation_update_reads_unlaunched_run() -> None:
         ),
     ],
 )
-def test_parse_simulation_update_reads_nested_events(field: str, payload: dict[str, object], expected: object) -> None:
-    update = parse_simulation_update({**DAEMON_SIMULATION, field: payload})
+def test_parse_simulation_reply_reads_nested_events(field: str, payload: dict[str, object], expected: object) -> None:
+    update = parse_simulation_reply({**DAEMON_SIMULATION, field: payload})
 
     assert getattr(update, field) == expected
 
@@ -169,7 +181,7 @@ def test_parse_log_reads_every_field() -> None:
 def test_mismatched_reply_fails_loudly(changes: dict[str, object], error: type[Exception]) -> None:
     """A reply from a daemon of another version is not silently accepted."""
     with pytest.raises(error):
-        _ = parse_simulation_update({**DAEMON_SIMULATION, **changes})
+        _ = parse_simulation_reply({**DAEMON_SIMULATION, **changes})
 
 
 def test_events_are_immutable() -> None:

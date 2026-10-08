@@ -31,9 +31,10 @@ Read one JSON request per stdin line and write one JSON reply per stdout line:
   {"cmd":"add","runId":"1","deckFile":"model.dck"}
 Replies come in request order, one per request.
 
-Commands: add, snapshot, snapshots, logs, remove, collect, shutdown.
-snapshots takes optional "runIds" and returns every simulation by default.
-logs takes optional "start" and "stop" bounds that slice like Python.
+Commands: add, changes, remove, shutdown.
+changes takes an optional "since" revision and returns the current revision
+with every simulation changed after it, and only the logs added after it;
+since 0, the default, returns everything.
 Closing stdin exits at once and kills running simulations. Startup failures
 are written to stderr.
 

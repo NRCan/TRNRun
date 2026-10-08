@@ -29,6 +29,30 @@ function Send-Request([hashtable] $Request) {
     $Reply
 }
 
+# Polls the runs changed since the previous poll, each with only its new logs.
+$Revision = 0
+$States = @{}
+$LogCounts = @{}
+$Finished = @{}
+function Update-Runs {
+    $Changes = Send-Request @{ cmd = 'changes'; since = $script:Revision }
+    $script:Revision = $Changes.revision
+    foreach ($Simulation in $Changes.simulations) {
+        $RunId = $Simulation.runId
+        $LogCounts[$RunId] += $Simulation.logs.Count
+        if ($States[$RunId] -ne $Simulation.state) {
+            $States[$RunId] = $Simulation.state
+            Write-Host "${RunId}: $($Simulation.state)"
+        }
+        # A run is done once its state is FINISHED. That reply carries its last
+        # logs, and remove frees its runId.
+        if ($Simulation.state -eq 'FINISHED') {
+            $Finished[$RunId] = $Simulation
+            Send-Request @{ cmd = 'remove'; runId = $RunId } | Out-Null
+        }
+    }
+}
+
 New-Item -ItemType Directory -Path $RunDirectory | Out-Null
 $Daemon = $null
 try {
@@ -62,33 +86,19 @@ try {
         } | Out-Null
     }
 
-    # A run is done once its state is FINISHED; collect returns it with its
-    # logs and frees its runId.
-    $States = @{}
-    $Collected = @{}
-    while ($Collected.Count -lt $RunCount) {
-        foreach ($Simulation in (Send-Request @{ cmd = 'snapshots' }).simulations) {
-            if ($States[$Simulation.runId] -ne $Simulation.state) {
-                $States[$Simulation.runId] = $Simulation.state
-                Write-Host "$($Simulation.runId): $($Simulation.state)"
-            }
-            if ($Simulation.state -eq 'FINISHED') {
-                $Collected[$Simulation.runId] =
-                    Send-Request @{ cmd = 'collect'; runId = $Simulation.runId }
-            }
-        }
-        if ($Collected.Count -lt $RunCount) {
-            Start-Sleep -Seconds $PollSeconds
-        }
+    Update-Runs
+    while ($Finished.Count -lt $RunCount) {
+        Start-Sleep -Seconds $PollSeconds
+        Update-Runs
     }
 
     $FailureCount = 0
-    foreach ($RunId in $Collected.Keys | Sort-Object) {
-        $Simulation = $Collected[$RunId].simulation
+    foreach ($RunId in $Finished.Keys | Sort-Object) {
+        $Simulation = $Finished[$RunId]
         $Verdict = if ($Simulation.succeeded) { 'PASS' } else { 'FAIL' }
         Write-Host (
             "$Verdict - ${RunId}: $($Simulation.status.status), " +
-            "$($Collected[$RunId].logs.Count) logs, $($Simulation.warnings) warnings"
+            "$($LogCounts[$RunId]) logs, $($Simulation.warnings) warnings"
         )
         if (-not $Simulation.succeeded) {
             $FailureCount++

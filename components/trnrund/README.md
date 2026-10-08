@@ -38,18 +38,30 @@ per stdout line, in request order:
 
 ```json
 {"cmd":"add","runId":"1","deckFile":"model.dck"}
-{"cmd":"snapshot","runId":"1"}
-{"cmd":"collect","runId":"1"}
+{"cmd":"changes","since":0}
+{"cmd":"remove","runId":"1"}
 {"cmd":"shutdown"}
 ```
 
-Each reply contains `ok`. Failed requests contain `error`; successful snapshot
-and collect requests contain `simulation`, and collect also contains `logs`.
-Wait for `simulation.state == "FINISHED"` before collecting a run. The
-`succeeded` field distinguishes success from other finished outcomes.
+Each reply contains `ok`. Failed requests contain `error`.
 
-Other commands are `snapshots`, `logs`, and `remove`. See
-[`src/protocol.nim`](src/protocol.nim) for request fields and slicing semantics.
+Poll with `changes`. Every change to a simulation, including its submission,
+gets the next `revision`, a counter that only grows. `changes` returns the
+current `revision` and the `simulations` changed after `since`, each with only
+the `logs` that arrived after it. Pass the `revision` of the previous reply as
+the next `since`, and each poll costs what changed, not the number of runs:
+
+```json
+{"ok":true,"revision":42,"simulations":[{"runId":"1","state":"RUNNING","revision":42,"logStart":3,"logs":[...],...}]}
+```
+
+Every simulation in a reply reports the `logStart` index of its `logs`, so a
+client can place them; asking again from an older `since` repeats entries but
+never skips one, and `since` 0, the default, returns everything. Once a
+simulation shows `state == "FINISHED"`, it holds the final logs, and `remove`
+frees the run. The `succeeded` field distinguishes success from other finished
+outcomes. See [`src/protocol.nim`](src/protocol.nim) for request fields and
+defaults.
 
 ## Shutdown and failures
 

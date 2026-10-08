@@ -1,9 +1,11 @@
 """Built-in progress display for TRNRun-manager simulations.
 
-``ProgressDisplay`` attaches to a ``SimulationManager`` and redraws from its
-own background thread, so nothing blocks the caller. It follows only runs a
-daemon worker has accepted, so its cost tracks ``max_concurrent``, not the
-queue length. Each redraw reads immutable snapshots of those handles, prints each
+``ProgressDisplay`` reads a ``SimulationManager``'s runs and redraws from its
+own background thread, so nothing blocks the caller. It only reads the run
+handles; the manager's updates keep them current. It follows only the
+manager's ``started`` runs, those a daemon worker has accepted, so it never
+reads the queue and draws at most ``max_concurrent`` lines.
+Each redraw reads immutable snapshots of those handles, prints each
 finished run once, then stops following it. Renderers only ever receive
 snapshots: Rich renders the same status lines for terminals and notebooks, and
 IPython ``DisplayHandle`` replaces notebook output in place without widgets or
@@ -20,16 +22,19 @@ from collections.abc import Callable, Sequence
 from io import StringIO
 from threading import Event, Lock, Thread, current_thread
 from types import TracebackType
-from typing import Protocol, Self, cast
+from typing import TYPE_CHECKING, Protocol, Self, cast
 
 from rich.console import Console, Group
 from rich.live import Live
 from rich.text import Text
 
 from trnrun.events import SimulationStatus
-from trnrun.manager import SimulationManager
 from trnrun.simulation import Simulation, SimulationSnapshot
 from trnrun.utils import format_hhmmss, truncate_left
+
+if TYPE_CHECKING:
+    # The manager owns a display, so importing it at runtime would be circular.
+    from trnrun.manager import SimulationManager
 
 logger = logging.getLogger(__name__)
 
@@ -263,23 +268,29 @@ def _auto_renderer() -> Renderer:
 class ProgressDisplay:
     """Show live progress of a manager's runs from a background thread.
 
-    Follows only runs a daemon worker has accepted: those already running
-    when created, and every other run once a worker accepts it. Queued runs
-    are never followed, so 10,000 queued submissions cost nothing; at most
-    ``max_concurrent`` runs are drawn. Every `refresh_interval` seconds it
-    prints each newly finished run once and redraws the running ones.
-    Rendering failures are logged and never affect the runs.
+    Every `refresh_interval` seconds it picks up the manager's ``started``
+    runs, those a daemon worker has accepted, prints each newly finished run
+    once, and redraws the running ones. Queued runs are never read nor drawn,
+    so a redraw costs at most ``max_concurrent`` lines however many runs
+    wait. A run that is accepted and finishes
+    between two redraws is never seen, so it gets no final line; its handle
+    still holds the result. Rendering failures are logged and never affect
+    the runs.
 
-    The manager closes it on shutdown, after finishing unfinished runs as
-    ``CANCELLED``, so final lines are printed for the runs that had started;
-    runs still queued are not printed. Closing it earlier,
-    for example by leaving a ``with ProgressDisplay(...)`` block, stops
-    following runs that are still unfinished.
+    It never asks the daemon itself: the handles it reads change when the
+    manager updates them from its own background thread.
+
+    ``SimulationManager`` creates and closes one by default; create your own
+    only for a manager built with ``display=False``. Close it once done,
+    usually by leaving a ``with ProgressDisplay(...)`` block. Closing prints
+    only runs the daemon has already finished, clears
+    the live rows, and stops following unfinished runs without changing
+    their state.
 
     Parameters
     ----------
     manager : SimulationManager
-        Manager whose runs to show. Must be open.
+        Manager whose runs to show.
     refresh_interval : float, optional
         Seconds between redraws. Must be positive.
     renderer : Renderer, optional
@@ -301,22 +312,12 @@ class ProgressDisplay:
         self._refresh_interval: float = refresh_interval
         self._renderer: Renderer = renderer if renderer is not None else _auto_renderer()
         self._lock: Lock = Lock()
-        self._rows: dict[int, Simulation] = {}
         self._closed: bool = False
+        # Accepted runs until printed finished; only the redraw thread, or `close` after it, uses them.
+        self._rows: dict[int, Simulation] = {}
         self._stop: Event = Event()
         self._thread: Thread = Thread(target=self._run, name="trnrun-progress", daemon=True)
-
-        manager._attach(self)  # noqa: SLF001  # pyright: ignore[reportPrivateUsage] - tracker interface
-        try:
-            self._thread.start()
-        except BaseException:
-            manager._detach(self)  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
-            raise
-
-    def track(self, simulation: Simulation) -> None:
-        """Follow an accepted `simulation` until it has finished and been printed."""
-        with self._lock:
-            self._rows[simulation.id] = simulation
+        self._thread.start()
 
     def close(self) -> None:
         """Stop following runs, print those already finished, and release the output."""
@@ -325,11 +326,11 @@ class ProgressDisplay:
                 return
             self._closed = True
 
-        self._manager._detach(self)  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
         self._stop.set()
         if current_thread() is not self._thread:
             self._thread.join()
         self._tick()
+        self._rows.clear()
         self._renderer.close()
 
     def __enter__(self) -> Self:
@@ -358,18 +359,18 @@ class ProgressDisplay:
             logger.exception("TRNRun progress display failed to render")
 
     def _render(self) -> None:
-        """Print and drop newly finished runs, then show the unfinished ones."""
-        with self._lock:
-            rows = list(self._rows.values())
+        """Pick up newly started runs, print and drop finished ones, then show the unfinished ones."""
+        # Only the started runs, never the whole queue, however many runs wait.
+        for simulation in self._manager.started:
+            _ = self._rows.setdefault(simulation.id, simulation)
 
         active: list[SimulationSnapshot] = []
-        for simulation in rows:
+        for simulation in list(self._rows.values()):
             snapshot = simulation.snapshot()
             if snapshot.is_finished:
                 # Drop first, so a failing renderer cannot print the same run twice.
-                with self._lock:
-                    del self._rows[snapshot.id]
+                del self._rows[snapshot.id]
                 self._renderer.finished(snapshot)
-            else:
+            elif not self._closed:
                 active.append(snapshot)
         self._renderer.show(active)

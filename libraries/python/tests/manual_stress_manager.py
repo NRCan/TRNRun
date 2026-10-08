@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 from time import perf_counter
 
-from trnrun import ProgressDisplay, Simulation, SimulationConfig, SimulationManager
+from trnrun import Simulation, SimulationConfig, SimulationManager
 
 # -----------------------------------------------------------------------------
 # Configuration
@@ -58,8 +58,7 @@ def copy_dck(src: Path, dst_dir: Path, n: int) -> list[Path]:
 
 def run_simulations(dck_files: list[Path]) -> list[Simulation]:
     """Submit both workloads to one manager and wait for all runs to finish."""
-    with SimulationManager(max_concurrent=MAX_CONCURRENT) as manager:
-        _ = ProgressDisplay(manager, refresh_interval=REFRESH_INTERVAL)
+    with SimulationManager(max_concurrent=MAX_CONCURRENT, refresh_interval=REFRESH_INTERVAL) as manager:
         simulations = [manager.add(dck, CONFIG) for dck in dck_files]
         manager.wait()
 

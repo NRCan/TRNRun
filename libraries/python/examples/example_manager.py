@@ -5,7 +5,7 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
-from trnrun import ProgressDisplay, Simulation, SimulationConfig, SimulationManager
+from trnrun import Simulation, SimulationConfig, SimulationManager
 
 # -----------------------------------------------------------------------------
 # Configuration
@@ -44,9 +44,8 @@ def copy_dck(src: Path | str, dst_dir: Path | str, n: int) -> list[Path]:
 # -----------------------------------------------------------------------------
 def run_simulations(dck_files: list[Path]) -> list[Simulation]:
     """Launch one simulation per deck, showing progress, and block until all have finished."""
-    with SimulationManager(max_concurrent=MAX_CONCURRENT) as manager:
-        _ = ProgressDisplay(manager, refresh_interval=REFRESH_INTERVAL)
-        simulations = [manager.add(dck, CONFIG, blocking=False) for dck in dck_files]
+    with SimulationManager(max_concurrent=MAX_CONCURRENT, refresh_interval=REFRESH_INTERVAL) as manager:
+        simulations = [manager.add(dck, CONFIG) for dck in dck_files]
         manager.wait()
     return simulations
 

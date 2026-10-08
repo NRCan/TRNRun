@@ -24,13 +24,13 @@ suite "simulation state":
     let setting = %SettingEvent(guiVisibility: "hidden", severity: Warning)
     setting["kind"] = %"SETTING"
 
-    simulation.applyLine($setting)
-    simulation.applyLine(statusLine("RUNNING"))
-    simulation.applyLine(statusLine("DONE", "finished"))
-    simulation.applyLine("""{"kind":"CONFIG","start":0,"stop":10,"step":1}""")
-    simulation.applyLine("""{"kind":"CONFIG","start":2,"stop":20,"step":0.5}""")
+    simulation.applyLine($setting, 1)
+    simulation.applyLine(statusLine("RUNNING"), 1)
+    simulation.applyLine(statusLine("DONE", "finished"), 1)
+    simulation.applyLine("""{"kind":"CONFIG","start":0,"stop":10,"step":1}""", 1)
+    simulation.applyLine("""{"kind":"CONFIG","start":2,"stop":20,"step":0.5}""", 1)
     simulation.applyLine(
-      """{"kind":"PROGRESS","time":20,"percent":100,"elapsedMs":9,"etaMs":0}"""
+      """{"kind":"PROGRESS","time":20,"percent":100,"elapsedMs":9,"etaMs":0}""", 1
     )
 
     check simulation.setting == some(SettingEvent(guiVisibility: "hidden", severity: Warning))
@@ -48,7 +48,7 @@ suite "simulation state":
       ("Warning", "third"),
       ("Fatal", "fourth"),
     ]:
-      simulation.applyLine(logLine(severity, message))
+      simulation.applyLine(logLine(severity, message), 1)
 
     check simulation.logs.len == 4
     check simulation.logs[3] == LogEvent(severity: Fatal, time: 0, message: some("fourth"))
@@ -58,7 +58,7 @@ suite "simulation state":
 
   test "ignores lines that are not valid events":
     var simulation = initSimulation("run", "deck.dck", @[])
-    simulation.applyLine(statusLine("RUNNING"))
+    simulation.applyLine(statusLine("RUNNING"), 1)
     let before = simulation
 
     for line in [
@@ -69,12 +69,12 @@ suite "simulation state":
       """{"kind":"LOG","severity":"Debug","time":0}""",
     ]:
       checkpoint("line: " & line)
-      simulation.applyLine(line)
+      simulation.applyLine(line, 1)
       check simulation == before
 
   test "finish keeps TRNRun's terminal status and records the execution error":
     var simulation = initSimulation("run", "deck.dck", @[])
-    simulation.applyLine(statusLine("DONE"))
+    simulation.applyLine(statusLine("DONE"), 1)
     simulation.finish(some(0), "Output capture failed")
 
     check simulation.state == ssFinished
@@ -92,7 +92,7 @@ suite "simulation state":
     for testCase in cases:
       checkpoint("status line: " & testCase.line & ", error: " & testCase.error)
       var simulation = initSimulation("run", "deck.dck", @[])
-      simulation.applyLine(testCase.line)
+      simulation.applyLine(testCase.line, 1)
       simulation.finish(none(int), testCase.error)
 
       check simulation.state == ssFinished
@@ -111,23 +111,54 @@ suite "simulation state":
     for testCase in cases:
       checkpoint($testCase)
       var simulation = initSimulation("run", "deck.dck", @[])
-      simulation.applyLine(statusLine(testCase.status))
+      simulation.applyLine(statusLine(testCase.status), 1)
       if testCase.finished:
         simulation.finish(testCase.exitCode, testCase.error)
       check simulation.succeeded() == testCase.expected
 
   test "serializes every field but logs, plus the success verdict":
     var simulation = initSimulation("run", "deck.dck", @[])
-    simulation.applyLine(logLine("Notice", "first"))
-    simulation.applyLine(statusLine("DONE"))
+    simulation.applyLine(logLine("Notice", "first"), 1)
+    simulation.applyLine(statusLine("DONE"), 1)
     simulation.finish(some(0), "")
 
     let node = %simulation
     check "logs" notin node
+    check "logRevisions" notin node
     check node["succeeded"].getBool()
     check node["runId"].getStr() == "run"
     check node["state"].getStr() == "FINISHED"
+    check node["revision"].getInt() == 1
     check node["status"] == %*{"status": "DONE", "message": ""}
     check node["exitCode"].getInt() == 0
     check node["config"].kind == JNull
     check node["notices"].getInt() == 1
+
+  test "stamps valid lines with their revision, and each log with its own":
+    var simulation = initSimulation("run", "deck.dck", @[])
+    simulation.applyLine(logLine("Notice", "first"), 3)
+    simulation.applyLine(statusLine("RUNNING"), 5)
+    simulation.applyLine(logLine("Warning", "second"), 7)
+    simulation.applyLine("not an event", 9)
+
+    check simulation.revision == 7
+    let cases = [(after: 0, start: 0), (after: 2, start: 0), (after: 3, start: 1),
+                 (after: 6, start: 1), (after: 7, start: 2), (after: 100, start: 2)]
+    for testCase in cases:
+      checkpoint($testCase)
+      check simulation.logStartAfter(testCase.after) == testCase.start
+
+  test "serializes the logs from a clamped logStart, reporting it":
+    var simulation = initSimulation("run", "deck.dck", @[])
+    for message in ["first", "second"]:
+      simulation.applyLine(logLine("Notice", message), 1)
+
+    for (logStart, expected, messages) in [
+      (0, 0, @["first", "second"]), (1, 1, @["second"]), (5, 2, newSeq[string]())
+    ]:
+      checkpoint("logStart: " & $logStart)
+      let node = simulation.toJson(logStart)
+      check node["logStart"].getInt() == expected
+      check node["logs"].getElems().len == messages.len
+      for index, message in messages:
+        check node["logs"][index]["message"].getStr() == message

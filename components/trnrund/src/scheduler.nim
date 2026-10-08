@@ -6,6 +6,10 @@
 ## next queued run at that point. Always call shutdown before dropping the
 ## scheduler so every worker is joined. The inbox remains open because of the
 ## Nim 2.2 ORC channel-close issue.
+##
+## Every change to a simulation gets the next revision, a counter that only
+## grows, so a client holding revision N can ask for the simulations changed
+## after it.
 
 import std/[deques, options, sequtils, strutils, tables]
 import ./events
@@ -29,10 +33,21 @@ type
     maxConcurrent: int
     runningCount: int ## Dispatched runs whose exit messages have not been processed.
     isShutDown: bool
+    lastRevision: int ## Revision of the latest change to any simulation; 0 before any.
     registry: OrderedTable[string, Simulation]
       ## In submission order. Its `del` is linear, which is fine while clients
       ## hold a bounded window of simulations.
     queue: Deque[string]
+
+proc nextRevision(self: Scheduler): int =
+  ## Returns the revision for the next change.
+  inc self.lastRevision
+  self.lastRevision
+
+proc setState(self: Scheduler, runId: string, state: SimulationState) =
+  ## Moves a simulation to `state` as a new revision.
+  self.registry[runId].state = state
+  self.registry[runId].revision = self.nextRevision()
 
 proc dispatch(self: Scheduler) =
   ## Hands queued runs to the pool while a worker is free.
@@ -44,18 +59,19 @@ proc dispatch(self: Scheduler) =
       deckFile: self.registry[runId].deckFile,
       trnrunArgs: self.registry[runId].trnrunArgs,
     ))
-    self.registry[runId].state = ssAccepted
+    self.setState(runId, ssAccepted)
     inc self.runningCount
 
 proc apply(self: Scheduler, message: Message) =
   ## Applies one worker message; an exit frees a worker for the next queued run.
   case message.kind
   of mkLaunched:
-    self.registry[message.runId].state = ssRunning
+    self.setState(message.runId, ssRunning)
   of mkOutput:
-    self.registry[message.runId].applyLine(message.line)
+    self.registry[message.runId].applyLine(message.line, self.nextRevision())
   of mkExited:
     self.registry[message.runId].finish(message.exitCode, message.error)
+    self.registry[message.runId].revision = self.nextRevision()
     dec self.runningCount
     self.dispatch()
   of mkRequest, mkClosed:
@@ -83,6 +99,7 @@ proc add*(self: Scheduler, runId, deckFile: string, trnrunArgs: seq[string] = @[
     raise newException(ValueError, "Pass the deck as deckFile, not in trnrunArgs")
 
   self.registry[runId] = initSimulation(runId, validateDeck(deckFile), trnrunArgs)
+  self.registry[runId].revision = self.nextRevision()
   self.queue.addLast(runId)
   self.dispatch()
 
@@ -102,6 +119,10 @@ proc remove*(self: Scheduler, runId: string) =
   if self[runId].state != ssFinished:
     raise newException(ValueError, "Simulation has not finished: " & runId)
   self.registry.del(runId)
+
+proc revision*(self: Scheduler): int =
+  ## Revision of the latest change to any simulation; 0 before the first.
+  self.lastRevision
 
 proc requestInbox*(self: Scheduler): ptr Channel[Message] =
   ## Inbox address for the thread that posts `mkRequest` and `mkClosed`.
@@ -125,6 +146,7 @@ proc shutdown*(self: Scheduler) =
     self.registry[runId].status =
       some(StatusEvent(status: statusCancelled, message: "Not started"))
     self.registry[runId].finish(none(int), "Not started: the daemon shut down")
+    self.registry[runId].revision = self.nextRevision()
   while self.runningCount > 0:
     self.apply(self.inbox.recv()) # Drops client messages that arrive meanwhile.
   self.pool.shutdown()

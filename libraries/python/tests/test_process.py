@@ -11,7 +11,7 @@ from pathlib import Path
 from queue import Queue
 from threading import Event, Thread
 from time import monotonic, sleep
-from typing import IO
+from typing import IO, Any, cast
 from unittest.mock import MagicMock, Mock, call
 
 import pytest
@@ -20,7 +20,7 @@ from trnrun import process
 from trnrun.config import BUNDLED_TRNRUND_PATH
 
 TEST_TIMEOUT = 10.0
-STARTED = '{"ok":true,"simulations":[]}\n'  # Reply to the constructor's startup request.
+STARTED = '{"ok":true,"revision":0,"simulations":[]}\n'  # Reply to the constructor's startup request.
 
 
 class ReplyPipe:
@@ -191,7 +191,7 @@ def test_init_spawns_configured_process_and_assigns_job(
         creationflags=process.CREATE_NO_WINDOW,
     )
     assign.assert_called_once_with(harness.child)
-    assert harness.child.stdin.getvalue() == '{"cmd":"snapshots"}\n'
+    assert harness.child.stdin.getvalue() == '{"cmd":"changes"}\n'
 
 
 @pytest.mark.parametrize("missing", ["stdin", "stdout", "stderr"])
@@ -323,7 +323,7 @@ def test_malformed_reply_raises_value_error(make_daemon: Callable[..., Harness])
     harness = make_daemon(stdout=ReplyPipe('{"simulations":[]}\n'))
 
     with pytest.raises(ValueError, match=r"^TRNRun daemon sent an invalid reply: \{\"simulations\":\[\]\}$"):
-        harness.daemon.request({"cmd": "snapshots"})
+        harness.daemon.request({"cmd": "changes"})
 
 
 @pytest.mark.parametrize("operation", ["write", "flush"])
@@ -341,7 +341,7 @@ def test_broken_pipe_reports_exit_code_and_diagnostics(make_daemon: Callable[...
 
     harness.child.wait.side_effect = wait
     with pytest.raises(RuntimeError, match=r"^TRNRun daemon exited with code 2: Fatal daemon error$") as caught:
-        harness.daemon.request({"cmd": "snapshots"})
+        harness.daemon.request({"cmd": "changes"})
 
     assert caught.value.__cause__ is error
 
@@ -362,7 +362,7 @@ def test_exit_diagnostics_are_read_under_request_lock(make_daemon: Callable[...,
 
     stderr.read.side_effect = read
     with pytest.raises(RuntimeError, match="Fatal daemon error"):
-        harness.daemon.request({"cmd": "snapshots"})
+        harness.daemon.request({"cmd": "changes"})
 
     stderr.read.assert_called_once_with()
 
@@ -380,7 +380,7 @@ def test_eof_reports_exit_code_and_diagnostics(make_daemon: Callable[..., Harnes
 
     harness.child.wait.side_effect = wait
     with pytest.raises(RuntimeError, match=r"^TRNRun daemon exited with code 2: Unknown option: --x$"):
-        harness.daemon.request({"cmd": "snapshots"})
+        harness.daemon.request({"cmd": "changes"})
 
 
 def test_concurrent_requests_never_interleave_replies(make_daemon: Callable[..., Harness]) -> None:
@@ -412,7 +412,7 @@ def test_shutdown_kills_before_waiting_for_blocked_request(make_daemon: Callable
     """Killing the daemon delivers EOF to an in-flight request before pipes close."""
     stdout = ReplyPipe()
     harness = make_daemon(stdout=stdout)
-    requester, errors = _start(lambda: harness.daemon.request({"cmd": "snapshots"}))
+    requester, errors = _start(lambda: harness.daemon.request({"cmd": "changes"}))
     assert stdout.reading.wait(TEST_TIMEOUT)
 
     harness.daemon.shutdown()
@@ -490,6 +490,41 @@ def test_shutdown_kill_failure_can_be_retried(make_daemon: Callable[..., Harness
     assert harness.child.stdin.closed
 
 
+def test_wait_reaps_without_killing_then_rejects_requests(make_daemon: Callable[..., Harness]) -> None:
+    """Waiting for a daemon that exits on its own never kills it, and closes the pipes."""
+    stdin = Mock()
+    harness = make_daemon(stdin=stdin)
+    harness.child.wait.side_effect = None
+
+    harness.daemon.wait(2.0)
+
+    harness.child.kill.assert_not_called()
+    harness.child.wait.assert_called_once_with(timeout=2.0)
+    stdin.close.assert_called_once_with()
+    assert harness.child.stdout.closed
+    with pytest.raises(RuntimeError, match="Cannot send after daemon closure"):
+        harness.daemon.request({})
+    stdin.write.assert_not_called()
+
+
+def test_wait_timeout_leaves_the_daemon_for_shutdown(make_daemon: Callable[..., Harness]) -> None:
+    """A wait that times out keeps the pipes open, and shutdown can still kill."""
+    harness = make_daemon()
+    error = subprocess.TimeoutExpired("daemon", 1)
+    successful_wait = harness.child.wait.side_effect
+    harness.child.wait.side_effect = error
+
+    with pytest.raises(subprocess.TimeoutExpired) as caught:
+        harness.daemon.wait(1.0)
+
+    assert caught.value is error
+    assert not harness.child.stdin.closed
+    harness.child.wait.side_effect = successful_wait
+    harness.daemon.shutdown()
+    harness.child.kill.assert_called_once_with()
+    assert harness.child.stdin.closed
+
+
 @pytest.mark.parametrize("error_type", [BrokenPipeError, OSError])
 def test_shutdown_suppresses_close_oserror(make_daemon: Callable[..., Harness], error_type: type[OSError]) -> None:
     """An OS error closing one pipe does not prevent closing the others or releasing the lock."""
@@ -537,7 +572,7 @@ def test_real_subprocess_round_trip_and_cleanup(monkeypatch: pytest.MonkeyPatch,
 
 
 def test_real_daemon_round_trip(tmp_path: Path, fake_trnrun: Path) -> None:
-    """The bundled daemon accepts a run and reports it through snapshot and collect."""
+    """The bundled daemon accepts a run, reports it with its logs, and removes it once finished."""
     deck = tmp_path / "done-a.dck"
     deck.touch()
     daemon = process.DaemonProcess(BUNDLED_TRNRUND_PATH, fake_trnrun, 1)
@@ -546,20 +581,23 @@ def test_real_daemon_round_trip(tmp_path: Path, fake_trnrun: Path) -> None:
         with pytest.raises(ValueError, match="Invalid or duplicate runId: 1"):
             daemon.request({"cmd": "add", "runId": "1", "deckFile": str(deck)})
         deadline = monotonic() + TEST_TIMEOUT
-        simulation = daemon.request({"cmd": "snapshot", "runId": "1"})["simulation"]
-        while isinstance(simulation, dict) and simulation["state"] != "FINISHED" and monotonic() < deadline:
+        (simulation,) = cast("list[dict[str, Any]]", daemon.request({"cmd": "changes"})["simulations"])
+        while simulation["state"] != "FINISHED" and monotonic() < deadline:
             sleep(0.01)
-            simulation = daemon.request({"cmd": "snapshot", "runId": "1"})["simulation"]
-        assert isinstance(simulation, dict)
+            (simulation,) = cast("list[dict[str, Any]]", daemon.request({"cmd": "changes"})["simulations"])
         assert simulation["state"] == "FINISHED"
-        collected = daemon.request({"cmd": "collect", "runId": "1"})
+        latest = daemon.request({"cmd": "changes", "since": simulation["revision"]})
+        assert daemon.request({"cmd": "remove", "runId": "1"}) == {"ok": True}
+        with pytest.raises(ValueError, match="Unknown runId: 1"):
+            daemon.request({"cmd": "remove", "runId": "1"})
+        assert daemon.request({"cmd": "changes"})["simulations"] == []
     finally:
         daemon.shutdown()
 
-    assert collected["simulation"] == simulation
+    assert latest == {"ok": True, "revision": simulation["revision"], "simulations": []}
     assert simulation["succeeded"] is True
-    assert isinstance(collected["logs"], list)
-    assert len(collected["logs"]) == sum(simulation[name] for name in ("notices", "warnings", "fatals"))
+    assert simulation["logStart"] == 0
+    assert len(simulation["logs"]) == sum(simulation[name] for name in ("notices", "warnings", "fatals"))
 
 
 @pytest.mark.parametrize(

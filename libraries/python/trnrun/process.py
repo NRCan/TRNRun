@@ -49,7 +49,8 @@ class DaemonProcess:
     request raises ``ValueError``; daemon exit or shutdown raises ``RuntimeError``.
 
     The owner must call ``shutdown()`` to kill and reap the daemon and close its
-    pipes. The daemon's job object terminates its runners when the daemon exits.
+    pipes, or ``wait()`` once the daemon acknowledged a ``shutdown`` request.
+    The daemon's job object terminates its runners when the daemon exits.
     Process waits have a five-second timeout, and incomplete cleanup can be
     retried. Shutdown may interrupt a request, but shutdown calls must not be
     concurrent or reentrant.
@@ -88,7 +89,7 @@ class DaemonProcess:
             self._stderr: IO[str] = _require_pipe(self._process.stderr)
             _ = assign_to_job(self._process)
             # The daemon replies only once started, so startup errors surface here.
-            _ = self.request({"cmd": "snapshots"})
+            _ = self.request({"cmd": "changes"})
         except BaseException:
             # Best-effort cleanup must preserve the original startup exception.
             with contextlib.suppress(Exception):
@@ -112,7 +113,21 @@ class DaemonProcess:
         # Popen.kill is a no-op once the daemon has exited.
         self._process.kill()
         _ = self._process.wait(timeout=SHUTDOWN_TIMEOUT)
+        self._close_pipes()
 
+    def wait(self, timeout: float | None = None) -> None:
+        """Wait for the daemon to exit on its own, then close its pipes.
+
+        Use after the daemon acknowledged a ``shutdown`` request. Later requests
+        raise ``RuntimeError``. On ``subprocess.TimeoutExpired`` the daemon keeps
+        running and ``shutdown()`` can still kill it.
+        """
+        self._closing = True
+        _ = self._process.wait(timeout=timeout)
+        self._close_pipes()
+
+    def _close_pipes(self) -> None:
+        """Close the daemon pipes under the request lock."""
         with self._lock:
             for stream in (self._process.stdin, self._process.stdout, self._process.stderr):
                 if stream is not None:
