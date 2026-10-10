@@ -104,3 +104,10 @@ proc parseSimulationEvent*(node: JsonNode): SimulationEvent =
     SimulationEvent(kind: eventProgress, progressData: node.to(ProgressEvent))
   of eventLog:
     SimulationEvent(kind: eventLog, logData: node.to(LogEvent))
+
+proc parseEventLine*(line: string): Option[SimulationEvent] =
+  ## Parses one line of TRNRun output; none if it is not a valid event.
+  try:
+    some(parseSimulationEvent(parseJson(line)))
+  except ValueError, KeyError:
+    none(SimulationEvent)

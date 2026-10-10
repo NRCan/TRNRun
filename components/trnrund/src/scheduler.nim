@@ -1,8 +1,8 @@
-## Schedules simulations and owns their daemon-side state.
+## Schedules simulations and saves their state to the database.
 ##
 ## The daemon runs one scheduler at a time. Every public operation runs on the
 ## owner thread. Workers only post messages, which are applied while the owner
-## waits in `nextRequest`, `add`, or `shutdown`; a finished run frees its slot for the
+## waits in `nextRequest` or `shutdown`; a finished run frees its slot for the
 ## next queued run at that point. Always call shutdown before dropping the
 ## scheduler so every worker is joined, or abandon right before the process
 ## exits. The inbox remains open because of the Nim 2.2 ORC channel-close
@@ -10,20 +10,17 @@
 ##
 ## Every change to a simulation is saved to the database as it is applied, so
 ## clients reading it see each run's progress without asking the daemon. The
-## database is the record of every run: the scheduler holds a `Simulation` only
-## while it is queued or a worker has it, so its memory does not grow with the
-## number of finished runs.
+## database is the record of every run: the scheduler only remembers which
+## runs wait for a worker and which a worker has, so its memory does not grow
+## with the number of finished runs.
 
-import std/[deques, json, options, sequtils, strutils, tables]
+import std/[deques, options, sequtils, sets, strutils]
 import ./database
 import ./events
 import ./job
 import ./messages
-import ./simulation
 import ./validate
 import ./workerpool
-
-export simulation
 
 type
   Scheduler* = ref object
@@ -37,73 +34,34 @@ type
 
     maxConcurrent: int
     isShutDown: bool
-    running: Table[string, Simulation]
+    running: HashSet[string]
       ## Dispatched runs until their exit is applied; at most `maxConcurrent`.
-    queue: Deque[Simulation]
-      ## Runs waiting for a worker; their saved row is still the initial one.
-    deferred: Deque[Message]
-      ## Client messages that arrived while `add` waited; `nextRequest` returns them first.
-
-proc save(self: Scheduler, runId: string, logs: openArray[LogEvent] = []) =
-  ## Saves the current state of a running `runId`, with any new log entries.
-  self.database.save(self.running[runId], logs)
+    queue: Deque[Work]
+      ## Runs waiting for a worker; still `QUEUED` in the database.
 
 proc dispatch(self: Scheduler) =
   ## Hands queued runs to the pool while a worker is free.
   while self.queue.len > 0 and self.running.len < self.maxConcurrent:
-    var simulation = self.queue.popFirst()
-    simulation.state = ssAccepted
-    self.database.save(simulation)
-    self.running[simulation.runId] = simulation
-    self.pool.submit(Work(
-      kind: wkRun,
-      runId: simulation.runId,
-      deckFile: simulation.deckFile,
-      trnrunArgs: simulation.trnrunArgs,
-    ))
+    let work = self.queue.popFirst()
+    self.database.accept(work.runId)
+    self.running.incl(work.runId)
+    self.pool.submit(work)
 
 proc apply(self: Scheduler, message: Message) =
   ## Applies one worker message; an exit frees a worker for the next queued run.
   case message.kind
   of mkLaunched:
-    self.running[message.runId].start()
-    self.save(message.runId)
+    self.database.start(message.runId)
   of mkOutput:
-    let event = self.running[message.runId].applyLine(message.line)
+    let event = parseEventLine(message.line)
     if event.isSome:
-      if event.get().kind == eventLog:
-        self.save(message.runId, [event.get().logData])
-      else:
-        self.save(message.runId)
+      self.database.record(message.runId, event.get())
   of mkExited:
-    self.running[message.runId].finish(message.exitCode, message.error)
-    self.save(message.runId)
-    self.running.del(message.runId)
+    self.database.finish(message.runId, message.exitCode, message.error)
+    self.running.excl(message.runId)
     self.dispatch()
   of mkRequest, mkClosed:
     discard # Only nextRequest returns client messages; elsewhere they are dropped.
-
-proc waitUntil(self: Scheduler, runId: string, target: SimulationState): SimulationState =
-  ## Applies worker messages until `runId`, just added, reaches `target`; returns its state.
-  ##
-  ## Client requests arriving meanwhile are deferred to `nextRequest`. If the client
-  ## leaves, its pending requests are dropped and the wait ends early.
-  result = if runId in self.running: self.running[runId].state else: ssQueued
-  while result < target:
-    let message = self.inbox.recv()
-    case message.kind
-    of mkRequest:
-      self.deferred.addLast(message)
-    of mkClosed:
-      self.deferred.clear()
-      self.deferred.addLast(message)
-      return
-    of mkLaunched, mkOutput, mkExited:
-      self.apply(message)
-      result =
-        if runId in self.running: self.running[runId].state
-        elif result == ssQueued: ssQueued # Still waiting for a worker.
-        else: ssFinished # Left `running`: its exit was applied.
 
 # Public API
 
@@ -126,14 +84,12 @@ proc databasePath*(self: Scheduler): string =
   self.database.path
 
 proc add*(
-    self: Scheduler, runId, deckFile: string, trnrunArgs: seq[string] = @[],
-    until = ssQueued,
+    self: Scheduler, runId, deckFile: string, trnrunArgs: seq[string] = @[]
 ): SimulationState {.discardable.} =
   ## Validates and queues work, dispatching it at once if a worker is free.
   ##
-  ## Returns once the run reaches at least `until`, with the state it reached;
-  ## see `waitUntil`. A runId stays taken for the life of the database, across
-  ## daemon restarts.
+  ## Returns `ACCEPTED` if a worker took it, else `QUEUED`. A runId stays
+  ## taken for the life of the database, across daemon restarts.
   if self.isShutDown:
     raise newException(ValueError, "Scheduler is shut down")
   if runId.len == 0 or runId in self.database:
@@ -141,31 +97,22 @@ proc add*(
   if trnrunArgs.anyIt(it.startsWith("--deckFile")):
     raise newException(ValueError, "Pass the deck as deckFile, not in trnrunArgs")
 
-  let simulation = initSimulation(runId, validateDeck(deckFile), trnrunArgs)
-  self.database.save(simulation)
-  self.queue.addLast(simulation)
+  let deckFile = validateDeck(deckFile)
+  self.database.submit(runId, deckFile)
+  self.queue.addLast(Work(kind: wkRun, runId: runId, deckFile: deckFile, trnrunArgs: trnrunArgs))
   self.dispatch()
-  self.waitUntil(runId, until)
+  if runId in self.running: ssAccepted else: ssQueued
 
 proc requestInbox*(self: Scheduler): ptr Channel[Message] =
   ## Inbox address for the thread that posts `mkRequest` and `mkClosed`.
   addr self.inbox
 
 proc nextRequest*(self: Scheduler): Message =
-  ## Returns the next client message, deferred ones first, applying worker messages meanwhile.
-  if self.deferred.len > 0:
-    return self.deferred.popFirst()
+  ## Returns the next client message, applying worker messages meanwhile.
   result = self.inbox.recv()
   while result.kind notin {mkRequest, mkClosed}:
     self.apply(result)
     result = self.inbox.recv()
-
-proc cancelQueued(self: Scheduler, reason: string) =
-  ## Finishes every queued run as interrupted, without starting it.
-  while self.queue.len > 0:
-    var simulation = self.queue.popFirst()
-    simulation.interrupt(reason)
-    self.database.save(simulation)
 
 proc shutdown*(self: Scheduler) =
   ## Rejects new work, waits for running work, joins the pool, then closes
@@ -177,7 +124,8 @@ proc shutdown*(self: Scheduler) =
   if self.isShutDown:
     return
   self.isShutDown = true
-  self.cancelQueued("the daemon shut down")
+  self.queue.clear()
+  self.database.interrupt("the daemon shut down", {ssQueued})
   while self.running.len > 0:
     self.apply(self.inbox.recv()) # Drops client messages that arrive meanwhile.
   self.pool.shutdown()
@@ -194,14 +142,12 @@ proc abandon*(self: Scheduler) =
   if self.isShutDown:
     return
   self.isShutDown = true
-  self.cancelQueued("the client disconnected")
+  self.queue.clear()
   for _ in 1 .. self.inbox.peek(): # Bounded: running TRNRun may keep posting.
     let (available, message) = self.inbox.tryRecv()
     if not available:
       break
     self.apply(message)
-  for runId in toSeq(self.running.keys):
-    self.running[runId].interrupt("the client disconnected")
-    self.save(runId)
-    self.running.del(runId)
+  self.database.interrupt("the client disconnected")
+  self.running.clear()
   self.database.close()

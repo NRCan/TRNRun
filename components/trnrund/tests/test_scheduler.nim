@@ -1,4 +1,4 @@
-import std/[json, os, unittest]
+import std/[os, unittest]
 import db_connector/db_sqlite
 
 include ../src/scheduler
@@ -160,9 +160,7 @@ proc runTests() =
         check saved("queued", "state") == @["QUEUED"]
 
         scheduler.waitFor("run", ssRunning)
-        let running = scheduler.running["run"]
-        check saved("run", "state, started_at, notices") ==
-          @["RUNNING", running.startedAt.get(), $running.notices]
+        check saved("run", "state, started_at IS NOT NULL") == @["RUNNING", "1"]
         release(deckFile)
         scheduler.waitFor("run", ssFinished)
         check "run" notin scheduler.running

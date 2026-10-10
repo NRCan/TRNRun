@@ -185,26 +185,6 @@ proc runTests() =
       check daemon.request(%*{"cmd": "shutdown"}) == %*{"ok": true}
       check daemon.waitForExit(5_000) == 0
 
-    test "add with until replies once the run reaches it, then serves later requests":
-      let
-        deckFile = testDirectory / "done-until.dck"
-        daemon = startDaemon(trnrunOption)
-      defer: daemon.closeDaemon()
-      writeFile(deckFile, "fake TRNSYS deck")
-      let reader = daemon.openReader()
-      defer: reader.close()
-      daemon.inputStream.writeLine($(%*{
-        "cmd": "add", "runId": "run", "deckFile": deckFile, "until": "FINISHED"}))
-      daemon.inputStream.writeLine($(%*{"cmd": "shutdown"})) # Sent before the reply.
-      daemon.inputStream.flush()
-      var line = ""
-      check daemon.outputStream.readLine(line)
-      check parseJson(line) == %*{"ok": true, "state": "FINISHED"}
-      check reader.columns("run", "state, succeeded") == @["FINISHED", "1"]
-      check daemon.outputStream.readLine(line)
-      check parseJson(line) == %*{"ok": true}
-      check daemon.waitForExit(5_000) == 0
-
     test "runIds stay taken after restarting against the same database":
       let
         deckFile = testDirectory / "done-restart.dck"

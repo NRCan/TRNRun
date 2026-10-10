@@ -9,22 +9,19 @@
 ## cmd        request fields                          reply fields
 ## ========== ======================================= ======================
 ## ready                                              databasePath
-## add        runId, deckFile, trnrunArgs?, until?    state
+## add        runId, deckFile, trnrunArgs?            state
 ## shutdown                                           see below
 ## ========== ======================================= ======================
 ##
-## `add` replies once the run reaches at least `until`: `QUEUED` (the default,
-## at once), `ACCEPTED`, `RUNNING`, or `FINISHED`. `state` is the state it
-## reached, which can be later than `until`, such as `FINISHED` for a run whose
-## TRNRun failed to launch. The daemon reads no other request until then, but
-## keeps running and saving every simulation.
+## `add` replies at once with the run's `state`: `ACCEPTED` if a worker took
+## it, else `QUEUED`.
 ##
-## Clients read simulations from the database at `databasePath`; see
-## `database`. A simulation is done when its `state` is `FINISHED`, which the
-## daemon sets after the TRNRun process exits. Do not use
-## `status.status == "DONE"` or final `progress` instead: TRNRun can report
-## them before it exits, and output may still follow. `FINISHED` includes
-## failed runs; `succeeded` tells them apart.
+## Clients read simulations from the database at `databasePath`, polling it to
+## follow or wait for a run; see `database`. A simulation is done when its
+## `state` is `FINISHED`, which the daemon sets after the TRNRun process exits.
+## Do not use `trnrun_status = 'DONE'` or final progress instead: TRNRun can
+## report them before it exits, and output may still follow. `FINISHED`
+## includes failed runs; `succeeded` tells them apart.
 ##
 ## After acknowledging `shutdown`, the daemon finishes queued runs as CANCELLED
 ## without starting them, waits for running ones, and exits. Requests sent
@@ -40,14 +37,13 @@ proc requireField(request: JsonNode, name: string): JsonNode =
   request[name]
 
 proc handleAdd(scheduler: Scheduler, request: JsonNode): SimulationState =
-  ## Queues a simulation and returns its state once it reaches `until`.
+  ## Queues a simulation and returns its state.
   let
     runId = request.requireField("runId").to(string)
     deckFile = request.requireField("deckFile").to(string)
     trnrunArgs =
       if "trnrunArgs" in request: request["trnrunArgs"].to(seq[string]) else: @[]
-    until = if "until" in request: request["until"].to(SimulationState) else: ssQueued
-  scheduler.add(runId, deckFile, trnrunArgs, until)
+  scheduler.add(runId, deckFile, trnrunArgs)
 
 proc parseRequest(line: string): JsonNode =
   ## Parses one request line, which must hold a JSON object.

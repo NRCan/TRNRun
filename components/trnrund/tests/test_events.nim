@@ -73,6 +73,18 @@ suite "TRNRun event parsing":
       expect ValueError:
         discard parseLine(line)
 
+  test "parseEventLine returns none for lines that are not valid events":
+    check parseEventLine("""{"kind":"STATUS","status":"DONE","message":""}""").isSome
+    for line in [
+      "TRNRun says hello",
+      "[1]",
+      """{"kind":"BOGUS"}""",
+      """{"kind":"STATUS","status":"DONE"}""",
+      """{"kind":"LOG","severity":"Debug","time":0}""",
+    ]:
+      checkpoint("line: " & line)
+      check parseEventLine(line).isNone
+
   test "raises KeyError for events missing a required field":
     for line in [
       """{"status":"DONE","message":""}""",

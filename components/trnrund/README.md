@@ -1,8 +1,8 @@
 # TRNRun daemon
 
 `trnrund` is a Windows daemon that runs TRNRun simulations for one client. A
-fixed worker pool executes simulations while the scheduler owns their state
-and limits concurrency. Clients submit runs over stdin/stdout and read their
+fixed worker pool executes simulations while the scheduler limits concurrency
+and saves their state. Clients submit runs over stdin/stdout and read their
 progress, results, and logs from a SQLite database the daemon keeps up to date.
 
 ## Build and test
@@ -54,20 +54,9 @@ the absolute `databasePath` to read:
 {"ok":true,"databasePath":"C:\\runs\\runs.sqlite3"}
 ```
 
-`add` returns the run's `state`. By default it replies at once, with `QUEUED`,
-or `ACCEPTED` if a worker took the run immediately. With `until` set to
-`ACCEPTED`, `RUNNING`, or `FINISHED`, it replies once the run reaches at least
-that state, so a client can run one simulation to completion with one request:
-
-```json
-{"cmd":"add","runId":"1","deckFile":"model.dck","until":"FINISHED"}
-{"ok":true,"state":"FINISHED"}
-```
-
-`state` can be later than `until`: a run whose TRNRun fails to launch replies
-`FINISHED` to `"until":"RUNNING"`. While an `add` waits, the daemon keeps
-running and saving every simulation but reads no other request; it answers
-them, in order, after the reply. Closing stdin still exits at once.
+`add` replies at once with the run's `state`: `QUEUED`, or `ACCEPTED` if a
+worker took the run immediately. To follow a run or wait for it to finish,
+poll the database; see below.
 
 See [`src/protocol.nim`](src/protocol.nim) for request fields and defaults.
 

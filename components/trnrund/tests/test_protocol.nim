@@ -1,4 +1,4 @@
-import std/[deques, importutils, json, os, strutils, tables, tempfiles, unittest]
+import std/[deques, importutils, json, os, sets, strutils, tempfiles, unittest]
 import db_connector/db_sqlite
 
 import ../src/[database, messages, protocol, scheduler]
@@ -54,15 +54,16 @@ proc runTests() =
     test "add acknowledges only and preserves submission order and arguments":
       let scheduler = newScheduler(trnrun, 1, testDirectory / "order.sqlite3")
       defer: scheduler.shutdown()
+      check scheduler.call(%*{"cmd": "add", "runId": "b", "deckFile": doneDeck}) ==
+        %*{"ok": true, "state": "ACCEPTED"}
       check scheduler.call(%*{
-        "cmd": "add", "runId": "b", "deckFile": doneDeck, "trnrunArgs": ["--pollMs:50"]
-      }) == %*{"ok": true, "state": "ACCEPTED"}
-      check scheduler.call(%*{"cmd": "add", "runId": "a", "deckFile": doneDeck}) ==
-        %*{"ok": true, "state": "QUEUED"}
-      check scheduler.running["b"].state == ssAccepted
-      check scheduler.running["b"].trnrunArgs == @["--pollMs:50"]
+        "cmd": "add", "runId": "a", "deckFile": doneDeck, "trnrunArgs": ["--pollMs:50"]
+      }) == %*{"ok": true, "state": "QUEUED"}
+      check "b" in scheduler.running
       check "a" notin scheduler.running
       check scheduler.queue.len == 1
+      check scheduler.queue[0].runId == "a"
+      check scheduler.queue[0].trnrunArgs == @["--pollMs:50"]
 
     test "invalid submissions remain ordinary error replies":
       let scheduler = newScheduler(trnrun, 1, testDirectory / "invalid.sqlite3")
@@ -78,44 +79,18 @@ proc runTests() =
       check not scheduler.call(%*{
         "cmd": "add", "runId": "a", "deckFile": doneDeck
       })["ok"].getBool()
-      check not scheduler.call(%*{
-        "cmd": "add", "runId": "b", "deckFile": doneDeck, "until": "DONE"
-      })["ok"].getBool()
-      check "b" notin scheduler.database
 
-    test "add waits for until, deferring the requests that arrive meanwhile":
+    test "nextRequest returns client messages in order, applying worker messages meanwhile":
       let
-        scheduler = newScheduler(trnrun, 1, testDirectory / "until.sqlite3")
-        gate = createDeck(testDirectory, "gate-until.dck")
+        scheduler = newScheduler(trnrun, 1, testDirectory / "next.sqlite3")
         ready = $(%*{"cmd": "ready"})
       defer: scheduler.shutdown()
-      scheduler.requestInbox[].send(Message(kind: mkRequest, line: ready))
-      check scheduler.call(%*{
-        "cmd": "add", "runId": "done", "deckFile": doneDeck, "until": "FINISHED"
-      }) == %*{"ok": true, "state": "FINISHED"}
-      check scheduler.nextRequest().line == ready
-
-      check scheduler.call(%*{"cmd": "add", "runId": "gate", "deckFile": gate}) ==
-        %*{"ok": true, "state": "ACCEPTED"}
-      writeFile(gate.changeFileExt("release"), "")
-      check scheduler.call(%*{ # Queued behind the gate until it exits.
-        "cmd": "add", "runId": "next", "deckFile": doneDeck, "until": "ACCEPTED"
-      }) == %*{"ok": true, "state": "ACCEPTED"}
-      check "gate" notin scheduler.running
-
-    test "a client leaving ends the wait and drops its deferred requests":
-      let
-        scheduler = newScheduler(trnrun, 1, testDirectory / "leave.sqlite3")
-        gate = createDeck(testDirectory, "gate-leave.dck")
-      defer: scheduler.shutdown()
-      scheduler.requestInbox[].send(Message(kind: mkRequest, line: $(%*{"cmd": "ready"})))
+      discard scheduler.call(%*{"cmd": "add", "runId": "done", "deckFile": doneDeck})
+      while "done" in scheduler.running: # Its exit is applied while waiting for requests.
+        scheduler.requestInbox[].send(Message(kind: mkRequest, line: ready))
+        check scheduler.nextRequest().line == ready
       scheduler.requestInbox[].send(Message(kind: mkClosed))
-      let reply = scheduler.call(%*{
-        "cmd": "add", "runId": "run", "deckFile": gate, "until": "FINISHED"
-      })
-      check reply["state"].getStr() in ["ACCEPTED", "RUNNING"]
       check scheduler.nextRequest().kind == mkClosed
-      writeFile(gate.changeFileExt("release"), "") # Lets shutdown join the worker.
 
     test "database failures escape instead of becoming error replies":
       let scheduler = newScheduler(trnrun, 1, testDirectory / "failure.sqlite3")

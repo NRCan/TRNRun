@@ -30,13 +30,13 @@ Options:
   --database:PATH    SQLite database clients read (default: trnrund.sqlite3)
 
 Read one JSON request per stdin line and write one JSON reply per stdout line:
-  {"cmd":"add","runId":"1","deckFile":"model.dck","until":"FINISHED"}
-Replies come in request order, one per request. add replies once the run
-reaches until (QUEUED by default, ACCEPTED, RUNNING, or FINISHED), with its
-state; no other request is read meanwhile.
+  {"cmd":"add","runId":"1","deckFile":"model.dck"}
+Replies come in request order, one per request. add replies at once with the
+run's state, QUEUED or ACCEPTED.
 
 Commands: ready, add, shutdown.
-ready returns the databasePath holding every run's state and logs.
+ready returns the databasePath holding every run's state and logs; poll it to
+follow runs.
 Closing stdin exits at once, killing running simulations and saving them as
 FINISHED, interrupted. One daemon at a time may use a database. Startup
 failures are written to stderr.

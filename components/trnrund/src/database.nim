@@ -1,12 +1,29 @@
-## SQLite database for simulations
+## SQLite database for simulations, and the only record of their state.
+##
+## Each change to a run updates just the columns it affects and gives the row
+## the next revision. Timestamps are UTC ISO 8601 text with milliseconds, such
+## as `2026-10-09T14:03:12.345Z`, which SQLite date functions accept and which
+## sort chronologically as text.
 
-import std/[json, options, os, oserrors, strutils, winlean]
+import std/[json, options, os, oserrors, sequtils, strutils, winlean]
 import db_connector/db_sqlite
 from db_connector/sqlite3 import PStmt, SQLITE_DONE, SQLITE_ROW, column_text, step
-import ./[events, simulation]
+import ./events
 
 type
   DatabaseError* = DbError
+
+  SimulationState* = enum
+    ## Lifecycle of a run, independent of TRNRun `STATUS`.
+    ##
+    ## `QUEUED → ACCEPTED → RUNNING → FINISHED`. A run whose TRNRun fails to
+    ## launch goes from `ACCEPTED` to `FINISHED`; one the daemon stops tracking
+    ## first, at shutdown or when it exits, is finished as interrupted from
+    ## whatever state it reached.
+    ssQueued = "QUEUED" ## Submitted, waiting for an idle worker.
+    ssAccepted = "ACCEPTED" ## A pool slot is reserved; worker pickup may be pending.
+    ssRunning = "RUNNING" ## The TRNRun process started.
+    ssFinished = "FINISHED" ## Completed or failed; see `succeeded`.
 
   Database* = object
     path*: string ## Absolute and normalized.
@@ -62,6 +79,10 @@ const
     "CREATE INDEX logs_run_id ON logs (run_id)",
   ]
   ErrorSharingViolation = 32'i32 # Missing from winlean.
+  Now = "strftime('%Y-%m-%dT%H:%M:%fZ')" ## The current time, as every timestamp is stored.
+  HasTerminalStatus = "trnrun_status IN ('DONE', 'CANCELLED', 'ERROR', 'TIMEOUT', 'STALLED')"
+    ## Whether TRNRun already reported a status that ends a run.
+  Unfinished* = {ssQueued, ssAccepted, ssRunning}
 
 # SQLite helpers
 
@@ -100,45 +121,105 @@ template transaction(self: Database, body: untyped) =
 
 # Runs
 
-template field(event: Option, name: untyped): untyped =
-  ## The `name` field of `event`, or none before TRNRun reported it.
-  (if event.isSome: some(event.get().name) else: none(typeof(event.get().name)))
-
-proc save*(self: Database, simulation: Simulation, logs: openArray[LogEvent] = []) =
-  ## Atomically replaces the row of `simulation` and appends `logs`.
-  self.transaction:
-    self.execute("""INSERT OR REPLACE INTO runs (run_id, revision, state,
-        trnrun_status, trnrun_message, percent, sim_time, elapsed_ms, eta_ms,
-        notices, warnings, fatals,
-        succeeded, exit_code, error,
-        submitted_at, started_at, finished_at,
-        deck_file, start_time, stop_time, time_step, setting)
-      VALUES (?, (SELECT coalesce(max(revision), 0) + 1 FROM runs), ?,
-        ?, ?, ?, ?, ?, ?,
-        ?, ?, ?,
-        ?, ?, nullif(?, ''),
-        ?, ?, ?,
-        ?, ?, ?, ?, ?)""",
-      simulation.runId, simulation.state,
-      simulation.status.field(status), simulation.status.field(message),
-      simulation.progress.field(percent), simulation.progress.field(time),
-      simulation.progress.field(elapsedMs), simulation.progress.field(etaMs),
-      simulation.notices, simulation.warnings, simulation.fatals,
-      if simulation.state == ssFinished: some(simulation.succeeded()) else: none(bool),
-      simulation.exitCode, simulation.error,
-      simulation.submittedAt, simulation.startedAt, simulation.finishedAt,
-      simulation.deckFile, simulation.config.field(start), simulation.config.field(stop),
-      simulation.config.field(step), simulation.setting)
-    for log in logs:
-      self.execute("""INSERT INTO logs (run_id, severity, sim_time,
-          unit_id, type_id, message_code, message, information)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-        simulation.runId, log.severity, log.time,
-        log.unitId, log.typeId, log.messageCode, log.message, log.information)
+proc update(self: Database, runId, assignments: string, args: varargs[JsonNode, `%`]) =
+  ## Applies `assignments` to the row of `runId` and gives it the next revision.
+  ##
+  ## Every right-hand side reads the row as it was before this update.
+  self.execute("UPDATE runs SET revision = (SELECT max(revision) + 1 FROM runs), " &
+    assignments & " WHERE run_id = ?", @args & %runId)
 
 proc contains*(self: Database, runId: string): bool =
   ## Whether `runId` was ever saved, by this daemon or an earlier one.
   self.execute("SELECT 1 FROM runs WHERE run_id = ?", runId).isSome
+
+proc submit*(self: Database, runId, deckFile: string) =
+  ## Saves a new run as `QUEUED`; `runId` must not be in the database yet.
+  self.execute("""INSERT INTO runs (run_id, revision, state, notices, warnings, fatals,
+      submitted_at, deck_file)
+    VALUES (?, (SELECT coalesce(max(revision), 0) + 1 FROM runs), ?, 0, 0, 0, """ &
+      Now & ", ?)",
+    runId, ssQueued, deckFile)
+
+proc accept*(self: Database, runId: string) =
+  ## Marks `runId` handed to a worker.
+  self.update(runId, "state = ?", ssAccepted)
+
+proc start*(self: Database, runId: string) =
+  ## Marks `runId` running once its TRNRun process started.
+  self.update(runId, "state = ?, started_at = " & Now, ssRunning)
+
+proc record*(self: Database, runId: string, event: SimulationEvent) =
+  ## Saves one TRNRun event of `runId`.
+  ##
+  ## `SETTING`, `STATUS`, `CONFIG` and `PROGRESS` replace the previous value;
+  ## each `LOG` is appended and counted by severity, atomically.
+  case event.kind
+  of eventSetting:
+    self.update(runId, "setting = ?", event.settingData)
+  of eventStatus:
+    let status = event.statusData
+    self.update(runId, "trnrun_status = ?, trnrun_message = ?", status.status, status.message)
+  of eventConfig:
+    let config = event.configData
+    self.update(runId, "start_time = ?, stop_time = ?, time_step = ?",
+      config.start, config.stop, config.step)
+  of eventProgress:
+    let progress = event.progressData
+    self.update(runId, "percent = ?, sim_time = ?, elapsed_ms = ?, eta_ms = ?",
+      progress.percent, progress.time, progress.elapsedMs, progress.etaMs)
+  of eventLog:
+    let log = event.logData
+    let counter =
+      case log.severity
+      of Notice: "notices"
+      of Warning: "warnings"
+      of Fatal: "fatals"
+    self.transaction:
+      self.update(runId, counter & " = " & counter & " + 1")
+      self.execute("""INSERT INTO logs (run_id, severity, sim_time,
+          unit_id, type_id, message_code, message, information)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        runId, log.severity, log.time,
+        log.unitId, log.typeId, log.messageCode, log.message, log.information)
+
+proc finish(
+    self: Database, runId: string, exitCode: Option[int], error: string, fallback: StatusEvent
+) =
+  ## Marks `runId` finished, with `fallback` as its status unless TRNRun
+  ## already reported a terminal one.
+  ##
+  ## Success requires a `DONE` status, exit code 0, and no execution error.
+  self.update(runId, "state = ?, finished_at = " & Now & """,
+      exit_code = ?, error = nullif(?, ''),
+      trnrun_status = CASE WHEN """ & HasTerminalStatus & """ THEN trnrun_status ELSE ? END,
+      trnrun_message = CASE WHEN """ & HasTerminalStatus & """ THEN trnrun_message ELSE ? END,
+      succeeded = (trnrun_status IS 'DONE' AND ?)""",
+    ssFinished, exitCode, error, fallback.status, fallback.message,
+    exitCode == some(0) and error.len == 0)
+
+proc finish*(self: Database, runId: string, exitCode: Option[int], error: string) =
+  ## Marks `runId` finished once TRNRun exited or failed to launch.
+  ##
+  ## Guarantees a terminal status: when TRNRun did not report one, a
+  ## daemon-owned `ERROR` status explains why. Execution errors are kept
+  ## independently, even when TRNRun already reported a terminal status.
+  let message = if error.len > 0: error else: "TRNRun exited without a terminal status"
+  self.finish(runId, exitCode, error, StatusEvent(status: statusError, message: message))
+
+proc interrupt*(self: Database, reason: string, states = Unfinished) =
+  ## Finishes every run in `states` that the daemon stops tracking before TRNRun exits.
+  ##
+  ## A queued run never started; any other may have, and its TRNRun is killed
+  ## with the daemon. Either way it is CANCELLED, unless TRNRun already
+  ## reported a terminal status, and its error gives `reason`, such as
+  ## `Not started: the daemon shut down`.
+  let selected = toSeq(states).mapIt("'" & $it & "'").join(", ")
+  self.transaction:
+    for row in self.connection.getAllRows(sql("SELECT run_id, state FROM runs WHERE state IN (" &
+        selected & ") ORDER BY revision")):
+      let outcome = if row[1] == $ssQueued: "Not started" else: "Interrupted"
+      self.finish(row[0], none(int), outcome & ": " & reason,
+        StatusEvent(status: statusCancelled, message: outcome))
 
 # Opening and closing
 
@@ -172,48 +253,6 @@ proc migrate(self: Database) =
     raise newException(DatabaseError, "Database " & self.path & " has schema version " &
       $version & "; this trnrund needs " & $SchemaVersion)
 
-proc readRun(row: Row): Simulation =
-  ## Rebuilds a simulation from `interruptUnfinished`'s columns; TRNRun arguments are not stored.
-  template optional(index: int, value: untyped): untyped =
-    (if row[index].len == 0: none(typeof(value)) else: some(value))
-  Simulation(
-    runId: row[0],
-    state: parseEnum[SimulationState](row[1]),
-    status: optional(2, StatusEvent(status: parseEnum[SimStatus](row[2]), message: row[3])),
-    progress: optional(4, ProgressEvent(percent: parseFloat(row[4]),
-      time: parseFloat(row[5]), elapsedMs: parseFloat(row[6]), etaMs: parseFloat(row[7]))),
-    notices: parseInt(row[8]),
-    warnings: parseInt(row[9]),
-    fatals: parseInt(row[10]),
-    exitCode: optional(11, parseInt(row[11])),
-    error: row[12],
-    submittedAt: row[13],
-    startedAt: optional(14, row[14]),
-    finishedAt: optional(15, row[15]),
-    deckFile: row[16],
-    config: optional(17, ConfigEvent(
-      start: parseFloat(row[17]), stop: parseFloat(row[18]), step: parseFloat(row[19]))),
-    setting: optional(20, parseJson(row[20]).to(SettingEvent)),
-  )
-
-proc interruptUnfinished(self: Database) =
-  ## Finishes as interrupted every run an earlier daemon left unfinished.
-  for row in self.connection.getAllRows(sql"""SELECT run_id, state,
-      trnrun_status, trnrun_message, percent, sim_time, elapsed_ms, eta_ms,
-      notices, warnings, fatals,
-      exit_code, error,
-      submitted_at, started_at, finished_at,
-      deck_file, start_time, stop_time, time_step, setting
-    FROM runs WHERE state != 'FINISHED' ORDER BY revision"""):
-    var simulation =
-      try:
-        readRun(row)
-      except KeyError, ValueError:
-        raise newException(DatabaseError,
-          "Unreadable run " & row[0] & ": " & getCurrentExceptionMsg())
-    simulation.interrupt("its daemon stopped unexpectedly")
-    self.save(simulation)
-
 proc close*(self: Database) =
   ## Closes the database, then releases it to other daemons.
   try:
@@ -232,7 +271,7 @@ proc openDatabase*(path: string): Database =
     result.execute("PRAGMA journal_mode = WAL")
     result.execute("PRAGMA synchronous = NORMAL")
     result.migrate()
-    result.interruptUnfinished()
+    result.interrupt("its daemon stopped unexpectedly") # Runs an earlier daemon left unfinished.
   except CatchableError:
     result.close()
     raise
