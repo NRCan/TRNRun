@@ -11,7 +11,8 @@
 ## Every change to a simulation is saved to the database as it is applied, so
 ## clients reading it see each run's progress without asking the daemon. The
 ## database is the record of every run: the scheduler holds a `Simulation` only
-## while a worker has it, so its memory does not grow with the number of runs.
+## while it is queued or a worker has it, so its memory does not grow with the
+## number of finished runs.
 
 import std/[deques, json, options, sequtils, strutils, tables]
 import ./database
@@ -25,13 +26,6 @@ import ./workerpool
 export simulation
 
 type
-  Submission = object
-    ## A run waiting for a worker; its saved row is still the initial one.
-    runId: string
-    deckFile: string
-    trnrunArgs: seq[string]
-    submittedAt: string
-
   Scheduler* = ref object
     ## Queued and dispatched simulations, plus the pool that runs them.
     ##
@@ -45,14 +39,10 @@ type
     isShutDown: bool
     running: Table[string, Simulation]
       ## Dispatched runs until their exit is applied; at most `maxConcurrent`.
-    queue: Deque[Submission]
+    queue: Deque[Simulation]
+      ## Runs waiting for a worker; their saved row is still the initial one.
     deferred: Deque[Message]
       ## Client messages that arrived while `add` waited; `nextRequest` returns them first.
-
-proc initSimulation(submission: Submission): Simulation =
-  initSimulation(
-    submission.runId, submission.deckFile, submission.trnrunArgs, submission.submittedAt
-  )
 
 proc save(self: Scheduler, runId: string, logs: openArray[LogEvent] = []) =
   ## Saves the current state of a running `runId`, with any new log entries.
@@ -61,16 +51,15 @@ proc save(self: Scheduler, runId: string, logs: openArray[LogEvent] = []) =
 proc dispatch(self: Scheduler) =
   ## Hands queued runs to the pool while a worker is free.
   while self.queue.len > 0 and self.running.len < self.maxConcurrent:
-    let submission = self.queue.popFirst()
-    var simulation = initSimulation(submission)
+    var simulation = self.queue.popFirst()
     simulation.state = ssAccepted
     self.database.save(simulation)
-    self.running[submission.runId] = simulation
+    self.running[simulation.runId] = simulation
     self.pool.submit(Work(
       kind: wkRun,
-      runId: submission.runId,
-      deckFile: submission.deckFile,
-      trnrunArgs: submission.trnrunArgs,
+      runId: simulation.runId,
+      deckFile: simulation.deckFile,
+      trnrunArgs: simulation.trnrunArgs,
     ))
 
 proc apply(self: Scheduler, message: Message) =
@@ -152,14 +141,9 @@ proc add*(
   if trnrunArgs.anyIt(it.startsWith("--deckFile")):
     raise newException(ValueError, "Pass the deck as deckFile, not in trnrunArgs")
 
-  let submission = Submission(
-    runId: runId,
-    deckFile: validateDeck(deckFile),
-    trnrunArgs: trnrunArgs,
-    submittedAt: timestampNow(),
-  )
-  self.database.save(initSimulation(submission))
-  self.queue.addLast(submission)
+  let simulation = initSimulation(runId, validateDeck(deckFile), trnrunArgs)
+  self.database.save(simulation)
+  self.queue.addLast(simulation)
   self.dispatch()
   self.waitUntil(runId, until)
 
@@ -179,7 +163,7 @@ proc nextRequest*(self: Scheduler): Message =
 proc cancelQueued(self: Scheduler, reason: string) =
   ## Finishes every queued run as interrupted, without starting it.
   while self.queue.len > 0:
-    var simulation = initSimulation(self.queue.popFirst())
+    var simulation = self.queue.popFirst()
     simulation.interrupt(reason)
     self.database.save(simulation)
 

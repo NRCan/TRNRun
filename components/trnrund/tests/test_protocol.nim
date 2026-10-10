@@ -4,7 +4,7 @@ import db_connector/db_sqlite
 import ../src/[database, messages, protocol, scheduler]
 import ./fake_trnrun
 
-privateAccess(Scheduler) # Submissions are only in memory: arguments are not saved.
+privateAccess(Scheduler) # TRNRun arguments are only in memory: they are not saved.
 
 proc createDeck(directory, name: string): string =
   result = directory / name
