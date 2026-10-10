@@ -2,9 +2,10 @@
 ##
 ## Entry point for the daemon that runs TRNSYS simulations on behalf of one
 ## client. The client exchanges one JSON object per line over stdin and stdout;
-## see `protocol` for the requests. stdout carries replies only. When the client
-## closes stdin, the daemon exits at once and the job object kills any TRNRun
-## process still going.
+## see `protocol` for the requests. stdout carries replies only; simulations
+## are read from the SQLite database, see `database`. When the client closes
+## stdin, the daemon saves its unfinished runs as interrupted and exits at
+## once, and the job object kills any TRNRun process still going.
 ##
 ## Option parsing itself lives in `cli`; this module owns executable metadata,
 ## drives the parser, and serves requests.
@@ -22,21 +23,23 @@ Usage:
   trnrund [options]
 
 Options:
-  -h, --help              Show this help and exit
-  -v, --version           Show version and exit
-  --trnrun:PATH           TRNRun executable (default: trnrun.exe beside trnrund)
-  --maxConcurrent:N       Simulations run at once (default: max(CPUs - 1, 1))
+  -h, --help         Show this help and exit
+  -v, --version      Show version and exit
+  --trnrun:PATH      TRNRun executable (default: trnrun.exe beside trnrund)
+  --maxConcurrent:N  Simulations run at once (default: max(CPUs - 1, 1))
+  --database:PATH    SQLite database clients read (default: trnrund.sqlite3)
 
 Read one JSON request per stdin line and write one JSON reply per stdout line:
-  {"cmd":"add","runId":"1","deckFile":"model.dck"}
-Replies come in request order, one per request.
+  {"cmd":"add","runId":"1","deckFile":"model.dck","until":"FINISHED"}
+Replies come in request order, one per request. add replies once the run
+reaches until (QUEUED by default, ACCEPTED, RUNNING, or FINISHED), with its
+state; no other request is read meanwhile.
 
-Commands: add, changes, remove, shutdown.
-changes takes an optional "since" revision and returns the current revision
-with every simulation changed after it, and only the logs added after it;
-since 0, the default, returns everything.
-Closing stdin exits at once and kills running simulations. Startup failures
-are written to stderr.
+Commands: ready, add, shutdown.
+ready returns the databasePath holding every run's state and logs.
+Closing stdin exits at once, killing running simulations and saving them as
+FINISHED, interrupted. One daemon at a time may use a database. Startup
+failures are written to stderr.
 
 Exit codes: 0 ok  1 fatal  2 usage error"""
 
@@ -84,7 +87,8 @@ proc main(): int =
     of cmdArgument:
       raise newException(ValueError, "Unexpected argument: " & parser.key)
 
-  daemonScheduler = newScheduler(input.trnrunPath, input.maxConcurrent)
+  daemonScheduler =
+    newScheduler(input.trnrunPath, input.maxConcurrent, input.databasePath)
   let scheduler = daemonScheduler
   {.push warning[ProveInit]: off, warning[Uninit]: off.}
   createThread(reader, readRequests, scheduler.requestInbox)
@@ -93,6 +97,7 @@ proc main(): int =
   while true:
     let message = scheduler.nextRequest()
     if message.kind == mkClosed:
+      scheduler.abandon()
       return 0
 
     let (reply, shutdown) = scheduler.handleRequest(message.line)

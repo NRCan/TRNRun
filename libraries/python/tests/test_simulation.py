@@ -2,18 +2,15 @@
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
-from threading import Event, Lock
-from types import TracebackType
-from typing import Self, override
-from unittest.mock import MagicMock
+from threading import Thread
+from typing import override
 
 import pytest
 
-from trnrun import SimulationSnapshot
 from trnrun.config import SimulationConfig
+from trnrun.convenience.simulation import Simulation
 from trnrun.events import (
     ConfigEvent,
     LogEvent,
@@ -24,7 +21,6 @@ from trnrun.events import (
     SimulationStatus,
     StatusEvent,
 )
-from trnrun.simulation import Simulation
 
 
 @pytest.fixture
@@ -119,10 +115,10 @@ def test_apply_replaces_daemon_state(config: SimulationConfig) -> None:
         progress=progress,
     )
 
-    assert simulation.apply(first)
+    simulation.apply(first)
     assert simulation.is_accepted
     assert simulation.status is SimulationStatus.LAUNCHING
-    assert simulation.apply(second)
+    simulation.apply(second)
 
     assert simulation.state is SimulationState.RUNNING
     assert simulation.status is SimulationStatus.RUNNING
@@ -131,7 +127,6 @@ def test_apply_replaces_daemon_state(config: SimulationConfig) -> None:
     assert simulation.config_event is config_event
     assert simulation.setting_event is setting
     assert simulation.is_running
-    assert not simulation.apply(second)
 
 
 @pytest.mark.parametrize(
@@ -146,10 +141,9 @@ def test_apply_replaces_daemon_state(config: SimulationConfig) -> None:
 def test_acceptance_follows_daemon_state(config: SimulationConfig, state: SimulationState, *, accepted: bool) -> None:
     """Any state past QUEUED means a daemon worker slot was reserved."""
     simulation = Simulation("deck.dck", config, sim_id=7)
-    _ = simulation.apply(SimulationReply(state))
+    simulation.apply(SimulationReply(state))
 
     assert simulation.is_accepted is accepted
-    assert simulation.snapshot().is_accepted is accepted
     assert simulation.is_finished is (state is SimulationState.FINISHED)
 
 
@@ -157,14 +151,13 @@ def test_acceptance_follows_daemon_state(config: SimulationConfig, state: Simula
 def test_running_follows_daemon_state(config: SimulationConfig, state: SimulationState) -> None:
     """Queued, accepted, and finished simulations are not running."""
     simulation = Simulation("deck.dck", config, sim_id=7)
-    _ = simulation.apply(SimulationReply(state))
+    simulation.apply(SimulationReply(state))
 
     assert simulation.is_running is (state is SimulationState.RUNNING)
-    assert simulation.snapshot().is_running is (state is SimulationState.RUNNING)
 
 
 def test_log_history_retains_all_events(config: SimulationConfig) -> None:
-    """History exceeds the former 5,000-event limit and reads return a copy."""
+    """Each batch is appended; history exceeds the former 5,000-event limit and reads return a copy."""
     simulation = Simulation("deck.dck", config, sim_id=7)
     logs = [
         LogEvent("Notice", message="one"),
@@ -178,12 +171,10 @@ def test_log_history_retains_all_events(config: SimulationConfig) -> None:
         warnings=1667,
         fatals=1667,
         logs=tuple(logs[3:]),
-        log_start=3,
     )
 
-    assert simulation.apply(first)
-    assert simulation.apply(second)
-    assert not simulation.apply(replace(second, logs=()))
+    simulation.apply(first)
+    simulation.apply(second)
 
     snapshot = simulation.logs
     snapshot.clear()
@@ -213,166 +204,49 @@ def test_success_comes_from_the_daemon(
 ) -> None:
     """The daemon's verdict, which also checks exit code and errors, is reported unchanged."""
     simulation = Simulation("deck.dck", config, sim_id=7)
-    assert simulation.apply(SimulationReply(SimulationState.RUNNING, status=StatusEvent(SimulationStatus.DONE)))
+    simulation.apply(SimulationReply(SimulationState.RUNNING, status=StatusEvent(SimulationStatus.DONE)))
     assert not simulation.succeeded
 
-    assert simulation.apply(update)
+    simulation.apply(update)
 
     assert simulation.is_finished
     assert not simulation.is_running
     assert simulation.succeeded is succeeded
     assert simulation.exit_code == update.exit_code
     assert simulation.error == update.error
-    snapshot = simulation.snapshot()
-    assert snapshot.is_finished
-    assert not snapshot.is_running
 
 
-def test_finished_simulation_is_frozen(config: SimulationConfig) -> None:
-    """No later update or log mutates a finished simulation."""
+def test_info_is_the_latest_reply_replaced_whole(config: SimulationConfig) -> None:
+    """Each update swaps in a new frozen reply, without logs, so an earlier read never changes."""
     simulation = Simulation("deck.dck", config, sim_id=7)
-    first = finished(SimulationStatus.ERROR, exit_code=None, error="launch failed", fatals=1, logs=(LogEvent("Fatal"),))
-    assert simulation.apply(first)
-
-    assert not simulation.apply(finished(logs=(LogEvent("Notice"),)))
-    assert not simulation.apply(SimulationReply(SimulationState.RUNNING))
-
-    assert simulation.status is SimulationStatus.ERROR
-    assert simulation.error == "launch failed"
-    assert simulation.exit_code is None
-    assert simulation.logs == [LogEvent("Fatal")]
-    assert not simulation.succeeded
-
-
-def test_snapshot_captures_state_and_stays_stable(config: SimulationConfig) -> None:
-    """Snapshots retain only display state, independently of later updates."""
-    simulation = Simulation("deck.dck", config, sim_id=7)
-    initial = simulation.snapshot()
+    initial = simulation.info
+    status = StatusEvent(SimulationStatus.RUNNING)
     progress = ProgressEvent(1.0, 0.1, 100.0, 900.0)
-    config_event = ConfigEvent(0.0, 10.0, 1.0)
     running = SimulationReply(
         SimulationState.RUNNING,
         setting=make_setting(),
-        status=StatusEvent(SimulationStatus.RUNNING),
-        config=config_event,
+        status=status,
         progress=progress,
         notices=1,
         logs=(LogEvent("Notice", message="retained"),),
     )
-    assert simulation.apply(running)
+    simulation.apply(running)
 
-    snapshot = simulation.snapshot()
+    info = simulation.info
 
-    assert isinstance(snapshot, SimulationSnapshot)
-    assert snapshot.id == 7
-    assert snapshot.deck_path == Path("deck.dck")
-    assert snapshot.state is SimulationState.RUNNING
-    assert snapshot.is_accepted
-    assert not snapshot.is_finished
-    assert snapshot.status is SimulationStatus.RUNNING
-    assert snapshot.progress is progress
-    assert snapshot.config_event is config_event
-    assert (snapshot.notices, snapshot.warnings, snapshot.fatals) == (1, 0, 0)
-    for name in (
-        "config",
-        "logs",
-        "status_event",
-        "setting_event",
-        "succeeded",
-        "message",
-        "exit_code",
-        "error",
-        "log_count",
-    ):
-        assert not hasattr(snapshot, name)
+    assert info == replace(running, logs=())
+    assert (info.state, info.status, info.progress) == (SimulationState.RUNNING, status, progress)
+    assert initial == SimulationReply(SimulationState.QUEUED)
 
-    final = finished(
-        progress=ProgressEvent(10.0, 1.0, 1_000.0, 0.0),
-        config=ConfigEvent(0.0, 20.0, 0.5),
-        notices=1,
-        warnings=1,
-        logs=(LogEvent("Warning", message="later"),),
-        log_start=1,
-    )
-    assert simulation.apply(final)
+    simulation.apply(finished(notices=1, warnings=1, logs=(LogEvent("Warning", message="later"),)))
 
-    assert snapshot.status is SimulationStatus.RUNNING
-    assert snapshot.progress is progress
-    assert snapshot.config_event is config_event
-    assert snapshot.is_running
-    assert (snapshot.notices, snapshot.warnings, snapshot.fatals) == (1, 0, 0)
-    assert not initial.is_accepted
-    assert initial.status is None
-    assert (initial.notices, initial.warnings, initial.fatals) == (0, 0, 0)
-    assert not initial.is_running
-    assert simulation.succeeded
-
-
-def test_outcome_details_stay_on_simulation(config: SimulationConfig) -> None:
-    """The display snapshot reports status; the simulation retains outcome details."""
-    simulation = Simulation("deck.dck", config, sim_id=7)
-    update = finished(SimulationStatus.ERROR, exit_code=3, error="capture failed")
-    assert simulation.apply(replace(update, status=StatusEvent(SimulationStatus.ERROR, "TRNSYS stopped")))
-
-    snapshot = simulation.snapshot()
-
-    assert snapshot.status is SimulationStatus.ERROR
-    assert simulation.status_event == StatusEvent(SimulationStatus.ERROR, "TRNSYS stopped")
-    assert (simulation.exit_code, simulation.error) == (3, "capture failed")
-
-
-def test_apply_reports_only_changes(config: SimulationConfig) -> None:
-    """Only state changes and new logs count as updates; finished runs stay frozen."""
-    simulation = Simulation("deck.dck", config, sim_id=7)
-    running = SimulationReply(SimulationState.RUNNING)
-
-    assert simulation.apply(running)
-    assert not simulation.apply(running)
-    assert simulation.apply(replace(running, logs=(LogEvent("Notice"),)))
-    assert simulation.apply(finished())
-    assert not simulation.apply(SimulationReply(SimulationState.RUNNING))
-
-
-def test_log_batches_are_placed_by_their_start(config: SimulationConfig) -> None:
-    """Entries already held are skipped, so a repeated batch is no change, and identical new entries still join."""
-    simulation = Simulation("deck.dck", config, sim_id=7)
-    entry = LogEvent("Warning", 5.0, message="repeated")
-    update = SimulationReply(SimulationState.RUNNING, warnings=1, logs=(entry,))
-
-    assert simulation.apply(update)
-    assert not simulation.apply(update)
-    overlapping = replace(update, warnings=2, logs=(entry, entry))
-    assert simulation.apply(overlapping)
-    assert not simulation.apply(replace(overlapping, logs=(entry,), log_start=1))
-    assert simulation.logs == [entry, entry]
-
-
-def test_log_batch_after_a_gap_raises(config: SimulationConfig) -> None:
-    """A batch starting past the held entries would lose some, so it is rejected unapplied."""
-    simulation = Simulation("deck.dck", config, sim_id=7)
-    gap = SimulationReply(SimulationState.RUNNING, warnings=2, logs=(LogEvent("Warning"),), log_start=1)
-
-    with pytest.raises(ValueError, match="from 1, after the 0 held"):
-        _ = simulation.apply(gap)
-
-    assert simulation.state is SimulationState.QUEUED
-    assert simulation.logs == []
-
-
-@pytest.mark.parametrize(
-    "field",
-    ["id", "deck_path", "state", "status", "progress", "config_event", "notices", "warnings", "fatals"],
-)
-def test_snapshot_is_frozen(config: SimulationConfig, field: str) -> None:
-    """Snapshot fields cannot be reassigned or deleted."""
-    simulation = Simulation("deck.dck", config, sim_id=7)
-    _ = simulation.apply(SimulationReply(SimulationState.RUNNING, notices=1, logs=(LogEvent("Notice"),)))
-    snapshot = simulation.snapshot()
-
+    assert info.state is SimulationState.RUNNING
+    assert info.progress is progress
+    assert info.warnings == 0
+    assert simulation.info.state is SimulationState.FINISHED
+    assert simulation.info.logs == ()
     with pytest.raises(FrozenInstanceError):
-        setattr(snapshot, field, None)
-    with pytest.raises(FrozenInstanceError):
-        delattr(snapshot, field)
+        type(info).__setattr__(info, "state", SimulationState.QUEUED)
 
 
 def test_severity_counts_come_from_the_daemon(config: SimulationConfig) -> None:
@@ -380,100 +254,89 @@ def test_severity_counts_come_from_the_daemon(config: SimulationConfig) -> None:
     simulation = Simulation("deck.dck", config, sim_id=7)
     logs = tuple(LogEvent(severity) for severity in ("Notice", "Notice", "Warning", "Fatal"))
     update = SimulationReply(SimulationState.RUNNING, notices=2, warnings=1, fatals=1, logs=logs)
-    _ = simulation.apply(update)
+    simulation.apply(update)
 
-    snapshot = simulation.snapshot()
+    info = simulation.info
 
-    assert (snapshot.notices, snapshot.warnings, snapshot.fatals) == (2, 1, 1)
+    assert (info.notices, info.warnings, info.fatals) == (2, 1, 1)
     assert (simulation.log_count, simulation.notices, simulation.warnings, simulation.fatals) == (4, 2, 1, 1)
 
 
-def test_snapshot_does_not_access_history(
+def test_final_logs_are_held_before_the_finished_reply(
     config: SimulationConfig,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Display snapshots read only folded state, without touching log history."""
-    simulation = Simulation("deck.dck", config, sim_id=7)
-    _ = simulation.apply(SimulationReply(SimulationState.RUNNING, notices=1, logs=(LogEvent("Notice"),)))
-    expected = simulation.snapshot()
-    history = MagicMock(spec=list)
-    history.__len__.side_effect = AssertionError("Log history must not be counted")
-    history.__iter__.side_effect = AssertionError("Log history must not be copied")
-    monkeypatch.setattr(simulation, "_logs", history)
+    """A reader that sees a run finished already sees its final entries."""
+    seen: list[SimulationState] = []
 
-    assert simulation.snapshot() == expected
-    history.__iter__.assert_not_called()
-    history.__len__.assert_not_called()
-
-
-class ObservedLock:
-    """Expose actual cross-thread contention without relying on sleeps."""
-
-    def __init__(self) -> None:
-        self.lock = Lock()
-        self.contended = Event()
-
-    def __enter__(self) -> Self:
-        """Acquire the lock and signal if another thread holds it."""
-        if not self.lock.acquire(blocking=False):
-            self.contended.set()
-            self.lock.acquire()
-        return self
-
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_value: BaseException | None,
-        traceback: TracebackType | None,
-    ) -> None:
-        """Release the lock."""
-        self.lock.release()
-
-
-@pytest.mark.parametrize(
-    "read",
-    ["snapshot", "logs", "log_count", "notices", "warnings", "fatals", "state"],
-)
-def test_reads_wait_for_atomic_log_and_state_update(
-    config: SimulationConfig,
-    monkeypatch: pytest.MonkeyPatch,
-    read: str,
-) -> None:
-    """A reader cannot observe new logs before their counters and state."""
-    appended = Event()
-    resume = Event()
-    lock = ObservedLock()
-
-    class PausingLogs(list[LogEvent]):
+    class ObservedLogs(list[LogEvent]):
         @override
         def extend(self, events: object) -> None:
             super().extend(events)  # pyright: ignore[reportArgumentType]
-            appended.set()
-            assert resume.wait(timeout=5), "Writer was not released"
+            seen.append(simulation.state)
 
     simulation = Simulation("deck.dck", config, sim_id=7)
-    monkeypatch.setattr(simulation, "_lock", lock)
-    monkeypatch.setattr(simulation, "_logs", PausingLogs())
-    update = SimulationReply(SimulationState.RUNNING, warnings=1, logs=(LogEvent("Warning"),))
+    monkeypatch.setattr(simulation, "_logs", ObservedLogs())
 
-    def read_state() -> object:
-        if read == "snapshot":
-            return simulation.snapshot()
+    simulation.apply(finished(fatals=1, logs=(LogEvent("Fatal"),)))
 
-        return getattr(simulation, read)
+    assert seen == [SimulationState.QUEUED]
+    assert simulation.is_finished
+    assert simulation.logs == [LogEvent("Fatal")]
 
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        writer = executor.submit(simulation.apply, update)
-        try:
-            assert appended.wait(timeout=5), "Writer did not reach the partial update"
-            reader = executor.submit(read_state)
-            assert lock.contended.wait(timeout=5), "Reader did not acquire the update lock"
-            assert not reader.done()
-        finally:
-            resume.set()
-        assert writer.result(timeout=5)
-        assert reader.result(timeout=5) == read_state()
 
-    snapshot = simulation.snapshot()
-    assert snapshot.state is SimulationState.RUNNING
-    assert (snapshot.notices, snapshot.warnings, snapshot.fatals) == (0, 1, 0)
+def test_wait_returns_once_settled_and_times_out_before(config: SimulationConfig) -> None:
+    """A run settles once its manager has applied its finished reply."""
+    simulation = Simulation("deck.dck", config, sim_id=7)
+
+    with pytest.raises(TimeoutError, match="Simulation 7 did not finish within the timeout"):
+        simulation.wait(0)
+
+    simulation.apply(finished())
+    simulation.settle()
+    simulation.wait(0)
+    simulation.wait()
+
+
+def test_wait_from_another_thread_returns_when_settled(config: SimulationConfig) -> None:
+    """A waiter blocked in another thread is released by the settle."""
+    simulation = Simulation("deck.dck", config, sim_id=7)
+    waiter = Thread(target=simulation.wait, args=(10.0,))
+    waiter.start()
+
+    simulation.apply(finished())
+    simulation.settle()
+    waiter.join(10.0)
+
+    assert not waiter.is_alive()
+
+
+def test_wait_raises_the_error_that_stopped_syncing(config: SimulationConfig) -> None:
+    """A run abandoned by its manager raises that error, keeping its last reply."""
+    simulation = Simulation("deck.dck", config, sim_id=7)
+    simulation.apply(SimulationReply(SimulationState.RUNNING))
+    failure = RuntimeError("TRNRun daemon exited with code 1")
+
+    simulation.settle(failure)
+
+    with pytest.raises(RuntimeError) as raised:
+        simulation.wait()
+    assert raised.value is failure
+    assert simulation.state is SimulationState.RUNNING
+
+
+def test_only_the_first_settle_counts(config: SimulationConfig) -> None:
+    """A later shutdown never replaces the error of a failed pull, nor a finish with an error."""
+    failed = Simulation("deck.dck", config, sim_id=7)
+    failure = RuntimeError("TRNRun daemon exited with code 1")
+    failed.settle(failure)
+    failed.settle(RuntimeError("SimulationManager is closed"))
+
+    with pytest.raises(RuntimeError) as raised:
+        failed.wait(0)
+    assert raised.value is failure
+
+    done = Simulation("deck.dck", config, sim_id=8)
+    done.settle()
+    done.settle(RuntimeError("SimulationManager is closed"))
+    done.wait(0)

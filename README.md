@@ -39,22 +39,26 @@ Progress reporting requires the optional
 
 ## Python quick start
 
-Install the package with pip:
+Install the package with its optional Rich-based display:
 
 ```powershell
-pip install trnrun
+pip install "trnrun[display]"
 ```
 
 Or with uv:
 
 ```powershell
-uv add trnrun
+uv add "trnrun[display]"
 ```
+
+For client or non-display usage, install `pip install trnrun` (or
+`uv add trnrun`); use `SimulationManager(display=False)` to run without Rich.
 
 Run a deck:
 
 ```python
-from trnrun import SimulationConfig, SimulationManager
+from trnrun import SimulationConfig
+from trnrun.convenience import SimulationManager
 
 config = SimulationConfig(watch_tmp=True)
 
@@ -63,8 +67,16 @@ with SimulationManager() as manager:
     manager.wait()
 ```
 
-See the [Python documentation](libraries/python/) for concurrent batches,
-monitoring, and configuration.
+The core `trnrun` package exports only `DaemonClient`, `SimulationConfig`,
+`SimulationReply`, `SimulationState`, and `SimulationStatus` for direct daemon
+requests and their configuration/replies; it imports neither convenience code
+nor Rich. `trnrun.convenience` exports `Display`, `ProgressDisplay`, `Simulation`,
+and `SimulationManager` for background polling, live handles, and optional display.
+Existing manager, simulation, and display imports must move to `trnrun.convenience`;
+core imports stay at `trnrun`.
+
+See the [Python documentation](libraries/python/) for direct client usage,
+concurrent batches, monitoring, and configuration.
 
 ## MATLAB quick start
 

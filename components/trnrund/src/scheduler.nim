@@ -2,16 +2,19 @@
 ##
 ## The daemon runs one scheduler at a time. Every public operation runs on the
 ## owner thread. Workers only post messages, which are applied while the owner
-## waits in `nextRequest` or `shutdown`; a finished run frees its slot for the
+## waits in `nextRequest`, `add`, or `shutdown`; a finished run frees its slot for the
 ## next queued run at that point. Always call shutdown before dropping the
-## scheduler so every worker is joined. The inbox remains open because of the
-## Nim 2.2 ORC channel-close issue.
+## scheduler so every worker is joined, or abandon right before the process
+## exits. The inbox remains open because of the Nim 2.2 ORC channel-close
+## issue.
 ##
-## Every change to a simulation gets the next revision, a counter that only
-## grows, so a client holding revision N can ask for the simulations changed
-## after it.
+## Every change to a simulation is saved to the database as it is applied, so
+## clients reading it see each run's progress without asking the daemon. The
+## database is the record of every run: the scheduler holds a `Simulation` only
+## while a worker has it, so its memory does not grow with the number of runs.
 
-import std/[deques, options, sequtils, strutils, tables]
+import std/[deques, json, options, sequtils, strutils, tables]
+import ./database
 import ./events
 import ./job
 import ./messages
@@ -22,131 +25,199 @@ import ./workerpool
 export simulation
 
 type
+  Submission = object
+    ## A run waiting for a worker; its saved row is still the initial one.
+    runId: string
+    deckFile: string
+    trnrunArgs: seq[string]
+    submittedAt: string
+
   Scheduler* = ref object
-    ## Daemon-side state of every simulation, plus the pool that runs them.
+    ## Queued and dispatched simulations, plus the pool that runs them.
     ##
     ## A `ref` so the inbox and work channel keep the stable addresses that
     ## the workers and the request reader retain.
     pool: WorkerPool
     inbox: Channel[Message]
+    database: Database
 
     maxConcurrent: int
-    runningCount: int ## Dispatched runs whose exit messages have not been processed.
     isShutDown: bool
-    lastRevision: int ## Revision of the latest change to any simulation; 0 before any.
-    registry: OrderedTable[string, Simulation]
-      ## In submission order. Its `del` is linear, which is fine while clients
-      ## hold a bounded window of simulations.
-    queue: Deque[string]
+    running: Table[string, Simulation]
+      ## Dispatched runs until their exit is applied; at most `maxConcurrent`.
+    queue: Deque[Submission]
+    deferred: Deque[Message]
+      ## Client messages that arrived while `add` waited; `nextRequest` returns them first.
 
-proc nextRevision(self: Scheduler): int =
-  ## Returns the revision for the next change.
-  inc self.lastRevision
-  self.lastRevision
+proc initSimulation(submission: Submission): Simulation =
+  initSimulation(
+    submission.runId, submission.deckFile, submission.trnrunArgs, submission.submittedAt
+  )
 
-proc setState(self: Scheduler, runId: string, state: SimulationState) =
-  ## Moves a simulation to `state` as a new revision.
-  self.registry[runId].state = state
-  self.registry[runId].revision = self.nextRevision()
+proc save(self: Scheduler, runId: string, logs: openArray[LogEvent] = []) =
+  ## Saves the current state of a running `runId`, with any new log entries.
+  self.database.save(self.running[runId], logs)
 
 proc dispatch(self: Scheduler) =
   ## Hands queued runs to the pool while a worker is free.
-  while self.queue.len > 0 and self.runningCount < self.maxConcurrent:
-    let runId = self.queue.popFirst()
+  while self.queue.len > 0 and self.running.len < self.maxConcurrent:
+    let submission = self.queue.popFirst()
+    var simulation = initSimulation(submission)
+    simulation.state = ssAccepted
+    self.database.save(simulation)
+    self.running[submission.runId] = simulation
     self.pool.submit(Work(
       kind: wkRun,
-      runId: runId,
-      deckFile: self.registry[runId].deckFile,
-      trnrunArgs: self.registry[runId].trnrunArgs,
+      runId: submission.runId,
+      deckFile: submission.deckFile,
+      trnrunArgs: submission.trnrunArgs,
     ))
-    self.setState(runId, ssAccepted)
-    inc self.runningCount
 
 proc apply(self: Scheduler, message: Message) =
   ## Applies one worker message; an exit frees a worker for the next queued run.
   case message.kind
   of mkLaunched:
-    self.setState(message.runId, ssRunning)
+    self.running[message.runId].start()
+    self.save(message.runId)
   of mkOutput:
-    self.registry[message.runId].applyLine(message.line, self.nextRevision())
+    let event = self.running[message.runId].applyLine(message.line)
+    if event.isSome:
+      if event.get().kind == eventLog:
+        self.save(message.runId, [event.get().logData])
+      else:
+        self.save(message.runId)
   of mkExited:
-    self.registry[message.runId].finish(message.exitCode, message.error)
-    self.registry[message.runId].revision = self.nextRevision()
-    dec self.runningCount
+    self.running[message.runId].finish(message.exitCode, message.error)
+    self.save(message.runId)
+    self.running.del(message.runId)
     self.dispatch()
   of mkRequest, mkClosed:
     discard # Only nextRequest returns client messages; elsewhere they are dropped.
 
+proc waitUntil(self: Scheduler, runId: string, target: SimulationState): SimulationState =
+  ## Applies worker messages until `runId`, just added, reaches `target`; returns its state.
+  ##
+  ## Client requests arriving meanwhile are deferred to `nextRequest`. If the client
+  ## leaves, its pending requests are dropped and the wait ends early.
+  result = if runId in self.running: self.running[runId].state else: ssQueued
+  while result < target:
+    let message = self.inbox.recv()
+    case message.kind
+    of mkRequest:
+      self.deferred.addLast(message)
+    of mkClosed:
+      self.deferred.clear()
+      self.deferred.addLast(message)
+      return
+    of mkLaunched, mkOutput, mkExited:
+      self.apply(message)
+      result =
+        if runId in self.running: self.running[runId].state
+        elif result == ssQueued: ssQueued # Still waiting for a worker.
+        else: ssFinished # Left `running`: its exit was applied.
+
 # Public API
 
-proc newScheduler*(trnrunPath: string, maxConcurrent: int): Scheduler =
-  ## Starts a scheduler that runs the TRNRun at `trnrunPath`; `ValueError` on bad input.
+proc newScheduler*(
+    trnrunPath: string, maxConcurrent: int, databasePath: string
+): Scheduler =
+  ## Starts a scheduler that runs the TRNRun at `trnrunPath` and saves to
+  ## `databasePath`. Raises `ValueError` on bad input, `DatabaseError` if the
+  ## database cannot be opened.
   if maxConcurrent < 1:
     raise newException(ValueError, "'maxConcurrent' must be at least 1")
   let trnrunPath = validateTrnrun(trnrunPath)
   initJobGuard()
-  result = Scheduler(maxConcurrent: maxConcurrent)
+  result = Scheduler(maxConcurrent: maxConcurrent, database: openDatabase(databasePath))
   result.inbox.open()
   result.pool.start(trnrunPath, maxConcurrent, addr result.inbox)
 
-proc add*(self: Scheduler, runId, deckFile: string, trnrunArgs: seq[string] = @[]) =
+proc databasePath*(self: Scheduler): string =
+  ## Absolute path of the database clients read.
+  self.database.path
+
+proc add*(
+    self: Scheduler, runId, deckFile: string, trnrunArgs: seq[string] = @[],
+    until = ssQueued,
+): SimulationState {.discardable.} =
   ## Validates and queues work, dispatching it at once if a worker is free.
+  ##
+  ## Returns once the run reaches at least `until`, with the state it reached;
+  ## see `waitUntil`. A runId stays taken for the life of the database, across
+  ## daemon restarts.
   if self.isShutDown:
     raise newException(ValueError, "Scheduler is shut down")
-  if runId.len == 0 or runId in self.registry:
+  if runId.len == 0 or runId in self.database:
     raise newException(ValueError, "Invalid or duplicate runId: " & runId)
   if trnrunArgs.anyIt(it.startsWith("--deckFile")):
     raise newException(ValueError, "Pass the deck as deckFile, not in trnrunArgs")
 
-  self.registry[runId] = initSimulation(runId, validateDeck(deckFile), trnrunArgs)
-  self.registry[runId].revision = self.nextRevision()
-  self.queue.addLast(runId)
+  let submission = Submission(
+    runId: runId,
+    deckFile: validateDeck(deckFile),
+    trnrunArgs: trnrunArgs,
+    submittedAt: timestampNow(),
+  )
+  self.database.save(initSimulation(submission))
+  self.queue.addLast(submission)
   self.dispatch()
-
-proc `[]`*(self: Scheduler, runId: string): lent Simulation =
-  ## Borrows one simulation for immediate reading; `KeyError` if unknown.
-  if runId notin self.registry:
-    raise newException(KeyError, "Unknown runId: " & runId)
-  self.registry[runId]
-
-iterator items*(self: Scheduler): lent Simulation =
-  ## Borrows every simulation in submission order; a re-added runId goes last.
-  for simulation in self.registry.values:
-    yield simulation
-
-proc remove*(self: Scheduler, runId: string) =
-  ## Forgets a finished simulation, freeing its runId. Raises if unknown or unfinished.
-  if self[runId].state != ssFinished:
-    raise newException(ValueError, "Simulation has not finished: " & runId)
-  self.registry.del(runId)
-
-proc revision*(self: Scheduler): int =
-  ## Revision of the latest change to any simulation; 0 before the first.
-  self.lastRevision
+  self.waitUntil(runId, until)
 
 proc requestInbox*(self: Scheduler): ptr Channel[Message] =
   ## Inbox address for the thread that posts `mkRequest` and `mkClosed`.
   addr self.inbox
 
 proc nextRequest*(self: Scheduler): Message =
-  ## Applies worker messages until a client message arrives, then returns it.
+  ## Returns the next client message, deferred ones first, applying worker messages meanwhile.
+  if self.deferred.len > 0:
+    return self.deferred.popFirst()
   result = self.inbox.recv()
   while result.kind notin {mkRequest, mkClosed}:
     self.apply(result)
     result = self.inbox.recv()
 
-proc shutdown*(self: Scheduler) =
-  ## Rejects new work, waits for running work, then joins the pool.
-  ##
-  ## Queued runs finish as CANCELLED without starting. Idempotent. It can wait
-  ## indefinitely for TRNRun, since running work cannot be cancelled.
-  self.isShutDown = true
+proc cancelQueued(self: Scheduler, reason: string) =
+  ## Finishes every queued run as interrupted, without starting it.
   while self.queue.len > 0:
-    let runId = self.queue.popFirst()
-    self.registry[runId].status =
-      some(StatusEvent(status: statusCancelled, message: "Not started"))
-    self.registry[runId].finish(none(int), "Not started: the daemon shut down")
-    self.registry[runId].revision = self.nextRevision()
-  while self.runningCount > 0:
+    var simulation = initSimulation(self.queue.popFirst())
+    simulation.interrupt(reason)
+    self.database.save(simulation)
+
+proc shutdown*(self: Scheduler) =
+  ## Rejects new work, waits for running work, joins the pool, then closes
+  ## the database.
+  ##
+  ## Queued runs finish as CANCELLED without starting. Idempotent, and a no-op
+  ## after `abandon`. It can wait indefinitely for TRNRun, since running work
+  ## cannot be cancelled.
+  if self.isShutDown:
+    return
+  self.isShutDown = true
+  self.cancelQueued("the daemon shut down")
+  while self.running.len > 0:
     self.apply(self.inbox.recv()) # Drops client messages that arrive meanwhile.
   self.pool.shutdown()
+  self.database.close()
+
+proc abandon*(self: Scheduler) =
+  ## Finishes every queued and running run as interrupted, without waiting for
+  ## TRNRun, then closes the database. For a daemon about to exit, whose job
+  ## object then kills TRNRun; the workers are never joined.
+  ##
+  ## Worker messages that already arrived are applied first, so a run that
+  ## exited just before keeps its real outcome. Idempotent, and a no-op after
+  ## `shutdown`.
+  if self.isShutDown:
+    return
+  self.isShutDown = true
+  self.cancelQueued("the client disconnected")
+  for _ in 1 .. self.inbox.peek(): # Bounded: running TRNRun may keep posting.
+    let (available, message) = self.inbox.tryRecv()
+    if not available:
+      break
+    self.apply(message)
+  for runId in toSeq(self.running.keys):
+    self.running[runId].interrupt("the client disconnected")
+    self.save(runId)
+    self.running.del(runId)
+  self.database.close()

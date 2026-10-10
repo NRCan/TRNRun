@@ -2,7 +2,7 @@
 
 import pytest
 
-from trnrun.utils import format_hhmmss, truncate_left
+from trnrun.convenience.utils import format_hhmmss, truncate_left
 
 
 @pytest.mark.parametrize(

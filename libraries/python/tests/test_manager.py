@@ -3,45 +3,44 @@
 
 from __future__ import annotations
 
+import logging
 import time
-from bisect import bisect_right
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from threading import Lock, RLock, Thread, Timer
-from typing import Final, cast
+from threading import Event, Lock, RLock, Thread, Timer
+from typing import Final
 from unittest.mock import Mock
 
 import pytest
 
 import trnrun.client as client_module
-import trnrun.manager as manager_module
+import trnrun.convenience.display as display_module
 from trnrun.config import SimulationConfig
-from trnrun.display import ProgressDisplay
+from trnrun.convenience.manager import SimulationManager
+from trnrun.convenience.simulation import Simulation
 from trnrun.events import LogEvent, SimulationReply, SimulationState, SimulationStatus, StatusEvent
-from trnrun.manager import SimulationManager
-from trnrun.simulation import Simulation, SimulationSnapshot
 
 
 class FakeDaemon:
     """In-memory daemon process following the trnrund request protocol.
 
     Tests change daemon-side state directly, as TRNRun output and worker
-    exits would, then update the manager to observe it. Like trnrund, every
-    change gets the next revision, and each log entry keeps its own. Requests
+    exits would, then update the manager to observe it. Like trnrund, each
+    `pull` returns the runs changed since they were last pulled, with only the
+    log entries not pulled before, then forgets the finished ones. Requests
     and changes are serialized, since the manager's poller sends from its own
     thread.
     """
 
     def __init__(self) -> None:
         self.lock: RLock = RLock()
-        self.revision: int = 0
         self.runs: dict[str, dict[str, object]] = {}
         self.logs: dict[str, list[dict[str, object]]] = {}
-        self.log_revisions: dict[str, list[int]] = {}
+        self.pulled_logs: dict[str, int] = {}
+        self.changed: set[str] = set()
         self.requests: list[dict[str, object]] = []
         self.add_error: Exception | None = None
-        self.remove_error: Exception | None = None
         self.failure: Exception | None = None
         self.shutdown: Mock = Mock()
 
@@ -55,44 +54,30 @@ class FakeDaemon:
         if self.failure is not None:
             raise self.failure
         command = request["cmd"]
-        run_id = str(request.get("runId"))
         if command == "add":
+            run_id = str(request["runId"])
             if self.add_error is not None:
                 raise self.add_error
             if run_id in self.runs:
                 raise ValueError(f"Invalid or duplicate runId: {run_id}")
             self.runs[run_id] = self._initial(run_id, request)
             self.logs[run_id] = []
-            self.log_revisions[run_id] = []
-            _ = self._touch(run_id)
+            self.pulled_logs[run_id] = 0
+            self.changed.add(run_id)
             return {"ok": True}
-        if command == "changes":
-            since = request["since"]
-            assert isinstance(since, int)
-            changed = [self._changes(key, since) for key, run in self.runs.items() if cast("int", run["revision"]) > since]
-            return {"ok": True, "revision": self.revision, "simulations": changed}
-        if command == "remove":
-            if self.remove_error is not None:
-                error, self.remove_error = self.remove_error, None
-                raise error
-            if self._known(run_id)["state"] != "FINISHED":
-                raise ValueError(f"Simulation has not finished: {run_id}")
-            del self.runs[run_id]
-            del self.logs[run_id]
-            del self.log_revisions[run_id]
-            return {"ok": True}
+        if command == "pull":
+            return {"ok": True, "simulations": self._pull()}
         raise ValueError(f"Unknown cmd: {command}")
 
     def set(self, run_id: str, **fields: object) -> None:
-        """Change daemon-side fields of a run, as a new revision."""
+        """Change daemon-side fields of a run."""
         with self.lock:
             self.runs[run_id].update(fields)
-            _ = self._touch(run_id)
+            self.changed.add(run_id)
 
     def log(self, run_id: str, severity: str = "Notice", message: str = "message") -> None:
         """Append one TRNRun log entry, as the daemon counts it."""
         with self.lock:
-            self.log_revisions[run_id].append(self._touch(run_id))
             self.logs[run_id].append(
                 {
                     "severity": severity,
@@ -107,6 +92,7 @@ class FakeDaemon:
             counter = {"Notice": "notices", "Warning": "warnings", "Fatal": "fatals"}[severity]
             simulation = self.runs[run_id]
             simulation[counter] = int(str(simulation[counter])) + 1
+            self.changed.add(run_id)
 
     def finish(self, run_id: str, status: str = "DONE", exit_code: int | None = 0, error: str = "") -> None:
         """Finish a run with the daemon's success rule."""
@@ -134,19 +120,17 @@ class FakeDaemon:
         with self.lock:
             return [request["cmd"] for request in self.requests]
 
-    def sinces(self) -> list[object]:
-        """Return the revision each `changes` request asked from."""
-        with self.lock:
-            return [request["since"] for request in self.requests if request["cmd"] == "changes"]
-
-    def _touch(self, run_id: str) -> int:
-        self.revision += 1
-        self.runs[run_id]["revision"] = self.revision
-        return self.revision
-
-    def _changes(self, run_id: str, since: int) -> dict[str, object]:
-        start = bisect_right(self.log_revisions[run_id], since)
-        return {**self.runs[run_id], "logStart": start, "logs": self.logs[run_id][start:]}
+    def _pull(self) -> list[dict[str, object]]:
+        """Return the changed runs in submission order, with unpulled logs, then forget finished ones."""
+        pulled: list[dict[str, object]] = []
+        for run_id in [run_id for run_id in self.runs if run_id in self.changed]:
+            start = self.pulled_logs[run_id]
+            pulled.append({**self.runs[run_id], "logs": self.logs[run_id][start:]})
+            self.pulled_logs[run_id] = len(self.logs[run_id])
+            if self.runs[run_id]["state"] == "FINISHED":
+                del self.runs[run_id], self.logs[run_id], self.pulled_logs[run_id]
+        self.changed.clear()
+        return pulled
 
     def _initial(self, run_id: str, request: dict[str, object]) -> dict[str, object]:
         return {
@@ -154,7 +138,6 @@ class FakeDaemon:
             "deckFile": request["deckFile"],
             "trnrunArgs": request.get("trnrunArgs", []),
             "state": "QUEUED",
-            "revision": 0,
             "exitCode": None,
             "error": "",
             "setting": None,
@@ -166,11 +149,6 @@ class FakeDaemon:
             "fatals": 0,
             "succeeded": False,
         }
-
-    def _known(self, run_id: str) -> dict[str, object]:
-        if run_id not in self.runs:
-            raise ValueError(f"Unknown runId: {run_id}")
-        return self.runs[run_id]
 
 
 @dataclass
@@ -197,7 +175,7 @@ def valid_inputs(tmp_path: Path) -> tuple[Path, SimulationConfig]:
     return deck, SimulationConfig(trnexe_path=trnexe, watch_tmp=True)
 
 
-MANUAL: Final[float] = 3600.0  # A poll interval no test outlasts: only explicit updates run.
+MANUAL: Final[float] = 3600.0  # A poll interval no test outlasts: only explicit `_sync()` calls run.
 POLLING: Final[float] = 0.01
 DEADLINE: Final[float] = 5.0  # Seconds a polling test waits before failing instead of hanging.
 
@@ -270,7 +248,7 @@ def test_startup_failure_propagates(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_add_sends_request_and_returns_queued_copy(harness: Harness) -> None:
-    """Add returns at once with an independent config, and tracks the run."""
+    """Add sends the run, returns with an independent config, and tracks the run."""
     deck, config = harness.inputs
     simulation = harness.add()
 
@@ -305,167 +283,34 @@ def test_daemon_rejection_propagates_without_tracking(harness: Harness) -> None:
     assert harness.add().id == 2
 
 
-def test_add_rejects_invalid_paths_before_sending(harness: Harness, tmp_path: Path) -> None:
-    """Invalid deck or TRNSYS paths fail before submission."""
-    deck, config = harness.inputs
-    with pytest.raises(FileNotFoundError, match="Deck file not found"):
-        harness.manager.add(tmp_path / "missing.dck", config)
+def test_add_rejects_a_missing_trnsys_before_sending(harness: Harness, tmp_path: Path) -> None:
+    """A missing TRNSYS executable fails before submission; the daemon checks decks."""
+    deck, _ = harness.inputs
     with pytest.raises(FileNotFoundError, match="TrnEXE executable not found"):
         harness.manager.add(deck, SimulationConfig(trnexe_path=tmp_path / "missing.exe"))
     assert harness.daemon.requests == []
     assert harness.manager.active == []
 
 
-def test_add_rejects_other_decks_and_targets_before_sending(harness: Harness, tmp_path: Path) -> None:
-    """Only .dck and .trd decks, case-insensitively, and only daemon states are accepted."""
-    _, config = harness.inputs
-    text = tmp_path / "model.txt"
-    text.touch()
-    upper = tmp_path / "MODEL.TRD"
-    upper.touch()
-
-    with pytest.raises(ValueError, match=r"Expected a \.dck or \.trd deck"):
-        harness.manager.add(text, config)
-    with pytest.raises(ValueError, match="'STARTED' is not a valid SimulationState"):
-        harness.manager.add(upper, config, wait_for="STARTED")  # pyright: ignore[reportArgumentType]
-    assert harness.daemon.requests == []
-
-    assert harness.manager.add(upper, config).deck_path == upper
-
-
-def test_add_without_waiting_returns_before_sending(harness: Harness) -> None:
-    """The run is tracked at once and sent by the next update, in the order added."""
-    first = harness.manager.add(*harness.inputs, wait_for=None)
-    second = harness.manager.add(*harness.inputs, wait_for=None)
-
-    assert harness.daemon.requests == []
-    assert harness.manager.active == [first, second]
-    assert first.state is SimulationState.QUEUED
-
-    _ = harness.manager.update()
-
-    assert harness.daemon.commands() == ["add", "add", "changes"]
-    assert [request["runId"] for request in harness.daemon.requests[:2]] == ["1", "2"]
-
-
-def test_waiting_add_sends_earlier_runs_first(harness: Harness) -> None:
-    """A run that waits never overtakes runs added before it without waiting."""
-    for _ in range(2):
-        _ = harness.manager.add(*harness.inputs, wait_for=None)
-    third = harness.add()
-
-    assert [request["runId"] for request in harness.daemon.requests] == ["1", "2", "3"]
-    assert third.id == 3
-
-
-def test_rejected_add_without_waiting_finishes_as_an_error(harness: Harness) -> None:
-    """Nobody waits to catch the rejection, so the handle carries it, and later runs still go."""
-    rejected = harness.manager.add(*harness.inputs, wait_for=None)
-    harness.daemon.add_error = ValueError("Deck file not found")
-    changed = harness.manager.update()
-    harness.daemon.add_error = None
-    kept = harness.add()
-
-    assert changed == [rejected]
-    assert rejected.is_finished
-    assert not rejected.succeeded
-    assert rejected.status_event == StatusEvent(SimulationStatus.ERROR, "Deck file not found")
-    assert (rejected.exit_code, rejected.error) == (None, "Deck file not found")
-    assert harness.manager.active == [kept]
-    harness.manager.wait(rejected)
-
-
-def test_rejection_of_an_earlier_run_does_not_fail_a_waiting_add(harness: Harness) -> None:
-    """Only the waiting run's own rejection raises; earlier runs carry theirs."""
-    earlier = harness.manager.add(*harness.inputs, wait_for=None)
-    rejections = iter([ValueError("earlier rejected")])
-
-    def reject_once(request: dict[str, object]) -> dict[str, object]:
-        if request["cmd"] == "add" and (error := next(rejections, None)) is not None:
-            harness.daemon.requests.append(request)
-            raise error
-        return FakeDaemon.request(harness.daemon, request)
-
-    harness.daemon.request = reject_once  # pyright: ignore[reportAttributeAccessIssue]
-    waiting = harness.add()
-
-    assert earlier.error == "earlier rejected"
-    assert harness.manager.active == [waiting]
-
-
-@pytest.mark.parametrize(
-    ("wait_for", "steps", "expected"),
-    [
-        (SimulationState.ACCEPTED, [{"state": "ACCEPTED"}], SimulationState.ACCEPTED),
-        (SimulationState.RUNNING, [{"state": "ACCEPTED"}, {"state": "RUNNING"}], SimulationState.RUNNING),
-        # A run that never launches skips RUNNING, which still counts as reached.
-        (SimulationState.RUNNING, [{"state": "ACCEPTED"}, None], SimulationState.FINISHED),
-        (SimulationState.FINISHED, [{"state": "RUNNING"}, None], SimulationState.FINISHED),
-    ],
-)
-def test_add_waits_until_the_run_reaches_the_state(
-    polling: Harness,
-    wait_for: SimulationState,
-    steps: list[dict[str, object] | None],
-    expected: SimulationState,
-) -> None:
-    """The run moves on in the daemon after a delay; add returns once it reached the target or later."""
-
-    def advance() -> None:
-        for step in steps:
-            time.sleep(5 * POLLING)
-            if step is None:
-                polling.daemon.finish("1", status="ERROR", exit_code=None, error="launch failed")
-            else:
-                polling.daemon.set("1", **step)
-
-    mover = Thread(target=advance)
-    mover.start()
-    simulation = polling.manager.add(*polling.inputs, wait_for=wait_for, timeout=DEADLINE)
-    mover.join()
-
-    assert simulation.state is expected
-
-
-def test_add_times_out_with_the_run_still_submitted(polling: Harness) -> None:
-    """A timeout stops the wait, not the run."""
-    with pytest.raises(TimeoutError, match="did not reach ACCEPTED"):
-        polling.manager.add(*polling.inputs, wait_for=SimulationState.ACCEPTED, timeout=10 * POLLING)
-
-    (simulation,) = polling.manager.active
-    assert simulation.state is SimulationState.QUEUED
-    assert polling.daemon.commands()[0] == "add"
-
-
-def test_add_waiting_raises_when_shut_down(polling: Harness) -> None:
-    """Shutdown wakes an add that waits, like any waiter."""
-    timer = Timer(10 * POLLING, polling.manager.shutdown)
-    timer.start()
-
-    with pytest.raises(RuntimeError, match="SimulationManager is closed"):
-        polling.manager.add(*polling.inputs, wait_for=SimulationState.FINISHED, timeout=DEADLINE)
-    timer.join()
-
-
 def test_update_without_runs_sends_nothing(harness: Harness) -> None:
     """An idle manager never bothers the daemon."""
-    harness.manager.update()
+    assert harness.manager._sync() == []
 
     assert harness.daemon.requests == []
 
 
-def test_update_asks_one_question_for_the_changes_since_the_last(harness: Harness) -> None:
-    """Each update is one request from the previous revision, returning the handles that changed."""
+def test_update_pulls_once_for_the_changes_since_the_last(harness: Harness) -> None:
+    """Each update is one request, returning the handles that changed since the previous one."""
     first, second = harness.add(), harness.add()
     harness.daemon.requests.clear()
-    assert harness.manager.update() == []  # Submissions are no news: handles start queued.
-    assert harness.daemon.requests == [{"cmd": "changes", "since": 0}]
+    assert harness.manager._sync() == [first, second]  # Each submission is reported once, queued.
+    assert harness.daemon.requests == [{"cmd": "pull"}]
 
     harness.daemon.set("1", state="RUNNING", status={"status": "RUNNING", "message": "launched"})
-    assert harness.manager.update() == [first]
-    assert harness.manager.update() == []
+    assert harness.manager._sync() == [first]
+    assert harness.manager._sync() == []
 
-    assert harness.daemon.sinces() == [0, 2, 3]
+    assert harness.daemon.commands() == ["pull"] * 3
     assert (first.state, second.state) == (SimulationState.RUNNING, SimulationState.QUEUED)
     assert first.status_event == StatusEvent(SimulationStatus.RUNNING, "launched")
 
@@ -473,39 +318,37 @@ def test_update_asks_one_question_for_the_changes_since_the_last(harness: Harnes
 def test_update_returns_finished_runs_in_submission_order(harness: Harness) -> None:
     """Every run that finished is reported once, even when it never seemed to run."""
     first, second, third = [harness.add() for _ in range(3)]
+    _ = harness.manager._sync()
     harness.daemon.finish("3")
     harness.daemon.finish("1")
 
-    assert harness.manager.update() == [first, third]
+    assert harness.manager._sync() == [first, third]
     assert harness.manager.active == [second]
 
 
-def test_started_holds_only_runs_a_worker_took_until_they_finish(harness: Harness) -> None:
-    """Runs join `started` when accepted, in the order seen, and leave it when finished; queued ones never join."""
-    first, second, third = [harness.add() for _ in range(3)]
-    _ = harness.manager.add(*harness.inputs, wait_for=None)  # Not even sent yet.
-    _ = harness.manager.update()
-    assert harness.manager.started == []
+def test_reads_never_wait_on_a_stalled_daemon(harness: Harness) -> None:
+    """While a poll waits for the daemon's reply, readers never wait."""
+    simulation = harness.add()
+    asked, release = Event(), Event()
 
-    harness.daemon.set("2", state="ACCEPTED")
-    _ = harness.manager.update()
-    harness.daemon.set("1", state="RUNNING")
-    harness.daemon.set("2", state="RUNNING")
-    _ = harness.manager.update()
-    assert harness.manager.started == [second, first]
+    def stall_pull(request: dict[str, object]) -> dict[str, object]:
+        if request["cmd"] == "pull":
+            asked.set()
+            assert release.wait(DEADLINE)
+        return FakeDaemon.request(harness.daemon, request)
 
-    harness.daemon.finish("2")
-    harness.daemon.finish("3")  # Finished without being seen to start: never joins.
-    _ = harness.manager.update()
-    assert harness.manager.started == [first]
-    assert third.is_finished
-
-    started = harness.manager.started
-    started.clear()
-    assert harness.manager.started == [first]  # A copy.
-
-    harness.manager.shutdown()
-    assert harness.manager.started == []
+    harness.daemon.request = stall_pull  # pyright: ignore[reportAttributeAccessIssue]
+    updater = Thread(target=harness.manager._sync)
+    updater.start()
+    try:
+        assert asked.wait(DEADLINE)
+        started = time.monotonic()
+        assert harness.manager.active == [simulation]
+        assert simulation.info.state is SimulationState.QUEUED
+        assert time.monotonic() - started < DEADLINE / 2
+    finally:
+        release.set()
+        updater.join()
 
 
 def test_update_brings_only_new_logs(harness: Harness) -> None:
@@ -514,12 +357,12 @@ def test_update_brings_only_new_logs(harness: Harness) -> None:
     harness.daemon.set("1", state="RUNNING")
     harness.daemon.log("1", "Notice", "one")
     harness.daemon.log("1", "Warning", "two")
-    _ = harness.manager.update()
+    _ = harness.manager._sync()
     assert [event.message for event in simulation.logs] == ["one", "two"]
 
     harness.daemon.log("1", "Fatal", "three")
-    _ = harness.manager.update()
-    _ = harness.manager.update()
+    _ = harness.manager._sync()
+    _ = harness.manager._sync()
 
     assert simulation.logs == [
         LogEvent("Notice", 0.0, message="one"),
@@ -529,45 +372,26 @@ def test_update_brings_only_new_logs(harness: Harness) -> None:
     assert (simulation.notices, simulation.warnings, simulation.fatals) == (1, 1, 1)
 
 
-def test_failed_update_is_repeated_without_duplicating_logs(harness: Harness) -> None:
-    """A failure mid-update keeps the cursor, so the next update repeats changes that handles absorb."""
-    running, finished = harness.add(), harness.add()
-    harness.daemon.set("1", state="RUNNING")
-    harness.daemon.log("1", "Notice", "once")
-    harness.daemon.finish("2")
-    harness.daemon.remove_error = ValueError("remove failed")
-
-    with pytest.raises(ValueError, match="remove failed"):
-        _ = harness.manager.update()
-    assert [event.message for event in running.logs] == ["once"]
-
-    assert harness.manager.update() == []  # Both already applied; the finished one is removed now.
-    assert [event.message for event in running.logs] == ["once"]
-    assert finished.succeeded
-    assert harness.manager.active == [running]
-    assert harness.daemon.sinces() == [0, 0]
-
-
-def test_finished_run_arrives_with_its_final_logs_and_is_removed(harness: Harness) -> None:
-    """Completion arrives with the remaining logs; the daemon and the manager forget the run."""
+def test_finished_run_arrives_with_its_final_logs_and_is_forgotten(harness: Harness) -> None:
+    """Completion arrives with the remaining logs; the daemon and the manager then forget the run."""
     simulation = harness.add()
     harness.daemon.set("1", state="RUNNING")
     harness.daemon.log("1", "Notice", "early")
-    harness.manager.update()
+    _ = harness.manager._sync()
     harness.daemon.log("1", "Warning", "late")
     harness.daemon.finish("1", exit_code=0)
-    harness.manager.update()
+    _ = harness.manager._sync()
 
-    assert simulation.snapshot().is_finished
+    assert simulation.info.state is SimulationState.FINISHED
     assert simulation.succeeded
     assert simulation.exit_code == 0
     assert [event.message for event in simulation.logs] == ["early", "late"]
     assert harness.daemon.runs == {}
-    assert harness.daemon.requests[-1] == {"cmd": "remove", "runId": "1"}
+    assert harness.daemon.commands() == ["add", "pull", "pull"]  # Nothing to clean up.
     assert harness.manager.active == []
 
     harness.daemon.requests.clear()
-    harness.manager.update()
+    _ = harness.manager._sync()
     assert harness.daemon.requests == []  # Nothing is left to poll.
 
 
@@ -578,7 +402,7 @@ def test_results_follow_the_daemon_verdict(harness: Harness) -> None:
     harness.daemon.finish("2", exit_code=7)
     harness.daemon.finish("3", error="capture failed")
     harness.daemon.finish("4", status="ERROR", exit_code=None, error="launch failed")
-    harness.manager.update()
+    _ = harness.manager._sync()
 
     assert [simulation.succeeded for simulation in (done, nonzero, error, unlaunched)] == [True, False, False, False]
     assert nonzero.status is SimulationStatus.DONE
@@ -596,8 +420,8 @@ def test_background_updates_move_handles_without_waiting(polling: Harness) -> No
     eventually(lambda: simulation.is_finished)
 
     assert simulation.succeeded
-    assert polling.manager.active == []
-    assert polling.manager.failure is None
+    eventually(lambda: polling.manager.active == [])
+    assert polling.manager._poller.is_alive()  # Still syncing.
 
 
 def test_idle_background_updates_send_nothing(polling: Harness) -> None:
@@ -607,13 +431,14 @@ def test_idle_background_updates_send_nothing(polling: Harness) -> None:
     assert polling.daemon.request_count() == 0
 
 
-def test_wait_returns_once_the_selected_runs_finish(polling: Harness) -> None:
+def test_simulation_wait_returns_once_its_run_finishes(polling: Harness) -> None:
     """Waiting for some runs does not depend on the others."""
     first, second, third = [polling.add() for _ in range(3)]
     polling.daemon.finish("1")
     polling.daemon.finish("2")
 
-    polling.manager.wait(first, second, timeout=DEADLINE)
+    first.wait(DEADLINE)
+    second.wait(DEADLINE)
 
     assert first.succeeded
     assert second.succeeded
@@ -642,53 +467,44 @@ def test_wait_without_runs_returns_without_requests(harness: Harness) -> None:
 
 
 def test_wait_times_out_while_runs_are_unfinished(polling: Harness) -> None:
-    """A timeout bounds the wait; the run keeps going."""
+    """A timeout bounds either wait; the run keeps going."""
     simulation = polling.add()
 
     with pytest.raises(TimeoutError, match="did not finish"):
-        polling.manager.wait(simulation, timeout=10 * POLLING)
+        polling.manager.wait(timeout=10 * POLLING)
+    with pytest.raises(TimeoutError, match="did not finish"):
+        simulation.wait(10 * POLLING)
 
     assert polling.manager.active == [simulation]
 
 
 def test_wait_raises_when_shut_down_from_another_thread(polling: Harness) -> None:
-    """Shutdown wakes a waiter, which never mistakes the forgotten runs for finished ones."""
-    polling.add()
+    """Shutdown settles the unfinished handles, so both waits raise instead of hanging."""
+    simulation = polling.add()
     timer = Timer(10 * POLLING, polling.manager.shutdown)
     timer.start()
 
     with pytest.raises(RuntimeError, match="SimulationManager is closed"):
         polling.manager.wait(timeout=DEADLINE)
     timer.join()
+    with pytest.raises(RuntimeError, match="SimulationManager is closed"):
+        simulation.wait(DEADLINE)
+    assert not simulation.is_finished  # Its last reply is kept, not marked finished.
 
 
-@pytest.mark.parametrize("interval", ["poll_interval", "refresh_interval"])
 @pytest.mark.parametrize("value", [0.0, -1.0, float("nan")])
-def test_constructor_rejects_nonpositive_intervals(monkeypatch: pytest.MonkeyPatch, interval: str, value: float) -> None:
-    """Both intervals must be positive, checked before the daemon starts."""
+def test_constructor_rejects_nonpositive_poll_intervals(monkeypatch: pytest.MonkeyPatch, value: float) -> None:
+    """The poll interval must be positive, checked before the daemon starts."""
     factory = Mock()
     monkeypatch.setattr(client_module, "DaemonProcess", factory)
 
-    with pytest.raises(ValueError, match=f"{interval} must be positive"):
-        SimulationManager(**{interval: value})  # pyright: ignore[reportArgumentType]
+    with pytest.raises(ValueError, match="poll_interval must be positive"):
+        SimulationManager(poll_interval=value)
     factory.assert_not_called()
 
 
-def test_wait_rejects_foreign_unfinished_handles_even_when_ids_match(harness: Harness) -> None:
-    """Wait uses identity for unfinished runs; any finished handle returns at once."""
-    owned = harness.add()
-    outsider = Simulation(*harness.inputs, sim_id=owned.id)
-    with pytest.raises(ValueError, match="does not belong"):
-        harness.manager.wait(outsider)
-
-    assert outsider.apply(
-        SimulationReply(SimulationState.FINISHED, status=StatusEvent(SimulationStatus.CANCELLED)),
-    )
-    harness.manager.wait(outsider)
-
-
-def test_daemon_failure_raises_and_preserves_handles(polling: Harness) -> None:
-    """A dead daemon stops the poller and raises from every call; handles keep their last reply."""
+def test_daemon_failure_kills_it_settles_handles_and_raises(polling: Harness) -> None:
+    """A failed pull kills the daemon and settles the unfinished handles with its error; they keep their last reply."""
     running = polling.add()
     polling.daemon.set(
         "1",
@@ -698,33 +514,39 @@ def test_daemon_failure_raises_and_preserves_handles(polling: Harness) -> None:
     )
     polling.daemon.log("1", "Warning", "retained")
     eventually(lambda: running.log_count == 1)
-    before = (running._reply, running.snapshot(), running.logs)
+    before = (running.info, running.logs)
 
     failure = RuntimeError("TRNRun daemon exited with code 1")
     polling.daemon.fail(failure)
-    eventually(lambda: polling.manager.failure is failure)
-    for action in (polling.manager.update, polling.manager.wait, polling.add):
+    eventually(lambda: not polling.manager._poller.is_alive())
+    polling.daemon.shutdown.assert_called_once_with()  # Killed, so no run goes on untracked.
+    for action in (polling.manager.wait, running.wait):
         with pytest.raises(RuntimeError) as raised:
             action()
         assert raised.value is failure
+    with pytest.raises(RuntimeError):
+        _ = polling.add()  # The daemon refuses it; nothing is tracked.
 
-    assert (running._reply, running.snapshot(), running.logs) == before
+    assert (running.info, running.logs) == before
     assert running.state is SimulationState.RUNNING
     assert polling.manager.active == [running]
-    requests = polling.daemon.request_count()
-    time.sleep(10 * POLLING)
-    assert polling.daemon.request_count() == requests  # The poller stopped.
+
+    polling.manager.shutdown()
+    with pytest.raises(RuntimeError) as raised:
+        running.wait()
+    assert raised.value is failure  # Shutdown keeps the first error.
 
 
 def test_shutdown_stops_the_poller(polling: Harness) -> None:
-    """Shutdown joins the background thread without recording its interrupted update as a failure."""
-    polling.add()
+    """Shutdown joins the background thread, which takes its interrupted pull for shutdown, not a failure."""
+    simulation = polling.add()
     eventually(lambda: polling.daemon.request_count() > 1)
 
     polling.manager.shutdown()
 
     assert not polling.manager._poller.is_alive()
-    assert polling.manager.failure is None
+    with pytest.raises(RuntimeError, match="SimulationManager is closed"):
+        simulation.wait(0)
 
 
 def test_shutdown_kills_the_daemon_and_preserves_handles(harness: Harness) -> None:
@@ -733,8 +555,8 @@ def test_shutdown_kills_the_daemon_and_preserves_handles(harness: Harness) -> No
     harness.daemon.finish("1")
     harness.daemon.set("2", state="RUNNING", status={"status": "RUNNING", "message": ""})
     harness.daemon.log("2", "Notice", "retained")
-    harness.manager.update()
-    before = (running._reply, running.snapshot(), running.logs)
+    _ = harness.manager._sync()
+    before = (running.info, running.logs)
 
     harness.manager.shutdown()
     harness.manager.shutdown()
@@ -742,7 +564,7 @@ def test_shutdown_kills_the_daemon_and_preserves_handles(harness: Harness) -> No
     harness.daemon.shutdown.assert_called_once_with()
     assert harness.manager.active == []
     assert finished.succeeded
-    assert (running._reply, running.snapshot(), running.logs) == before
+    assert (running.info, running.logs) == before
     assert not running.is_finished
 
 
@@ -754,7 +576,6 @@ def test_shutdown_rejects_future_operations(harness: Harness) -> None:
 
     actions: list[Callable[[], object]] = [
         harness.add,
-        harness.manager.update,
         harness.manager.wait,
         harness.manager.__enter__,
     ]
@@ -790,13 +611,9 @@ def test_context_manager_shuts_down_on_exit(harness: Harness) -> None:
     harness.daemon.shutdown.assert_called_once_with()
 
 
-def test_client_reaches_the_same_daemon(harness: Harness) -> None:
-    """The exposed client sends through the manager's daemon."""
-    harness.add()
-
-    assert list(harness.manager.client.changes().simulations) == ["1"]
-
-
+# -----------------------------------------------------------------
+# Display
+# -----------------------------------------------------------------
 @pytest.fixture
 def fake_daemon(monkeypatch: pytest.MonkeyPatch) -> FakeDaemon:
     """Back every manager built in the test with one fake daemon."""
@@ -809,24 +626,16 @@ def fake_daemon(monkeypatch: pytest.MonkeyPatch) -> FakeDaemon:
 def display_factory(monkeypatch: pytest.MonkeyPatch) -> Mock:
     """Replace the manager's display class with a mock."""
     factory = Mock()
-    monkeypatch.setattr(manager_module, "ProgressDisplay", factory)
+    monkeypatch.setattr(display_module, "ProgressDisplay", factory)
     return factory
 
 
 def test_display_is_on_by_default(fake_daemon: FakeDaemon, display_factory: Mock) -> None:
-    """A manager shows its own runs, with the default renderer and interval."""
+    """A manager shows its own runs with the built-in display."""
     del fake_daemon
     with SimulationManager() as manager:
-        display_factory.assert_called_once_with(manager, refresh_interval=1.0, renderer=None)
+        display_factory.assert_called_once_with()
         assert manager.display is display_factory.return_value
-
-
-def test_display_takes_a_renderer_and_interval(fake_daemon: FakeDaemon, display_factory: Mock) -> None:
-    """A renderer passed as display draws the built-in display."""
-    del fake_daemon
-    renderer = RecordingRenderer()
-    with SimulationManager(display=renderer, refresh_interval=0.5) as manager:
-        display_factory.assert_called_once_with(manager, refresh_interval=0.5, renderer=renderer)
 
 
 def test_display_false_shows_nothing(fake_daemon: FakeDaemon, display_factory: Mock) -> None:
@@ -835,6 +644,101 @@ def test_display_false_shows_nothing(fake_daemon: FakeDaemon, display_factory: M
     with SimulationManager(display=False) as manager:
         display_factory.assert_not_called()
         assert manager.display is None
+
+
+def test_display_receives_the_runs_each_poll_changed(harness: Harness) -> None:
+    """A custom display is updated with the changed handles, never for a poll that changed nothing."""
+    display = Mock(spec=["update", "close"])
+    harness.manager.display = display
+    first, second = harness.add(), harness.add()
+    _ = harness.manager._sync()
+    display.update.assert_called_once_with([first, second])
+    display.update.reset_mock()
+    _ = harness.manager._sync()
+    display.update.assert_not_called()
+
+    harness.daemon.set("2", state="RUNNING")
+    harness.daemon.finish("1")
+    _ = harness.manager._sync()
+
+    display.update.assert_called_once_with([first, second])
+
+    harness.manager.shutdown()
+    display.close.assert_called_once_with()
+
+
+def test_finished_handles_settle_after_the_display_shows_them(harness: Harness) -> None:
+    """A wait returns only once the display printed the final line, so later output follows it."""
+    simulation = harness.add()
+    settled_during_update: list[bool] = []
+    display = Mock(spec=["update", "close"])
+    display.update.side_effect = lambda _changed: settled_during_update.append(simulation._settled.is_set())
+    harness.manager.display = display
+    harness.daemon.finish("1")
+
+    _ = harness.manager._sync()
+
+    assert settled_during_update == [False]
+    simulation.wait(0)
+
+
+def test_manager_wait_during_the_final_display_update_times_out(polling: Harness) -> None:
+    """Even a wait started after the final reply must wait for its display update."""
+    updating = Event()
+    release = Event()
+
+    def stall_update(changed: Sequence[Simulation]) -> None:
+        if any(simulation.is_finished for simulation in changed):
+            updating.set()
+            assert release.wait(DEADLINE), "display update was not released"
+
+    display = Mock(spec=["update", "close"])
+    display.update.side_effect = stall_update
+    polling.manager.display = display
+    simulation = polling.add()
+    polling.daemon.finish("1")
+
+    try:
+        assert updating.wait(DEADLINE), "final display update never started"
+        assert simulation.is_finished
+        assert polling.manager.active == []
+        with pytest.raises(TimeoutError, match="did not finish"):
+            simulation.wait(0)
+        with pytest.raises(TimeoutError, match="did not finish"):
+            polling.manager.wait(timeout=0)
+    finally:
+        release.set()
+
+    polling.manager.wait(timeout=DEADLINE)
+    simulation.wait(0)
+
+
+@pytest.mark.parametrize("fail_on_finish", [False, True])
+def test_display_failure_is_logged_and_updates_continue(
+    harness: Harness,
+    caplog: pytest.LogCaptureFixture,
+    *,
+    fail_on_finish: bool,
+) -> None:
+    """A failing display never stops the handles from following the daemon."""
+    failure = RuntimeError("render failed")
+    display = Mock(spec=["update", "close"])
+    display.update.side_effect = [None, failure] if fail_on_finish else [failure, None]
+    harness.manager.display = display
+    simulation = harness.add()
+    harness.daemon.set("1", state="RUNNING")
+
+    with caplog.at_level(logging.ERROR, logger="trnrun.convenience.manager"):
+        assert harness.manager._sync() == [simulation]
+        harness.daemon.finish("1")
+        assert harness.manager._sync() == [simulation]
+
+    assert [record.exc_info[1] for record in caplog.records if record.exc_info] == [failure]
+    assert display.update.call_count == 2
+    assert simulation.succeeded
+    assert harness.manager.active == []
+    harness.manager.wait(timeout=0)
+    simulation.wait(0)
 
 
 def test_shutdown_kills_the_daemon_then_closes_the_display(
@@ -868,11 +772,13 @@ def test_shutdown_closes_the_display_when_the_daemon_fails_to_exit(
     assert not manager._poller.is_alive()
 
 
-def test_display_failure_at_construction_kills_the_daemon(
-    fake_daemon: FakeDaemon,
+def test_display_failure_at_construction_starts_no_daemon(
+    monkeypatch: pytest.MonkeyPatch,
     display_factory: Mock,
 ) -> None:
-    """A display that cannot start, such as a notebook without IPython, does not leak the daemon."""
+    """A display that cannot start, such as a notebook without IPython, leaves no daemon behind."""
+    daemon_factory = Mock()
+    monkeypatch.setattr(client_module, "DaemonProcess", daemon_factory)
     failure = ImportError("Notebook display mode requires IPython")
     display_factory.side_effect = failure
 
@@ -880,32 +786,28 @@ def test_display_failure_at_construction_kills_the_daemon(
         SimulationManager()
 
     assert raised.value is failure
-    fake_daemon.shutdown.assert_called_once_with()
+    daemon_factory.assert_not_called()
 
 
-class RecordingRenderer:
-    """Thread-safe renderer recording final lines, for the end-to-end display check."""
+class RecordingDisplay:
+    """Thread-safe display recording finished runs, for the end-to-end check."""
 
     def __init__(self) -> None:
         self.lock: Lock = Lock()
         self.finished_ids: list[int] = []
         self.closed: bool = False
 
-    def show(self, active: Sequence[SimulationSnapshot]) -> None:
-        """Ignore live rows."""
-        del active
-
-    def finished(self, snapshot: SimulationSnapshot) -> None:
-        """Record one final line."""
+    def update(self, changed: Sequence[Simulation]) -> None:
+        """Record the runs that finished."""
         with self.lock:
-            self.finished_ids.append(snapshot.id)
+            self.finished_ids.extend(simulation.id for simulation in changed if simulation.is_finished)
 
     def close(self) -> None:
         """Record closure."""
         self.closed = True
 
 
-def test_real_daemon_runs_a_batch_with_a_progress_display(tmp_path: Path, fake_trnrun: Path) -> None:
+def test_real_daemon_runs_a_batch_with_a_display(tmp_path: Path, fake_trnrun: Path) -> None:
     """End to end through the bundled daemon, using trnrund's fake TRNRun."""
     trnexe = tmp_path / "TrnEXE64.exe"
     trnexe.touch()
@@ -913,24 +815,16 @@ def test_real_daemon_runs_a_batch_with_a_progress_display(tmp_path: Path, fake_t
     for deck in decks:
         deck.touch()
     config = SimulationConfig(trnexe_path=trnexe)
-    renderer = RecordingRenderer()
+    display = RecordingDisplay()
 
-    with SimulationManager(
-        max_concurrent=2,
-        trnrun_path=fake_trnrun,
-        poll_interval=0.01,
-        display=renderer,
-        refresh_interval=0.01,
-    ) as manager:
-        assert isinstance(manager.display, ProgressDisplay)
+    with SimulationManager(max_concurrent=2, trnrun_path=fake_trnrun, poll_interval=0.01, display=display) as manager:
         simulations = [manager.add(deck, config) for deck in decks]
         manager.wait(timeout=30)
 
     assert [simulation.succeeded for simulation in simulations] == [True, True, False]
-    # A run accepted and finished between two redraws gets no line, so only check for repeats.
-    assert len(set(renderer.finished_ids)) == len(renderer.finished_ids)
-    assert set(renderer.finished_ids) <= {simulation.id for simulation in simulations}
-    assert renderer.closed
+    # Every finished run reaches the display exactly once.
+    assert sorted(display.finished_ids) == [simulation.id for simulation in simulations]
+    assert display.closed
     for simulation in simulations:
         assert simulation.is_finished
         assert simulation.log_count == simulation.notices + simulation.warnings + simulation.fatals

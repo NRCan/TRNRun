@@ -1,9 +1,13 @@
-"""Example: a minimal tkinter GUI showing one line per simulation."""
+"""Example: a minimal tkinter GUI showing one line per simulation.
+
+Install with ``pip install trnrun``; this custom GUI does not require Rich.
+"""
 
 import tkinter as tk
 from pathlib import Path
 
-from trnrun import Simulation, SimulationConfig, SimulationManager
+from trnrun import SimulationConfig, SimulationState
+from trnrun.convenience import Simulation, SimulationManager
 
 __root__ = Path(__file__).resolve().parent
 
@@ -22,10 +26,13 @@ for deck in DECKS:
 
 def tick() -> None:
     """Redraw every line from the handles, which the manager keeps current."""
-    for simulation, label in labels.items():
-        snapshot = simulation.snapshot()
-        percent = f"{snapshot.progress.percent:.0%}" if snapshot.progress else ""
-        label["text"] = f"{snapshot.deck_path.name}: {snapshot.status or snapshot.state} {percent}"
+    for simulation, label in list(labels.items()):
+        info = simulation.info  # One read, so the fields below agree.
+        status = info.status.status if info.status else info.state
+        percent = f"{info.progress.percent:.0%}" if info.progress else ""
+        label["text"] = f"{simulation.deck_path.name}: {status} {percent}"
+        if info.state is SimulationState.FINISHED:
+            del labels[simulation]  # Final: drawn once, never again.
     root.after(500, tick)
 
 

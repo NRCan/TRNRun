@@ -20,7 +20,7 @@ from trnrun import process
 from trnrun.config import BUNDLED_TRNRUND_PATH
 
 TEST_TIMEOUT = 10.0
-STARTED = '{"ok":true,"revision":0,"simulations":[]}\n'  # Reply to the constructor's startup request.
+STARTED = '{"ok":true}\n'  # Reply to the constructor's ready request.
 
 
 class ReplyPipe:
@@ -191,7 +191,7 @@ def test_init_spawns_configured_process_and_assigns_job(
         creationflags=process.CREATE_NO_WINDOW,
     )
     assign.assert_called_once_with(harness.child)
-    assert harness.child.stdin.getvalue() == '{"cmd":"changes"}\n'
+    assert harness.child.stdin.getvalue() == '{"cmd":"ready"}\n'
 
 
 @pytest.mark.parametrize("missing", ["stdin", "stdout", "stderr"])
@@ -236,6 +236,28 @@ def test_init_reports_daemon_startup_failure_and_cleans_up(
     assert child.stdin.closed
     assert child.stdout.closed
     assert child.stderr.closed
+
+
+def test_init_rejected_ready_cleans_up(
+    monkeypatch: pytest.MonkeyPatch,
+    executables: tuple[Path, Path],
+) -> None:
+    """A rejected readiness handshake fails startup and releases the daemon."""
+    child = Mock(
+        stdin=io.StringIO(),
+        stdout=io.StringIO('{"ok":false,"error":"Unknown cmd: ready"}\n'),
+        stderr=io.StringIO(),
+    )
+    monkeypatch.setattr(process.subprocess, "Popen", Mock(return_value=child))
+    monkeypatch.setattr(process, "assign_to_job", Mock(return_value=True))
+
+    with pytest.raises(ValueError, match="^Unknown cmd: ready$"):
+        process.DaemonProcess(*executables, 1)
+
+    child.kill.assert_called_once_with()
+    child.wait.assert_called_once_with(timeout=process.SHUTDOWN_TIMEOUT)
+    for stream in (child.stdin, child.stdout, child.stderr):
+        assert stream.closed
 
 
 @pytest.mark.parametrize("failure", ["spawn", "job"])
@@ -323,7 +345,7 @@ def test_malformed_reply_raises_value_error(make_daemon: Callable[..., Harness])
     harness = make_daemon(stdout=ReplyPipe('{"simulations":[]}\n'))
 
     with pytest.raises(ValueError, match=r"^TRNRun daemon sent an invalid reply: \{\"simulations\":\[\]\}$"):
-        harness.daemon.request({"cmd": "changes"})
+        harness.daemon.request({"cmd": "pull"})
 
 
 @pytest.mark.parametrize("operation", ["write", "flush"])
@@ -341,7 +363,7 @@ def test_broken_pipe_reports_exit_code_and_diagnostics(make_daemon: Callable[...
 
     harness.child.wait.side_effect = wait
     with pytest.raises(RuntimeError, match=r"^TRNRun daemon exited with code 2: Fatal daemon error$") as caught:
-        harness.daemon.request({"cmd": "changes"})
+        harness.daemon.request({"cmd": "pull"})
 
     assert caught.value.__cause__ is error
 
@@ -362,7 +384,7 @@ def test_exit_diagnostics_are_read_under_request_lock(make_daemon: Callable[...,
 
     stderr.read.side_effect = read
     with pytest.raises(RuntimeError, match="Fatal daemon error"):
-        harness.daemon.request({"cmd": "changes"})
+        harness.daemon.request({"cmd": "pull"})
 
     stderr.read.assert_called_once_with()
 
@@ -380,7 +402,7 @@ def test_eof_reports_exit_code_and_diagnostics(make_daemon: Callable[..., Harnes
 
     harness.child.wait.side_effect = wait
     with pytest.raises(RuntimeError, match=r"^TRNRun daemon exited with code 2: Unknown option: --x$"):
-        harness.daemon.request({"cmd": "changes"})
+        harness.daemon.request({"cmd": "pull"})
 
 
 def test_concurrent_requests_never_interleave_replies(make_daemon: Callable[..., Harness]) -> None:
@@ -412,7 +434,7 @@ def test_shutdown_kills_before_waiting_for_blocked_request(make_daemon: Callable
     """Killing the daemon delivers EOF to an in-flight request before pipes close."""
     stdout = ReplyPipe()
     harness = make_daemon(stdout=stdout)
-    requester, errors = _start(lambda: harness.daemon.request({"cmd": "changes"}))
+    requester, errors = _start(lambda: harness.daemon.request({"cmd": "pull"}))
     assert stdout.reading.wait(TEST_TIMEOUT)
 
     harness.daemon.shutdown()
@@ -572,32 +594,31 @@ def test_real_subprocess_round_trip_and_cleanup(monkeypatch: pytest.MonkeyPatch,
 
 
 def test_real_daemon_round_trip(tmp_path: Path, fake_trnrun: Path) -> None:
-    """The bundled daemon accepts a run, reports it with its logs, and removes it once finished."""
+    """The bundled daemon accepts a run, reports each change once, and forgets it once reported finished."""
     deck = tmp_path / "done-a.dck"
     deck.touch()
     daemon = process.DaemonProcess(BUNDLED_TRNRUND_PATH, fake_trnrun, 1)
     try:
+        assert daemon.request({"cmd": "ready"}) == {"ok": True}
         assert daemon.request({"cmd": "add", "runId": "1", "deckFile": str(deck)}) == {"ok": True}
         with pytest.raises(ValueError, match="Invalid or duplicate runId: 1"):
             daemon.request({"cmd": "add", "runId": "1", "deckFile": str(deck)})
         deadline = monotonic() + TEST_TIMEOUT
-        (simulation,) = cast("list[dict[str, Any]]", daemon.request({"cmd": "changes"})["simulations"])
+        logs: list[object] = []
+        simulation: dict[str, Any] = {"state": "QUEUED"}
         while simulation["state"] != "FINISHED" and monotonic() < deadline:
+            for simulation in cast("list[dict[str, Any]]", daemon.request({"cmd": "pull"})["simulations"]):
+                logs.extend(simulation["logs"])
             sleep(0.01)
-            (simulation,) = cast("list[dict[str, Any]]", daemon.request({"cmd": "changes"})["simulations"])
         assert simulation["state"] == "FINISHED"
-        latest = daemon.request({"cmd": "changes", "since": simulation["revision"]})
-        assert daemon.request({"cmd": "remove", "runId": "1"}) == {"ok": True}
-        with pytest.raises(ValueError, match="Unknown runId: 1"):
+        assert daemon.request({"cmd": "pull"}) == {"ok": True, "simulations": []}
+        with pytest.raises(ValueError, match="Unknown cmd: remove"):
             daemon.request({"cmd": "remove", "runId": "1"})
-        assert daemon.request({"cmd": "changes"})["simulations"] == []
     finally:
         daemon.shutdown()
 
-    assert latest == {"ok": True, "revision": simulation["revision"], "simulations": []}
     assert simulation["succeeded"] is True
-    assert simulation["logStart"] == 0
-    assert len(simulation["logs"]) == sum(simulation[name] for name in ("notices", "warnings", "fatals"))
+    assert len(logs) == sum(simulation[name] for name in ("notices", "warnings", "fatals")) == 3
 
 
 @pytest.mark.parametrize(

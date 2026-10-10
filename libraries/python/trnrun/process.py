@@ -44,7 +44,8 @@ class DaemonProcess:
 
     Notes
     -----
-    Construction waits for a successful startup reply. Requests are serialized
+    Construction waits for the daemon to acknowledge ``ready`` after successful
+    startup. Requests are serialized
     by a lock so concurrent callers never receive each other's replies. A rejected
     request raises ``ValueError``; daemon exit or shutdown raises ``RuntimeError``.
 
@@ -88,8 +89,8 @@ class DaemonProcess:
             self._stdout: IO[str] = _require_pipe(self._process.stdout)
             self._stderr: IO[str] = _require_pipe(self._process.stderr)
             _ = assign_to_job(self._process)
-            # The daemon replies only once started, so startup errors surface here.
-            _ = self.request({"cmd": "changes"})
+            # Acknowledged only after successful daemon initialization.
+            _ = self.request({"cmd": "ready"})
         except BaseException:
             # Best-effort cleanup must preserve the original startup exception.
             with contextlib.suppress(Exception):

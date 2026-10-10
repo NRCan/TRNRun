@@ -169,6 +169,8 @@ class SimulationState(StrEnum):
 class SimulationReply:
     """One daemon reply for a simulation: its ``simulation`` reply object.
 
+    ``Simulation.info`` holds the latest one, without its ``logs``.
+
     Attributes
     ----------
     state : SimulationState
@@ -180,10 +182,8 @@ class SimulationReply:
     setting, status, config, progress
         Latest event of each kind, or None before the runner reports one.
     logs : tuple of LogEvent
-        Only some entries, not the full history; ``Simulation.logs``
+        Only the entries not pulled before; ``Simulation.logs``
         accumulates them.
-    log_start : int
-        Index of the first of ``logs`` in the daemon's history.
     notices, warnings, fatals
         Number of log entries the daemon holds, by severity.
     succeeded : bool
@@ -198,28 +198,10 @@ class SimulationReply:
     config: ConfigEvent | None = None
     progress: ProgressEvent | None = None
     logs: tuple[LogEvent, ...] = ()
-    log_start: int = 0
     notices: int = 0
     warnings: int = 0
     fatals: int = 0
     succeeded: bool = False
-
-
-@dataclass(frozen=True)
-class Changes:
-    """One daemon ``changes`` reply.
-
-    Attributes
-    ----------
-    revision : int
-        The daemon's current revision; pass it as the next ``since``.
-    simulations : dict of str to SimulationReply
-        The simulations changed after ``since`` by run ID, in submission
-        order, each with only the log entries that arrived after it.
-    """
-
-    revision: int
-    simulations: dict[str, SimulationReply]
 
 
 # -----------------------------------------------------------------
@@ -304,7 +286,6 @@ def parse_simulation_reply(data: Any) -> SimulationReply:
         config=_optional(parse_config, data["config"]),
         progress=_optional(parse_progress, data["progress"]),
         logs=tuple(parse_log(entry) for entry in data["logs"]),
-        log_start=data["logStart"],
         notices=data["notices"],
         warnings=data["warnings"],
         fatals=data["fatals"],

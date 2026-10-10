@@ -18,7 +18,8 @@ import sys
 from pathlib import Path
 from time import perf_counter
 
-from trnrun import Simulation, SimulationConfig, SimulationManager
+from trnrun import SimulationConfig
+from trnrun.convenience import Simulation, SimulationManager
 
 # -----------------------------------------------------------------------------
 # Configuration
@@ -33,7 +34,7 @@ DCK_FOLDER = __root__ / "runs"
 FAST_SIM_COUNT = 0
 SLOW_SIM_COUNT = 50
 MAX_CONCURRENT = 25
-REFRESH_INTERVAL = 0.1
+POLL_INTERVAL = 0.1
 
 CONFIG = SimulationConfig(
     trnexe_path=TRNEXE_PATH,
@@ -58,7 +59,7 @@ def copy_dck(src: Path, dst_dir: Path, n: int) -> list[Path]:
 
 def run_simulations(dck_files: list[Path]) -> list[Simulation]:
     """Submit both workloads to one manager and wait for all runs to finish."""
-    with SimulationManager(max_concurrent=MAX_CONCURRENT, refresh_interval=REFRESH_INTERVAL) as manager:
+    with SimulationManager(max_concurrent=MAX_CONCURRENT, poll_interval=POLL_INTERVAL) as manager:
         simulations = [manager.add(dck, CONFIG) for dck in dck_files]
         manager.wait()
 

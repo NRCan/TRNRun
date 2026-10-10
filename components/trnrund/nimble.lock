@@ -10,6 +10,18 @@
       "checksums": {
         "sha1": "17ec440fdb89f8903db29a17898af590087d2b64"
       }
+    },
+    "db_connector": {
+      "version": "0.1.0",
+      "vcsRevision": "29450a2063970712422e1ab857695c12d80112a6",
+      "url": "https://github.com/nim-lang/db_connector",
+      "downloadMethod": "git",
+      "dependencies": [
+        "nim"
+      ],
+      "checksums": {
+        "sha1": "4f2e67d0e4b61af9ac5575509305660b473f01a4"
+      }
     }
   },
   "tasks": {}

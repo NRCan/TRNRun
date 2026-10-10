@@ -9,7 +9,7 @@ from types import TracebackType
 from typing import Final, Self, cast
 
 from trnrun.config import BUNDLED_TRNRUN_PATH, BUNDLED_TRNRUND_PATH
-from trnrun.events import Changes, parse_simulation_reply
+from trnrun.events import SimulationReply, parse_simulation_reply
 from trnrun.process import DaemonProcess
 
 DEFAULT_MAX_CONCURRENT: Final[int] = max((os.cpu_count() or 1) - 1, 1)
@@ -19,8 +19,8 @@ class DaemonClient:
     """Send trnrund protocol requests and return their parsed replies.
 
     Each method sends one request and waits for its reply. The client keeps no
-    state: the caller picks each ``run_id`` and decides when to poll and remove
-    runs. Requests from several threads are serialized.
+    state: the caller picks each ``run_id`` and decides when to poll. Requests
+    from several threads are serialized.
 
     Parameters
     ----------
@@ -64,23 +64,19 @@ class DaemonClient:
             {"cmd": "add", "runId": run_id, "deckFile": str(deck_file), "trnrunArgs": list(trnrun_args)},
         )
 
-    def changes(self, since: int = 0) -> Changes:
-        """Return the daemon's revision and the simulations changed after ``since``.
+    def pull(self, run_id: str | None = None) -> dict[str, SimulationReply]:
+        """Return the simulations changed since they were last pulled, by run ID, in submission order.
 
-        Pass the ``revision`` of the previous reply to receive only what
-        changed since, with only the new log entries; ``since=0`` returns every
-        simulation with all its logs.
+        Each carries only the log entries not pulled before, so keep what you
+        receive: each change is pulled once. A finished simulation is pulled
+        with its final entries, then forgotten, freeing its run ID. With
+        ``run_id``, only that simulation is pulled, so the result holds it, or
+        nothing if it has not changed; an unknown or already forgotten
+        ``run_id`` raises ``ValueError``.
         """
-        reply = self._process.request({"cmd": "changes", "since": since})
-        revision = reply.get("revision")
-        if type(revision) is not int:
-            raise ValueError("TRNRun daemon reply field 'revision' must be an integer")
-        simulations = _objects(reply, "simulations")
-        return Changes(revision, {_string(data, "runId"): parse_simulation_reply(data) for data in simulations})
-
-    def remove(self, run_id: str) -> None:
-        """Forget a finished simulation, so its run ID can be reused."""
-        _ = self._process.request({"cmd": "remove", "runId": run_id})
+        request: dict[str, object] = {"cmd": "pull"} if run_id is None else {"cmd": "pull", "runId": run_id}
+        simulations = _objects(self._process.request(request), "simulations")
+        return {_string(data, "runId"): parse_simulation_reply(data) for data in simulations}
 
     def shutdown(self, timeout: float | None = None) -> None:
         """Have the daemon cancel queued runs, finish running ones, and exit.

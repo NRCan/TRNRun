@@ -25,7 +25,6 @@ DAEMON_SIMULATION: dict[str, object] = {
     "deckFile": r"C:\models\done-a.dck",
     "trnrunArgs": ["--watchTmp:true"],
     "state": "FINISHED",
-    "revision": 9,
     "exitCode": 0,
     "error": "",
     "setting": None,
@@ -36,7 +35,6 @@ DAEMON_SIMULATION: dict[str, object] = {
     "warnings": 0,
     "fatals": 0,
     "succeeded": True,
-    "logStart": 0,
     "logs": [],
 }
 DAEMON_LOG: dict[str, object] = {
@@ -95,10 +93,9 @@ def test_parse_simulation_reply_reads_daemon_state() -> None:
 
 
 def test_parse_simulation_reply_reads_new_logs() -> None:
-    update = parse_simulation_reply({**DAEMON_SIMULATION, "logStart": 4, "logs": [DAEMON_LOG, DAEMON_LOG]})
+    update = parse_simulation_reply({**DAEMON_SIMULATION, "logs": [DAEMON_LOG, DAEMON_LOG]})
 
     assert update.logs == (parse_log(DAEMON_LOG),) * 2
-    assert update.log_start == 4
     assert update.notices == 1  # Counters cover every entry the daemon holds, not only the new ones.
 
 

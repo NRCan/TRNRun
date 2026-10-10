@@ -1,9 +1,9 @@
 ## Runs 20 copies of one slow deck through the TRNRun daemon and reports each result.
 ##
-## Exercises the client protocol against real TRNSYS: adds every copy, polls
-## `changes`, prints each state change, removes each run once it
-## finishes, then shuts the daemon down. Build both executables first, then run from the
-## `trnrund` directory:
+## Exercises the client protocol and database against real TRNSYS: adds every
+## copy, reads run columns through a query-only connection, prints state
+## changes, and keeps finished reports. Build both executables first, then run
+## from the `trnrund` directory:
 ##
 ##   cd ../trnrun
 ##   nimble bin
@@ -12,6 +12,7 @@
 ##   nim r tests/manual_daemon.nim
 
 import std/[json, monotimes, os, osproc, streams, strutils, tables, terminal, times]
+import db_connector/db_sqlite
 
 
 # Manual-run configuration.
@@ -20,6 +21,7 @@ const
   CopyCount = 20
   MaxConcurrent = 5
   PollMs = 500
+  TimeoutMs = 3_600_000
   RemoveStagedCopies = true
   TrnexePath = r"C:\TRNSYS18\Exe\TrnEXE64.exe"
   TrnrunArgs = [
@@ -77,13 +79,13 @@ proc request(daemon: Process, request: JsonNode): JsonNode =
     )
 
 proc runDaemon(daemon: Process, deckFiles: openArray[string]): Table[string, JsonNode] =
-  ## Adds every deck, then removes each simulation as it finishes.
-  ##
-  ## Polls `changes` from the previous revision, so each poll brings only the
-  ## runs that changed and the logs not yet received. Prints each state change
-  ## seen while polling. Returns the finished report of every run, with all its
-  ## logs, keyed by runId.
+  ## Reads the runs changed since the last poll from the database, without
+  ## sending commands while workers run. Finished reports include a logCount.
   result = initTable[string, JsonNode]()
+  let ready = daemon.request(%*{"cmd": "ready"})
+  let db = db_sqlite.open(ready["databasePath"].getStr(), "", "", "")
+  defer: db.close()
+  db.exec(sql"PRAGMA query_only = ON")
   for deckFile in deckFiles:
     discard daemon.request(%*{
       "cmd": "add",
@@ -93,9 +95,9 @@ proc runDaemon(daemon: Process, deckFiles: openArray[string]): Table[string, Jso
     })
 
   var
-    revision = 0
     states = initTable[string, string]()
-    logs = initTable[string, JsonNode]()
+    revision = 0'i64
+  let deadline = getMonoTime() + initDuration(milliseconds = TimeoutMs)
 
   proc note(runId, state: string) =
     if states.getOrDefault(runId) != state:
@@ -103,17 +105,25 @@ proc runDaemon(daemon: Process, deckFiles: openArray[string]): Table[string, Jso
       styledWriteLine(stdout, fgWhite, "  " & runId & ": " & state)
 
   while result.len < deckFiles.len:
-    let changes = daemon.request(%*{"cmd": "changes", "since": revision})
-    revision = changes["revision"].getInt()
-    for simulation in changes["simulations"]:
-      let runId = simulation["runId"].getStr()
-      note(runId, simulation["state"].getStr())
-      for entry in simulation["logs"]:
-        logs.mgetOrPut(runId, newJArray()).add(entry)
-      if simulation["state"].getStr() == "FINISHED":
-        simulation["logs"] = logs.getOrDefault(runId, newJArray())
-        result[runId] = simulation
-        discard daemon.request(%*{"cmd": "remove", "runId": runId})
+    if not daemon.running:
+      raise newException(IOError, "trnrund exited before all runs finished")
+    if getMonoTime() >= deadline:
+      raise newException(IOError, "Timed out waiting for runs in the database")
+    for row in db.getAllRows(sql"""SELECT run_id, revision, state, trnrun_status, succeeded, error,
+      notices + warnings + fatals, warnings, fatals
+      FROM runs WHERE revision > ? ORDER BY revision""", revision):
+      let runId = row[0]
+      revision = parseBiggestInt(row[1])
+      note(runId, row[2])
+      if row[2] == "FINISHED":
+        result[runId] = %*{
+          "status": (if row[3].len > 0: row[3] else: "NO STATUS"),
+          "succeeded": row[4] == "1",
+          "error": row[5],
+          "logCount": parseInt(row[6]),
+          "warnings": parseInt(row[7]),
+          "fatals": parseInt(row[8]),
+        }
 
     if result.len < deckFiles.len:
       sleep(PollMs)
@@ -126,8 +136,8 @@ proc reportRun(runId: string, collected: Table[string, JsonNode]): bool =
 
   let
     simulation = collected[runId]
-    summary = runId & ": " & simulation{"status", "status"}.getStr("NO STATUS") &
-      " (" & $simulation["logs"].len & " logs, " & $simulation["warnings"].getInt() &
+    summary = runId & ": " & simulation["status"].getStr() &
+      " (" & $simulation["logCount"].getInt() & " logs, " & $simulation["warnings"].getInt() &
       " warnings, " & $simulation["fatals"].getInt() & " fatals)"
   result = simulation["succeeded"].getBool()
   if result:
@@ -185,7 +195,8 @@ proc main(): int =
     let daemon = startProcess(
       daemonExecutable,
       workingDir = daemonRoot,
-      args = ["--trnrun:" & runnerExecutable, "--maxConcurrent:" & $MaxConcurrent],
+      args = ["--trnrun:" & runnerExecutable, "--maxConcurrent:" & $MaxConcurrent,
+              "--database:" & (stagingDirectory / "runs.sqlite3")],
       options = {},
     )
     try:

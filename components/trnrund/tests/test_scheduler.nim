@@ -1,8 +1,8 @@
-import std/[os, unittest]
+import std/[json, os, unittest]
+import db_connector/db_sqlite
 
 include ../src/scheduler
 import ./fake_trnrun
-
 
 proc createDeck(directory, name: string): string =
   result = directory / name
@@ -12,15 +12,20 @@ proc release(deckFile: string) =
   ## Lets a `gate` run finish.
   writeFile(deckFile.changeFileExt("release"), "")
 
+proc columns(scheduler: Scheduler, runId, expressions: string): Row =
+  ## `expressions` on the saved row of `runId`, read from the database file as a client would.
+  let reader = db_sqlite.open(scheduler.databasePath, "", "", "")
+  defer: reader.close()
+  reader.getRow(sql("SELECT " & expressions & " FROM runs WHERE run_id = ?"), runId)
+
+proc stateOf(scheduler: Scheduler, runId: string): SimulationState =
+  ## Saved state of `runId`.
+  parseEnum[SimulationState](scheduler.columns(runId, "state")[0])
+
 proc waitFor(scheduler: Scheduler, runId: string, state: SimulationState) =
   ## Applies worker messages until `runId` reaches at least `state`.
-  while scheduler.registry[runId].state < state:
+  while scheduler.stateOf(runId) < state:
     scheduler.apply(scheduler.inbox.recv())
-
-proc runIds(scheduler: Scheduler): seq[string] =
-  result = @[]
-  for simulation in scheduler:
-    result.add(simulation.runId)
 
 proc runTests() =
   let testDirectory = getTempDir() / "trnrund_scheduler_tests"
@@ -38,12 +43,12 @@ proc runTests() =
   suite "scheduler":
     test "rejects an invalid worker count or TRNRun path":
       expect ValueError:
-        discard newScheduler(trnrun, 0)
+        discard newScheduler(trnrun, 0, testDirectory / "unused.sqlite3")
       expect ValueError:
-        discard newScheduler(testDirectory / "missing-trnrun.exe", 1)
+        discard newScheduler(testDirectory / "missing-trnrun.exe", 1, testDirectory / "unused.sqlite3")
 
     test "rejects invalid submissions without registering them":
-      let scheduler = newScheduler(trnrun, 1)
+      let scheduler = newScheduler(trnrun, 1, testDirectory / "rejected.sqlite3")
       defer: scheduler.shutdown()
       scheduler.add("kept", doneDeck)
 
@@ -60,159 +65,171 @@ proc runTests() =
         expect ValueError:
           scheduler.add(testCase.runId, testCase.deckFile, testCase.trnrunArgs)
 
-      check scheduler.runIds == @["kept"]
+      check "kept" in scheduler.database
+      for testCase in cases[2 .. ^1]:
+        check testCase.runId notin scheduler.database
 
     test "runs a simulation through every state to a successful finish":
       let
-        scheduler = newScheduler(trnrun, 1)
+        scheduler = newScheduler(trnrun, 1, testDirectory / "lifecycle-states.sqlite3")
         deckFile = createDeck(testDirectory, "gate-lifecycle.dck")
       defer: scheduler.shutdown()
 
       scheduler.add("run", deckFile)
-      check scheduler["run"].state == ssAccepted
+      check scheduler.stateOf("run") == ssAccepted
 
       scheduler.waitFor("run", ssRunning)
-      check scheduler["run"].state == ssRunning
+      check scheduler.stateOf("run") == ssRunning
 
       release(deckFile)
       scheduler.waitFor("run", ssFinished)
-      let simulation = scheduler["run"]
-      check simulation.status == some(StatusEvent(status: statusDone, message: ""))
-      check simulation.exitCode == some(0)
-      check simulation.logs.mapIt(it.message.get()) == @["first", "second", "third"]
-      check simulation.notices == 2
-      check simulation.warnings == 1
-      check simulation.succeeded()
+      check scheduler.columns("run", """trnrun_status, trnrun_message, exit_code, notices, warnings,
+        succeeded, submitted_at <= started_at AND started_at <= finished_at""") ==
+        @["DONE", "", "0", "2", "1", "1", "1"]
 
     test "finishes with an ERROR status when TRNRun fails or reports none":
-      let scheduler = newScheduler(trnrun, 2)
+      let scheduler = newScheduler(trnrun, 2, testDirectory / "errors.sqlite3")
       defer: scheduler.shutdown()
       scheduler.add("failed", createDeck(testDirectory, "failed.dck"))
       scheduler.add("silent", createDeck(testDirectory, "silent.dck"))
       scheduler.waitFor("failed", ssFinished)
       scheduler.waitFor("silent", ssFinished)
 
-      check scheduler["failed"].status ==
-        some(StatusEvent(status: statusError, message: "Fake failure"))
-      check scheduler["failed"].exitCode == some(1)
-      check scheduler["silent"].status == some(StatusEvent(
-        status: statusError, message: "TRNRun exited without a terminal status"
-      ))
-      check scheduler["silent"].exitCode == some(0)
-      check not scheduler["failed"].succeeded()
-      check not scheduler["silent"].succeeded()
+      const Outcome = "trnrun_status, trnrun_message, exit_code, succeeded"
+      check scheduler.columns("failed", Outcome) == @["ERROR", "Fake failure", "1", "0"]
+      check scheduler.columns("silent", Outcome) ==
+        @["ERROR", "TRNRun exited without a terminal status", "0", "0"]
 
     test "queues runs beyond maxConcurrent and starts them as runs finish":
       let
-        scheduler = newScheduler(trnrun, 1)
+        scheduler = newScheduler(trnrun, 1, testDirectory / "queue.sqlite3")
         firstDeck = createDeck(testDirectory, "gate-first.dck")
         secondDeck = createDeck(testDirectory, "gate-second.dck")
       defer: scheduler.shutdown()
 
       scheduler.add("first", firstDeck)
       scheduler.add("second", secondDeck)
-      check scheduler["first"].state == ssAccepted
-      check scheduler["second"].state == ssQueued
+      scheduler.add("third", doneDeck)
+      check scheduler.stateOf("first") == ssAccepted
+      check scheduler.stateOf("second") == ssQueued
+      check scheduler.stateOf("third") == ssQueued
 
       release(firstDeck)
       scheduler.waitFor("first", ssFinished)
-      check scheduler["second"].state in {ssAccepted, ssRunning}
+      check scheduler.stateOf("second") in {ssAccepted, ssRunning}
+      check scheduler.stateOf("third") == ssQueued
 
       release(secondDeck)
-      scheduler.waitFor("second", ssFinished)
-      check scheduler["second"].succeeded()
+      scheduler.waitFor("third", ssFinished)
+      check scheduler.columns("second", "succeeded") == @["1"]
 
-    test "borrows simulations by runId and lists them in submission order":
-      let scheduler = newScheduler(trnrun, 3)
+    test "holds only dispatched runs in memory and reads every run from the database":
+      let scheduler = newScheduler(trnrun, 2, testDirectory / "memory.sqlite3")
       defer: scheduler.shutdown()
 
-      expect KeyError:
-        discard scheduler["unknown"]
+      check "unknown" notin scheduler.database
 
-      for runId in ["a", "b", "c"]:
+      let runIds = ["a", "b", "c", "d", "e"]
+      for runId in runIds:
         scheduler.add(runId, doneDeck)
-      check scheduler.runIds == @["a", "b", "c"]
+      check scheduler.running.len == 2
+      check scheduler.queue.len == 3
+      for runId in runIds:
+        scheduler.waitFor(runId, ssFinished)
+        check scheduler.running.len <= 2
+      check scheduler.running.len == 0
+      check scheduler.queue.len == 0
+      for runId in runIds:
+        check scheduler.columns(runId, "succeeded") == @["1"]
 
-      scheduler.waitFor("b", ssFinished)
-      scheduler.remove("b")
-      scheduler.add("b", doneDeck)
-      check scheduler.runIds == @["a", "c", "b"]
-
-    test "removes only finished simulations, freeing their runId":
+    test "saves every change as it is applied, and runIds stay taken across schedulers":
       let
-        scheduler = newScheduler(trnrun, 1)
-        deckFile = createDeck(testDirectory, "gate-remove.dck")
+        path = testDirectory / "lifecycle.sqlite3"
+        deckFile = createDeck(testDirectory, "gate-persist.dck")
+        reader = db_sqlite.open(path, "", "", "")
+      defer: reader.close()
+      proc saved(runId, expressions: string): Row =
+        reader.getRow(sql("SELECT " & expressions & " FROM runs WHERE run_id = ?"), runId)
+
+      block:
+        let scheduler = newScheduler(trnrun, 1, path)
+        defer: scheduler.shutdown()
+        scheduler.add("run", deckFile)
+        scheduler.add("queued", doneDeck)
+        check saved("run", "state") == @["ACCEPTED"]
+        check saved("queued", "state") == @["QUEUED"]
+
+        scheduler.waitFor("run", ssRunning)
+        let running = scheduler.running["run"]
+        check saved("run", "state, started_at, notices") ==
+          @["RUNNING", running.startedAt.get(), $running.notices]
+        release(deckFile)
+        scheduler.waitFor("run", ssFinished)
+        check "run" notin scheduler.running
+        check saved("run", "succeeded") == @["1"]
+        let logs = reader.getAllRows(sql"SELECT message FROM logs WHERE run_id = 'run' ORDER BY log_id")
+        check logs.len == 3
+        check logs[2][0] == "third"
+        check saved("queued", "state")[0] in ["ACCEPTED", "RUNNING", "FINISHED"]
+
+      let scheduler = newScheduler(trnrun, 1, path)
       defer: scheduler.shutdown()
+      for runId in ["run", "queued"]:
+        expect ValueError:
+          scheduler.add(runId, doneDeck)
+      check reader.getValue(sql"SELECT count(*) FROM runs") == "2"
+      check reader.getValue(sql"SELECT count(*) FROM logs") == "6"
 
-      expect KeyError:
-        scheduler.remove("unknown")
-
-      scheduler.add("run", deckFile)
-      expect ValueError:
-        scheduler.remove("run")
-
-      release(deckFile)
-      scheduler.waitFor("run", ssFinished)
-      scheduler.remove("run")
-      expect KeyError:
-        discard scheduler["run"]
-
-      scheduler.add("run", deckFile)
-      check scheduler["run"].state == ssAccepted
-
-    test "stamps every change with a growing revision, but not removals":
-      let
-        scheduler = newScheduler(trnrun, 1)
-        deckFile = createDeck(testDirectory, "gate-revision.dck")
-      defer: scheduler.shutdown()
-      check scheduler.revision == 0
-
-      scheduler.add("run", deckFile)
-      let accepted = scheduler["run"].revision
-      check accepted == scheduler.revision
-      check accepted >= 2 # Submitted, then accepted.
-
-      scheduler.add("queued", doneDeck)
-      check scheduler["queued"].revision == scheduler.revision
-      check scheduler["queued"].revision > accepted
-
-      scheduler.waitFor("run", ssRunning)
-      check scheduler["run"].revision > scheduler["queued"].revision
-
-      release(deckFile)
-      scheduler.waitFor("run", ssFinished)
-      # The exit frees the worker, so the queued run is accepted right after.
-      check scheduler["queued"].state == ssAccepted
-      check scheduler["run"].revision < scheduler["queued"].revision
-      check scheduler["queued"].revision == scheduler.revision
-
-      let before = scheduler.revision
-      scheduler.remove("run")
-      check scheduler.revision == before
+    test "rejects a database in a missing directory":
+      expect DatabaseError:
+        discard newScheduler(trnrun, 1, testDirectory / "missing" / "runs.sqlite3")
 
     test "shutdown cancels queued runs, waits for running ones, and is idempotent":
       let
-        scheduler = newScheduler(trnrun, 1)
+        path = testDirectory / "shutdown.sqlite3"
+        scheduler = newScheduler(trnrun, 1, path)
         deckFile = createDeck(testDirectory, "gate-shutdown.dck")
 
       scheduler.add("running", deckFile)
       scheduler.add("queued", doneDeck)
       release(deckFile)
       scheduler.shutdown()
+      check scheduler.running.len == 0
 
-      check scheduler["running"].state == ssFinished
-      check scheduler["running"].succeeded()
-
-      let queued = scheduler["queued"]
-      check queued.state == ssFinished
-      check queued.status ==
-        some(StatusEvent(status: statusCancelled, message: "Not started"))
-      check queued.exitCode.isNone
-      check queued.error == "Not started: the daemon shut down"
-      check queued.revision > 0
+      check scheduler.columns("running", "state, succeeded") == @["FINISHED", "1"]
+      check scheduler.columns("queued",
+        "state, trnrun_status, trnrun_message, exit_code IS NULL, error") ==
+        @["FINISHED", "CANCELLED", "Not started", "1", "Not started: the daemon shut down"]
 
       expect ValueError:
         scheduler.add("late", doneDeck)
       scheduler.shutdown()
+
+    test "abandon finishes queued and running runs as interrupted without waiting":
+      let
+        path = testDirectory / "abandon.sqlite3"
+        scheduler = newScheduler(trnrun, 1, path)
+        deckFile = createDeck(testDirectory, "gate-abandon.dck")
+
+      scheduler.add("running", deckFile)
+      scheduler.add("queued", doneDeck)
+      scheduler.waitFor("running", ssRunning)
+      scheduler.abandon() # Returns although the gate keeps TRNRun running.
+      check scheduler.running.len == 0
+      check scheduler.queue.len == 0
+      expect ValueError:
+        scheduler.add("late", doneDeck)
+      scheduler.abandon()
+      scheduler.shutdown()
+
+      check scheduler.columns("running",
+        "state, trnrun_status, trnrun_message, error, exit_code IS NULL, started_at IS NOT NULL") ==
+        @["FINISHED", "CANCELLED", "Interrupted", "Interrupted: the client disconnected", "1", "1"]
+      check scheduler.columns("queued", "state, error") ==
+        @["FINISHED", "Not started: the client disconnected"]
+      check not fileExists(path & ".lock")
+
+      release(deckFile) # Lets TRNRun exit so the test can join the workers.
+      scheduler.pool.shutdown()
 
 runTests()

@@ -3,12 +3,13 @@ import std/strutils
 # Package
 version = "0.7.0"
 author = "Alex Lachance"
-description = "Daemon that runs and tracks TRNRun simulations for one client"
+description = "Daemon that runs TRNRun simulations and persists state in SQLite"
 license = "MIT"
 srcDir = "src"
 
 # Dependencies
 requires "nim >= 2.2.10"
+requires "db_connector == 0.1.0"
 
 # Build configuration
 const
@@ -84,6 +85,7 @@ proc assemblePackage() =
   cpFile(builtExe, packageDir & "/" & exeName & ".exe")
   cpFile("README.md", packageDir & "/README.md")
   cpFile("../../LICENSE", packageDir & "/LICENSE")
+  cpFile("../../THIRD-PARTY-NOTICES.md", packageDir & "/THIRD-PARTY-NOTICES.md")
 
 proc assembleDistribution() =
   if dirExists(distDir):

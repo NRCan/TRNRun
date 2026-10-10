@@ -10,12 +10,15 @@ type
     ## User input gathered from the command line.
     trnrunPath*: string
     maxConcurrent*: int
+    databasePath*: string
 
 proc defaultCliInput*(): CliInput =
-  ## Returns trnrun.exe beside trnrund and one worker per processor but one.
+  ## Returns trnrun.exe beside trnrund, one worker per processor but one, and
+  ## trnrund.sqlite3 in the working directory.
   result = CliInput(
     trnrunPath: getAppDir() / "trnrun.exe",
     maxConcurrent: max(countProcessors() - 1, 1),
+    databasePath: "trnrund.sqlite3",
   )
 
 proc applyOption*(input: var CliInput, key, value: string): bool =
@@ -25,6 +28,10 @@ proc applyOption*(input: var CliInput, key, value: string): bool =
     input.trnrunPath = value
   of "maxConcurrent":
     input.maxConcurrent = parseInt(value)
+  of "database":
+    if value.len == 0:
+      raise newException(ValueError, "'database' must not be empty")
+    input.databasePath = value
   else:
     return false
 

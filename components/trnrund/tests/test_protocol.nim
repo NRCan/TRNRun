@@ -1,152 +1,140 @@
-import std/[json, os, sequtils, strutils, unittest]
+import std/[deques, importutils, json, os, strutils, tables, tempfiles, unittest]
+import db_connector/db_sqlite
 
-import ../src/[protocol, scheduler]
+import ../src/[database, messages, protocol, scheduler]
 import ./fake_trnrun
 
+privateAccess(Scheduler) # Submissions are only in memory: arguments are not saved.
 
 proc createDeck(directory, name: string): string =
   result = directory / name
   writeFile(result, "fake TRNSYS deck")
 
 proc call(scheduler: Scheduler, request: JsonNode): JsonNode =
-  ## Sends one request and parses its reply.
   parseJson(scheduler.handleRequest($request).reply)
 
-proc logMessages(simulation: JsonNode): seq[string] =
-  simulation["logs"].getElems().mapIt(it["message"].getStr())
-
 proc runTests() =
-  let testDirectory = getTempDir() / "trnrund_protocol_tests"
-  if dirExists(testDirectory):
-    removeDir(testDirectory)
-  createDir(testDirectory)
-  defer:
-    if dirExists(testDirectory):
-      removeDir(testDirectory)
-
+  let testDirectory = createTempDir("trnrund-protocol-", "")
+  defer: removeDir(testDirectory)
   let
     trnrun = getAppFilename()
     doneDeck = createDeck(testDirectory, "done.dck")
 
   suite "client protocol":
-    test "replies ok:false with the cause to malformed requests":
-      let scheduler = newScheduler(trnrun, 1)
+    test "ready reports the normalized database path, repeatably":
+      let path = testDirectory / "nested" / ".." / "ready.sqlite3"
+      let scheduler = newScheduler(trnrun, 1, path)
       defer: scheduler.shutdown()
+      for _ in 0 ..< 2:
+        let (reply, shutdown) = scheduler.handleRequest("""{"cmd":"ready"}""")
+        check parseJson(reply) ==
+          %*{"ok": true, "databasePath": path.absolutePath().normalizedPath()}
+        check not shutdown
 
+    test "rejects malformed and unknown requests without requesting shutdown":
+      let scheduler = newScheduler(trnrun, 1, testDirectory / "malformed.sqlite3")
+      defer: scheduler.shutdown()
       let cases = [
         (line: "garbage", expected: ""),
         (line: "[1]", expected: "Request must be a JSON object"),
         (line: "{}", expected: "Missing field: cmd"),
-        (line: """{"cmd":"launch"}""", expected: "Unknown cmd: launch"),
+        (line: """{"cmd":"pull"}""", expected: "Unknown cmd: pull"),
         (line: """{"cmd":"add"}""", expected: "Missing field: runId"),
         (line: """{"cmd":"add","runId":"a"}""", expected: "Missing field: deckFile"),
-        (line: """{"cmd":"changes","since":"1"}""", expected: ""),
-        (line: """{"cmd":"changes","since":-1}""", expected: "since must not be negative: -1"),
-        (line: """{"cmd":"remove","runId":"missing"}""", expected: "Unknown runId: missing"),
-        (line: """{"cmd":"logs","runId":"a"}""", expected: "Unknown cmd: logs"),
-        (line: """{"cmd":"collect","runId":"a"}""", expected: "Unknown cmd: collect"),
       ]
-      # Replaced by `changes`, which covers all three.
-      for cmd in ["states", "snapshot", "snapshots"]:
-        checkpoint("removed cmd: " & cmd)
-        check scheduler.call(%*{"cmd": cmd, "runId": "a"}) ==
-          %*{"ok": false, "error": "Unknown cmd: " & cmd}
       for testCase in cases:
         checkpoint("request: " & testCase.line)
         let (reply, shutdown) = scheduler.handleRequest(testCase.line)
         let node = parseJson(reply)
-
         check not shutdown
         check node.len == 2
         check not node["ok"].getBool()
-        check node["error"].getStr().len > 0
         check node["error"].getStr().contains(testCase.expected)
 
-    test "adds a simulation and reports it, queued ones included, in submission order":
-      let scheduler = newScheduler(trnrun, 1)
+    test "add acknowledges only and preserves submission order and arguments":
+      let scheduler = newScheduler(trnrun, 1, testDirectory / "order.sqlite3")
       defer: scheduler.shutdown()
-
       check scheduler.call(%*{
         "cmd": "add", "runId": "b", "deckFile": doneDeck, "trnrunArgs": ["--pollMs:50"]
-      }) == %*{"ok": true}
+      }) == %*{"ok": true, "state": "ACCEPTED"}
+      check scheduler.call(%*{"cmd": "add", "runId": "a", "deckFile": doneDeck}) ==
+        %*{"ok": true, "state": "QUEUED"}
+      check scheduler.running["b"].state == ssAccepted
+      check scheduler.running["b"].trnrunArgs == @["--pollMs:50"]
+      check "a" notin scheduler.running
+      check scheduler.queue.len == 1
+
+    test "invalid submissions remain ordinary error replies":
+      let scheduler = newScheduler(trnrun, 1, testDirectory / "invalid.sqlite3")
+      defer: scheduler.shutdown()
+      check not scheduler.call(%*{
+        "cmd": "add", "runId": "", "deckFile": doneDeck
+      })["ok"].getBool()
+      check not scheduler.call(%*{
+        "cmd": "add", "runId": "a", "deckFile": "missing.dck"
+      })["ok"].getBool()
+      check "a" notin scheduler.database
       discard scheduler.call(%*{"cmd": "add", "runId": "a", "deckFile": doneDeck})
+      check not scheduler.call(%*{
+        "cmd": "add", "runId": "a", "deckFile": doneDeck
+      })["ok"].getBool()
+      check not scheduler.call(%*{
+        "cmd": "add", "runId": "b", "deckFile": doneDeck, "until": "DONE"
+      })["ok"].getBool()
+      check "b" notin scheduler.database
 
-      let simulations = scheduler.call(%*{"cmd": "changes"})["simulations"]
-      check simulations.getElems().mapIt(it["runId"].getStr()) == @["b", "a"]
-      check simulations.getElems().mapIt(it["state"].getStr()) == @["ACCEPTED", "QUEUED"]
-      let simulation = simulations[0]
-      check simulation["trnrunArgs"] == %*["--pollMs:50"]
-      check "succeeded" in simulation
-      check simulation["logStart"].getInt() == 0
-      check simulation["logs"] == newJArray()
-
-    test "changes return the simulations changed after since, with only newer logs":
-      let scheduler = newScheduler(trnrun, 2)
-      defer: scheduler.shutdown()
-      check scheduler.call(%*{"cmd": "changes"}) ==
-        %*{"ok": true, "revision": 0, "simulations": []}
-
-      for runId in ["b", "a"]:
-        discard scheduler.call(%*{"cmd": "add", "runId": runId, "deckFile": doneDeck})
-      let submitted = scheduler.call(%*{"cmd": "changes"})
-      let revision = submitted["revision"].getInt()
-      check revision > 0
-      check submitted["simulations"].getElems().mapIt(it["runId"].getStr()) == @["b", "a"]
-      check scheduler.call(%*{"cmd": "changes", "since": revision}) ==
-        %*{"ok": true, "revision": revision, "simulations": []}
-
-      scheduler.shutdown() # Waits for both runs, three log entries each.
-      let finished = scheduler.call(%*{"cmd": "changes", "since": revision})
-      let latest = finished["revision"].getInt()
-      check latest > revision
-      check finished["simulations"].getElems().mapIt(it["runId"].getStr()) == @["b", "a"]
-      for simulation in finished["simulations"]:
-        checkpoint("runId: " & simulation["runId"].getStr())
-        check simulation["state"].getStr() == "FINISHED"
-        check simulation["revision"].getInt() > revision
-        check simulation["logStart"].getInt() == 0
-        check simulation.logMessages() == @["first", "second", "third"]
-
-      # The latest change is the last run's exit, after all its log entries, so
-      # a client up to date until then gets the outcome without repeated entries.
-      let exit = scheduler.call(%*{"cmd": "changes", "since": latest - 1})["simulations"]
-      check exit.len == 1
-      check exit[0]["revision"].getInt() == latest
-      check exit[0]["logStart"].getInt() == 3
-      check exit[0]["logs"] == newJArray()
-      # Counters always cover every entry, whatever logs leaves out.
-      check exit[0]["notices"].getInt() + exit[0]["warnings"].getInt() == 3
-
-    test "removes only finished simulations":
+    test "add waits for until, deferring the requests that arrive meanwhile":
       let
-        scheduler = newScheduler(trnrun, 2)
-        gateDeck = createDeck(testDirectory, "gate-pending.dck")
+        scheduler = newScheduler(trnrun, 1, testDirectory / "until.sqlite3")
+        gate = createDeck(testDirectory, "gate-until.dck")
+        ready = $(%*{"cmd": "ready"})
       defer: scheduler.shutdown()
-      discard scheduler.call(%*{"cmd": "add", "runId": "pending", "deckFile": gateDeck})
-      discard scheduler.call(%*{"cmd": "add", "runId": "done", "deckFile": doneDeck})
+      scheduler.requestInbox[].send(Message(kind: mkRequest, line: ready))
+      check scheduler.call(%*{
+        "cmd": "add", "runId": "done", "deckFile": doneDeck, "until": "FINISHED"
+      }) == %*{"ok": true, "state": "FINISHED"}
+      check scheduler.nextRequest().line == ready
 
-      check scheduler.call(%*{"cmd": "remove", "runId": "pending"}) ==
-        %*{"ok": false, "error": "Simulation has not finished: pending"}
-      check scheduler.call(%*{"cmd": "changes"})["simulations"].len == 2
+      check scheduler.call(%*{"cmd": "add", "runId": "gate", "deckFile": gate}) ==
+        %*{"ok": true, "state": "ACCEPTED"}
+      writeFile(gate.changeFileExt("release"), "")
+      check scheduler.call(%*{ # Queued behind the gate until it exits.
+        "cmd": "add", "runId": "next", "deckFile": doneDeck, "until": "ACCEPTED"
+      }) == %*{"ok": true, "state": "ACCEPTED"}
+      check "gate" notin scheduler.running
 
-      writeFile(gateDeck.changeFileExt("release"), "")
-      scheduler.shutdown()
+    test "a client leaving ends the wait and drops its deferred requests":
+      let
+        scheduler = newScheduler(trnrun, 1, testDirectory / "leave.sqlite3")
+        gate = createDeck(testDirectory, "gate-leave.dck")
+      defer: scheduler.shutdown()
+      scheduler.requestInbox[].send(Message(kind: mkRequest, line: $(%*{"cmd": "ready"})))
+      scheduler.requestInbox[].send(Message(kind: mkClosed))
+      let reply = scheduler.call(%*{
+        "cmd": "add", "runId": "run", "deckFile": gate, "until": "FINISHED"
+      })
+      check reply["state"].getStr() in ["ACCEPTED", "RUNNING"]
+      check scheduler.nextRequest().kind == mkClosed
+      writeFile(gate.changeFileExt("release"), "") # Lets shutdown join the worker.
 
-      for runId in ["done", "pending"]:
-        checkpoint("removed runId: " & runId)
-        check scheduler.call(%*{"cmd": "remove", "runId": runId}) == %*{"ok": true}
-        check scheduler.call(%*{"cmd": "remove", "runId": runId}) ==
-          %*{"ok": false, "error": "Unknown runId: " & runId}
-      check scheduler.call(%*{"cmd": "changes"})["simulations"] == newJArray()
+    test "database failures escape instead of becoming error replies":
+      let scheduler = newScheduler(trnrun, 1, testDirectory / "failure.sqlite3")
+      defer: scheduler.shutdown()
+      let connection = db_sqlite.open(scheduler.databasePath, "", "", "")
+      defer: connection.close()
+      connection.exec(sql"""CREATE TRIGGER fail_submission BEFORE INSERT ON runs
+        BEGIN SELECT RAISE(ABORT, 'injected failure'); END""")
+      expect DatabaseError:
+        discard scheduler.call(%*{"cmd": "add", "runId": "run", "deckFile": doneDeck})
+      connection.exec(sql"DROP TRIGGER fail_submission")
 
     test "acknowledges shutdown and leaves it to the caller":
-      let scheduler = newScheduler(trnrun, 1)
+      let scheduler = newScheduler(trnrun, 1, testDirectory / "shutdown.sqlite3")
       defer: scheduler.shutdown()
-
       let (reply, shutdown) = scheduler.handleRequest("""{"cmd":"shutdown"}""")
       check parseJson(reply) == %*{"ok": true}
       check shutdown
       check scheduler.call(%*{"cmd": "add", "runId": "a", "deckFile": doneDeck}) ==
-        %*{"ok": true}
+        %*{"ok": true, "state": "ACCEPTED"}
 
 runTests()

@@ -1,3 +1,7 @@
+# Requires Python 3 on PATH; sqlite3 is part of Python's standard library.
+$ErrorActionPreference = 'Stop'
+Get-Command python -ErrorAction Stop | Out-Null
+
 $RunCount = 10
 $ConcurrencyLimit = 5
 $PollSeconds = 1
@@ -7,6 +11,7 @@ $DaemonPath = Join-Path $DaemonRoot 'build\trnrund.exe'
 $RunnerPath = Join-Path $DaemonRoot '..\trnrun\build\trnrun.exe'
 $SourceDeck = Join-Path $PSScriptRoot 'dck\example_wo_plot_w_tracking.dck'
 $RunDirectory = Join-Path ([IO.Path]::GetTempPath()) "trnrund-example-$PID"
+$DatabasePath = Join-Path $RunDirectory 'runs.sqlite3'
 
 $DaemonPath, $RunnerPath, $SourceDeck | ForEach-Object {
     if (-not (Test-Path -LiteralPath $_ -PathType Leaf)) {
@@ -29,26 +34,46 @@ function Send-Request([hashtable] $Request) {
     $Reply
 }
 
-# Polls the runs changed since the previous poll, each with only its new logs.
+# Reads the runs changed since the last revision seen, with their log counts.
+# Reading never consumes anything, so any number of clients can read at once.
+$QueryCode = @'
+import json, pathlib, sqlite3, sys
+uri = pathlib.Path(sys.argv[1]).as_uri() + '?mode=ro'
+revision = int(sys.argv[2])
+db = sqlite3.connect(uri, uri=True)
+db.row_factory = sqlite3.Row
+rows = db.execute('''SELECT run_id, revision, state, trnrun_status, succeeded, warnings,
+    notices + warnings + fatals AS log_count
+    FROM runs WHERE revision > ? ORDER BY revision''', (revision,)).fetchall()
+db.close()
+if rows:
+    revision = rows[-1]['revision']
+print(json.dumps(dict(simulations=[dict(row) for row in rows], revision=revision)))
+'@
 $Revision = 0
 $States = @{}
 $LogCounts = @{}
 $Finished = @{}
 function Update-Runs {
-    $Changes = Send-Request @{ cmd = 'changes'; since = $script:Revision }
+    if ($Daemon.HasExited) {
+        throw "trnrund exited unexpectedly with code $($Daemon.ExitCode)"
+    }
+    $Json = & python -c $QueryCode $DatabasePath $script:Revision
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Database query failed'
+    }
+    $Changes = $Json | ConvertFrom-Json
     $script:Revision = $Changes.revision
     foreach ($Simulation in $Changes.simulations) {
-        $RunId = $Simulation.runId
-        $LogCounts[$RunId] += $Simulation.logs.Count
+        $RunId = $Simulation.run_id
+        $LogCounts[$RunId] = $Simulation.log_count
         if ($States[$RunId] -ne $Simulation.state) {
             $States[$RunId] = $Simulation.state
             Write-Host "${RunId}: $($Simulation.state)"
         }
-        # A run is done once its state is FINISHED. That reply carries its last
-        # logs, and remove frees its runId.
+        # FINISHED is saved together with the final logs.
         if ($Simulation.state -eq 'FINISHED') {
             $Finished[$RunId] = $Simulation
-            Send-Request @{ cmd = 'remove'; runId = $RunId } | Out-Null
         }
     }
 }
@@ -57,19 +82,20 @@ New-Item -ItemType Directory -Path $RunDirectory | Out-Null
 $Daemon = $null
 try {
     $StartInfo = [Diagnostics.ProcessStartInfo]::new($DaemonPath)
-    $StartInfo.Arguments = "--trnrun:`"$RunnerPath`" --maxConcurrent:$ConcurrencyLimit"
+    $StartInfo.Arguments = "--trnrun:`"$RunnerPath`" --maxConcurrent:$ConcurrencyLimit --database:`"$DatabasePath`""
     $StartInfo.UseShellExecute = $false
     $StartInfo.RedirectStandardInput = $true
     $StartInfo.RedirectStandardOutput = $true
     $Daemon = [Diagnostics.Process]::Start($StartInfo)
+    $DatabasePath = (Send-Request @{ cmd = 'ready' }).databasePath
 
     Write-Host (
         "Submitting $RunCount copies one at a time, each once the previous is " +
         "accepted, with max concurrency $ConcurrencyLimit"
     )
 
-    # Waiting for ACCEPTED keeps the daemon queue empty: a run is only added
-    # once the previous one holds a worker, so the client decides what runs next.
+    # Wait until each run leaves QUEUED before adding another. This limits the
+    # daemon to one queued run while the client decides what to submit next.
     1..$RunCount | ForEach-Object {
         $RunId = 'example-{0:D2}' -f $_
         $DeckFile = Join-Path $RunDirectory "$RunId.dck"
@@ -88,7 +114,7 @@ try {
         } | Out-Null
 
         Update-Runs
-        while ($States[$RunId] -eq 'QUEUED') {
+        while (-not $States.ContainsKey($RunId) -or $States[$RunId] -eq 'QUEUED') {
             Start-Sleep -Seconds $PollSeconds
             Update-Runs
         }
@@ -104,7 +130,7 @@ try {
         $Simulation = $Finished[$RunId]
         $Verdict = if ($Simulation.succeeded) { 'PASS' } else { 'FAIL' }
         Write-Host (
-            "$Verdict - ${RunId}: $($Simulation.status.status), " +
+            "$Verdict - ${RunId}: $($Simulation.trnrun_status), " +
             "$($LogCounts[$RunId]) logs, $($Simulation.warnings) warnings"
         )
         if (-not $Simulation.succeeded) {

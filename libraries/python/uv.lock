@@ -543,7 +543,9 @@ wheels = [
 [[package]]
 name = "trnrun"
 source = { editable = "." }
-dependencies = [
+
+[package.optional-dependencies]
+display = [
     { name = "rich" },
 ]
 
@@ -551,15 +553,18 @@ dependencies = [
 dev = [
     { name = "ipykernel" },
     { name = "pytest" },
+    { name = "rich" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "rich", specifier = ">=14.2.0" }]
+requires-dist = [{ name = "rich", marker = "extra == 'display'", specifier = ">=14.2.0" }]
+provides-extras = ["display"]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "ipykernel", specifier = ">=7.1.0" },
     { name = "pytest", specifier = ">=9.0.1" },
+    { name = "rich", specifier = ">=14.2.0" },
 ]
 
 [[package]]

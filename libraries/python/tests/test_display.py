@@ -3,12 +3,9 @@
 from __future__ import annotations
 
 import builtins
-import logging
-from collections.abc import Callable, Iterator
 from dataclasses import dataclass, replace
 from html.parser import HTMLParser
 from io import StringIO
-from threading import Event
 from typing import override
 from unittest.mock import Mock, call
 
@@ -18,9 +15,10 @@ from rich.live import Live
 from rich.style import Style
 from rich.text import Text
 
-import trnrun.display as display_module
+import trnrun.convenience.display as display_module
 from trnrun.config import SimulationConfig
-from trnrun.display import NotebookRenderer, ProgressDisplay, TerminalRenderer
+from trnrun.convenience.display import ProgressDisplay
+from trnrun.convenience.simulation import Simulation
 from trnrun.events import (
     ConfigEvent,
     LogEvent,
@@ -30,16 +28,20 @@ from trnrun.events import (
     SimulationStatus,
     StatusEvent,
 )
-from trnrun.simulation import Simulation, SimulationSnapshot
 
-TEST_TIMEOUT = 10.0
-# Background redraws never happen on their own; tests call `_tick` directly.
-NEVER = 3600.0
+TerminalOutput = display_module._TerminalOutput
+NotebookOutput = display_module._NotebookOutput
+render_line = display_module._render_line
 
 
 def make_simulation(sim_id: int = 1, deck_path: str = "deck.dck") -> Simulation:
     """Build an unvalidated simulation for rendering tests."""
     return Simulation(deck_path, SimulationConfig(), sim_id)
+
+
+def lines(*simulations: Simulation) -> list[Text]:
+    """Render simulations as the display hands them to its output."""
+    return [render_line(simulation) for simulation in simulations]
 
 
 def apply_event(simulation: Simulation, event: StatusEvent | ConfigEvent | ProgressEvent | LogEvent) -> None:
@@ -65,7 +67,7 @@ def apply_event(simulation: Simulation, event: StatusEvent | ConfigEvent | Progr
 
 
 def finish(simulation: Simulation, status: SimulationStatus = SimulationStatus.DONE) -> None:
-    """Finish a simulation as a finished daemon snapshot would."""
+    """Finish a simulation as a finished daemon simulation would."""
     _ = simulation.apply(
         SimulationReply(
             SimulationState.FINISHED,
@@ -76,15 +78,15 @@ def finish(simulation: Simulation, status: SimulationStatus = SimulationStatus.D
     )
 
 
-def completed_snapshot() -> SimulationSnapshot:
-    """Return the snapshot of a fully reported, completed run."""
+def completed_simulation() -> Simulation:
+    """Return a fully reported, completed run."""
     simulation = make_simulation(sim_id=7, deck_path="models/annual-load.dck")
     apply_event(simulation, StatusEvent(SimulationStatus.DONE))
     apply_event(simulation, ConfigEvent(0.0, 2_000.0, 1.0))
     apply_event(simulation, ProgressEvent(1_234.0, 0.25, 3_723_000.0, 65_000.0))
     for severity in ("Notice", "Warning", "Fatal"):
         apply_event(simulation, LogEvent(severity))
-    return simulation.snapshot()
+    return simulation
 
 
 @dataclass
@@ -184,7 +186,7 @@ def test_progress_bar_is_fixed_width_and_clamped(percent: float, width: int, exp
 
 def test_render_line_shows_placeholders_without_runner_updates() -> None:
     """Pending simulations render stable placeholders for absent measurements."""
-    line = display_module._render_line(make_simulation(sim_id=3).snapshot())
+    line = render_line(make_simulation(sim_id=3))
 
     assert line.plain.startswith("[3] deck.dck")
     assert "Status:            │" in line.plain
@@ -210,11 +212,11 @@ def test_color_map_covers_every_simulation_status() -> None:
 
 def test_render_line_formats_complete_state_and_status_style() -> None:
     """Runner state is folded into counts, timing, progress, and status color."""
-    snapshot = completed_snapshot()
+    simulation = completed_simulation()
 
-    line = display_module._render_line(snapshot)
+    line = render_line(simulation)
 
-    assert str(snapshot.deck_path) in line.plain
+    assert str(simulation.deck_path) in line.plain
     assert "Status: DONE" in line.plain
     assert "Logs: N:1 W:1 F:1" in line.plain
     assert "Elapsed: 01:02:03 │ ETA: 00:01:05" in line.plain
@@ -223,30 +225,30 @@ def test_render_line_formats_complete_state_and_status_style() -> None:
 
 
 # -----------------------------------------------------------------
-# Terminal renderer
+# Terminal output
 # -----------------------------------------------------------------
 @pytest.fixture
-def terminal(monkeypatch: pytest.MonkeyPatch) -> tuple[TerminalRenderer, Mock, Mock]:
-    """Build a terminal renderer whose console and live regions are mocks."""
+def terminal(monkeypatch: pytest.MonkeyPatch) -> tuple[TerminalOutput, Mock, Mock]:
+    """Build a terminal output whose console and live regions are mocks."""
     console = Mock(spec=Console)
     live_factory = Mock(side_effect=lambda *_args, **_kwargs: Mock(spec=Live))
     monkeypatch.setattr(display_module, "Live", live_factory)
-    return TerminalRenderer(console), console, live_factory
+    return TerminalOutput(console), console, live_factory
 
 
 def test_terminal_show_starts_one_manually_refreshed_live_region(
-    terminal: tuple[TerminalRenderer, Mock, Mock],
+    terminal: tuple[TerminalOutput, Mock, Mock],
 ) -> None:
     """The first rows start a transient region; later rows update it in place."""
-    renderer, console, live_factory = terminal
-    first, second = make_simulation(1).snapshot(), make_simulation(2).snapshot()
+    output, console, live_factory = terminal
+    first, second = make_simulation(1), make_simulation(2)
 
-    renderer.show([first])
-    renderer.show([first, second])
+    output.show(lines(first))
+    output.show(lines(first, second))
 
     live_factory.assert_called_once()
     assert live_factory.call_args.kwargs == {"console": console, "auto_refresh": False, "transient": True}
-    live = renderer._live
+    live = output._live
     assert isinstance(live, Mock)
     live.start.assert_called_once_with(refresh=True)
     (group,), kwargs = live.update.call_args
@@ -258,76 +260,76 @@ def test_terminal_show_starts_one_manually_refreshed_live_region(
     ]
 
 
-def test_terminal_show_without_rows_stops_the_region(terminal: tuple[TerminalRenderer, Mock, Mock]) -> None:
+def test_terminal_show_without_rows_stops_the_region(terminal: tuple[TerminalOutput, Mock, Mock]) -> None:
     """An empty frame erases the region, and later rows start a fresh one."""
-    renderer, _, live_factory = terminal
-    renderer.show([])
+    output, _, live_factory = terminal
+    output.show([])
     live_factory.assert_not_called()
 
-    renderer.show([make_simulation().snapshot()])
-    live = renderer._live
+    output.show(lines(make_simulation()))
+    live = output._live
     assert isinstance(live, Mock)
-    renderer.show([])
+    output.show([])
 
     live.stop.assert_called_once_with()
-    assert renderer._live is None
-    renderer.show([make_simulation().snapshot()])
+    assert output._live is None
+    output.show(lines(make_simulation()))
     assert live_factory.call_count == 2
 
 
-def test_terminal_finished_prints_the_final_line(terminal: tuple[TerminalRenderer, Mock, Mock]) -> None:
+def test_terminal_print_writes_the_final_line(terminal: tuple[TerminalOutput, Mock, Mock]) -> None:
     """Final lines go through the console, above any live region."""
-    renderer, console, _ = terminal
-    snapshot = completed_snapshot()
+    output, console, _ = terminal
+    simulation = completed_simulation()
 
-    renderer.finished(snapshot)
+    output.print(render_line(simulation))
 
     (printed,) = console.print.call_args.args
-    assert printed.plain == display_module._render_line(snapshot).plain
+    assert printed.plain == render_line(simulation).plain
 
 
-def test_terminal_close_is_idempotent(terminal: tuple[TerminalRenderer, Mock, Mock]) -> None:
+def test_terminal_close_is_idempotent(terminal: tuple[TerminalOutput, Mock, Mock]) -> None:
     """Closing stops the region once and prints nothing."""
-    renderer, console, _ = terminal
-    renderer.show([make_simulation().snapshot()])
-    live = renderer._live
+    output, console, _ = terminal
+    output.show(lines(make_simulation()))
+    live = output._live
     assert isinstance(live, Mock)
 
-    renderer.close()
-    renderer.close()
+    output.close()
+    output.close()
 
     live.stop.assert_called_once_with()
     console.print.assert_not_called()
 
 
 # -----------------------------------------------------------------
-# Notebook renderer
+# Notebook output
 # -----------------------------------------------------------------
 def test_notebook_show_publishes_once_then_replaces_only_changed_frames(
     notebook_api: tuple[Mock, list[FakeDisplayHandle]],
 ) -> None:
     """One output area is reused; identical frames are not republished; empty frames clear it."""
     display_html, handles = notebook_api
-    renderer = NotebookRenderer()
+    output = NotebookOutput()
     simulation = make_simulation(1)
     second = make_simulation(2)
 
-    renderer.show([])
+    output.show([])
     display_html.assert_not_called()
 
-    renderer.show([simulation.snapshot(), second.snapshot()])
+    output.show(lines(simulation, second))
     (handle,) = handles
-    renderer.show([simulation.snapshot(), second.snapshot()])
+    output.show(lines(simulation, second))
     assert handle.updates == []
 
     apply_event(simulation, ProgressEvent(100.0, 0.5, 500.0, 500.0))
-    renderer.show([simulation.snapshot(), second.snapshot()])
+    output.show(lines(simulation, second))
     assert len(handle.updates) == 1
     assert "50%" in handle.updates[0].data
 
-    renderer.show([second.snapshot()])
-    assert ParsedHTML(handle.html.data).lines == [display_module._render_line(second.snapshot()).plain.rstrip()]
-    renderer.show([])
+    output.show(lines(second))
+    assert ParsedHTML(handle.html.data).lines == [render_line(second).plain.rstrip()]
+    output.show([])
     assert handle.html.data == ""
     display_html.assert_called_once()
     assert display_html.call_args.kwargs == {"display_id": True}
@@ -339,16 +341,16 @@ def test_notebook_close_releases_handle_without_publishing(
 ) -> None:
     """Closing forgets the output area without changing it or printing."""
     display_html, handles = notebook_api
-    renderer = NotebookRenderer()
-    renderer.show([make_simulation().snapshot()])
+    output = NotebookOutput()
+    output.show(lines(make_simulation()))
     handle = handles[0]
     initial_html = handle.html.data
 
-    renderer.close()
-    renderer.close()
+    output.close()
+    output.close()
 
-    assert renderer._handle is None
-    assert renderer._last_html is None
+    assert output._handle is None
+    assert output._last_html is None
     assert handle.html.data == initial_html
     assert handle.updates == []
     display_html.assert_called_once()
@@ -358,10 +360,10 @@ def test_notebook_close_releases_handle_without_publishing(
 def test_notebook_requires_a_display_handle(monkeypatch: pytest.MonkeyPatch) -> None:
     """A frontend that returns no handle cannot host the live output area."""
     monkeypatch.setattr(display_module, "_load_notebook_api", Mock(return_value=(FakeHTML, Mock(return_value=None))))
-    renderer = NotebookRenderer()
+    output = NotebookOutput()
 
     with pytest.raises(RuntimeError, match="display handle"):
-        renderer.show([make_simulation().snapshot()])
+        output.show(lines(make_simulation()))
 
 
 @pytest.mark.parametrize(
@@ -381,14 +383,14 @@ def test_notebook_html_matches_terminal_lines_at_narrow_width(
     apply_event(simulation, ProgressEvent(1_234.0, 0.25, 3_723_000.0, 65_000.0))
     for severity in ("Notice", "Warning", "Fatal"):
         apply_event(simulation, LogEvent(severity))
-    snapshots = [simulation.snapshot(), make_simulation(8).snapshot()]
+    simulations = [simulation, make_simulation(8)]
 
     output = StringIO()
     console = Console(file=output, width=20, force_jupyter=False, color_system=None)
-    console.print(Group(*(display_module._render_line(snapshot) for snapshot in snapshots)), soft_wrap=True)
-    expected = [display_module._render_line(snapshot).plain.rstrip() for snapshot in snapshots]
+    console.print(Group(*(render_line(simulation) for simulation in simulations)), soft_wrap=True)
+    expected = [render_line(simulation).plain.rstrip() for simulation in simulations]
 
-    parsed = ParsedHTML(NotebookRenderer._render_html(snapshots))
+    parsed = ParsedHTML(NotebookOutput._render_html(lines(*simulations)))
 
     assert [line.rstrip() for line in output.getvalue().splitlines()] == expected
     assert parsed.lines == expected
@@ -413,12 +415,11 @@ def test_notebook_html_is_an_escaped_inline_styled_fragment(
     """Only status spans add color; notebook themes supply the fragment's base colors."""
     simulation = make_simulation(1, "deck<script>&.dck")
     apply_event(simulation, StatusEvent(status))
-    snapshot = simulation.snapshot()
 
-    html = NotebookRenderer._render_html([snapshot])
+    html = NotebookOutput._render_html(lines(simulation))
     parsed = ParsedHTML(html)
 
-    assert parsed.lines == [display_module._render_line(snapshot).plain.rstrip()]
+    assert parsed.lines == [render_line(simulation).plain.rstrip()]
     assert "&lt;script&gt;" in html
     assert "&amp;" in html
     expected_style = Style.parse(color).get_html_style()
@@ -449,14 +450,14 @@ def test_notebook_renders_use_fresh_silent_recording_consoles(
     simulation = make_simulation()
     apply_event(simulation, StatusEvent(SimulationStatus.RUNNING))
 
-    old_html = NotebookRenderer._render_html([simulation.snapshot()])
+    old_html = NotebookOutput._render_html(lines(simulation))
     apply_event(simulation, StatusEvent(SimulationStatus.DONE))
-    new_html = NotebookRenderer._render_html([simulation.snapshot()])
-    repeated_html = NotebookRenderer._render_html([simulation.snapshot()])
+    new_html = NotebookOutput._render_html(lines(simulation))
+    repeated_html = NotebookOutput._render_html(lines(simulation))
 
     assert "RUNNING" in old_html
     assert "RUNNING" not in new_html
-    assert ParsedHTML(new_html).lines == [display_module._render_line(simulation.snapshot()).plain.rstrip()]
+    assert ParsedHTML(new_html).lines == [render_line(simulation).plain.rstrip()]
     assert repeated_html == new_html
     assert console_factory.call_count == 3
     buffers: list[StringIO] = []
@@ -477,7 +478,7 @@ def test_notebook_empty_render_does_not_export_a_blank_line(monkeypatch: pytest.
     console_factory = Mock()
     monkeypatch.setattr(display_module, "Console", console_factory)
 
-    assert NotebookRenderer._render_html([]) == ""
+    assert NotebookOutput._render_html([]) == ""
 
     console_factory.assert_not_called()
 
@@ -499,21 +500,20 @@ def test_notebook_finished_lines_use_ansi_stdout_without_wrapping(
     monkeypatch.delenv("NO_COLOR", raising=False)
     monkeypatch.setenv("COLUMNS", str(width))
     display_html, _ = notebook_api
-    renderer = NotebookRenderer()
-    console = renderer._completed_console
+    output = NotebookOutput()
+    console = output._completed_console
     simulation = make_simulation(1, "models/annual-load.dck")
     apply_event(simulation, ConfigEvent(0.0, 2_000.0, 1.0))
     apply_event(simulation, ProgressEvent(2_000.0, 1.0, 3_723_000.0, 0.0))
     apply_event(simulation, StatusEvent(status))
-    snapshot = simulation.snapshot()
 
-    renderer.finished(snapshot)
+    output.print(render_line(simulation))
     captured = capsys.readouterr()
     streamed = Text.from_ansi(captured.out)
 
     assert f"\x1b[{ansi_code}m" in captured.out
     assert "\x1b[0m" in captured.out
-    assert streamed.plain.rstrip() == display_module._render_line(snapshot).plain.rstrip()
+    assert streamed.plain.rstrip() == render_line(simulation).plain.rstrip()
     assert captured.out.count("\n") == 1
     assert "(100%)" in streamed.plain
     assert captured.err == ""
@@ -522,8 +522,8 @@ def test_notebook_finished_lines_use_ansi_stdout_without_wrapping(
     assert console.color_system == "standard"
     assert not console.record
 
-    renderer.finished(snapshot)
-    assert renderer._completed_console is console
+    output.print(render_line(simulation))
+    assert output._completed_console is console
     assert capsys.readouterr().out.count("\n") == 1
     display_html.assert_not_called()
 
@@ -536,65 +536,63 @@ def test_notebook_finished_colours_respect_no_color(
     """NO_COLOR disables ANSI colour escapes without changing the stdout/live split."""
     monkeypatch.setenv("NO_COLOR", "1")
     display_html, _ = notebook_api
-    renderer = NotebookRenderer()
+    output = NotebookOutput()
     simulation = make_simulation()
     apply_event(simulation, StatusEvent(SimulationStatus.DONE))
-    snapshot = simulation.snapshot()
 
-    renderer.finished(snapshot)
+    output.print(render_line(simulation))
     captured = capsys.readouterr()
 
     assert "\x1b" not in captured.out
-    assert captured.out.rstrip() == display_module._render_line(snapshot).plain.rstrip()
+    assert captured.out.rstrip() == render_line(simulation).plain.rstrip()
     assert captured.out.count("\n") == 1
     assert captured.err == ""
     display_html.assert_not_called()
 
 
 # -----------------------------------------------------------------
-# Renderer selection
+# Output selection
 # -----------------------------------------------------------------
-def test_auto_renderer_selects_notebook_for_active_kernel(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_auto_output_selects_notebook_for_active_kernel(monkeypatch: pytest.MonkeyPatch) -> None:
     """Auto mode recognizes Jupyter kernels, including VS Code's kernel shell."""
     shell = Mock()
     shell.kernel = object()
     monkeypatch.setattr(builtins, "get_ipython", lambda: shell, raising=False)
-    notebook = Mock(spec=NotebookRenderer)
-    monkeypatch.setattr(display_module, "NotebookRenderer", Mock(return_value=notebook))
+    notebook = Mock(spec=NotebookOutput)
+    monkeypatch.setattr(display_module, "_NotebookOutput", Mock(return_value=notebook))
     terminal_factory = Mock()
-    monkeypatch.setattr(display_module, "TerminalRenderer", terminal_factory)
+    monkeypatch.setattr(display_module, "_TerminalOutput", terminal_factory)
 
-    assert display_module._auto_renderer() is notebook
+    assert display_module._auto_output(None) is notebook
     terminal_factory.assert_not_called()
 
 
-def test_auto_renderer_selects_terminal_without_kernel(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_auto_output_selects_terminal_without_kernel(monkeypatch: pytest.MonkeyPatch) -> None:
     """Auto mode keeps Rich in ordinary terminals without loading IPython."""
     monkeypatch.delattr(builtins, "get_ipython", raising=False)
-    terminal = Mock(spec=TerminalRenderer)
-    monkeypatch.setattr(display_module, "TerminalRenderer", Mock(return_value=terminal))
     notebook_loader = Mock()
     monkeypatch.setattr(display_module, "_load_notebook_api", notebook_loader)
 
-    assert display_module._auto_renderer() is terminal
+    assert isinstance(display_module._auto_output(None), TerminalOutput)
     notebook_loader.assert_not_called()
+
+
+def test_auto_output_draws_on_a_given_console_even_in_a_kernel(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An explicit console wins over notebook detection."""
+    shell = Mock()
+    shell.kernel = object()
+    monkeypatch.setattr(builtins, "get_ipython", lambda: shell, raising=False)
+    console = Console(file=StringIO())
+
+    output = display_module._auto_output(console)
+
+    assert isinstance(output, TerminalOutput)
+    assert output.console is console
 
 
 # -----------------------------------------------------------------
 # Progress display
 # -----------------------------------------------------------------
-class FakeManager:
-    """Hold submitted runs; ``started`` keeps only unfinished accepted ones, as ``SimulationManager`` does."""
-
-    def __init__(self, simulations: list[Simulation] | None = None) -> None:
-        self.simulations: list[Simulation] = simulations or []
-
-    @property
-    def started(self) -> list[Simulation]:
-        """Return the unfinished runs a worker took."""
-        return [simulation for simulation in self.simulations if simulation.is_accepted and not simulation.is_finished]
-
-
 def make_running(sim_id: int = 1) -> Simulation:
     """Build a simulation a daemon worker has accepted and started."""
     simulation = make_simulation(sim_id)
@@ -602,187 +600,91 @@ def make_running(sim_id: int = 1) -> Simulation:
     return simulation
 
 
-@pytest.fixture
-def renderer() -> Mock:
-    """Return a renderer mock exposing the renderer protocol."""
-    return Mock(spec=["show", "finished", "close"])
+def plain(*simulations: Simulation) -> list[str]:
+    """Return the text of the lines drawn for simulations."""
+    return [line.plain for line in lines(*simulations)]
 
 
 @pytest.fixture
-def make_display(renderer: Mock) -> Iterator[Callable[..., ProgressDisplay]]:
-    """Build displays over fake managers, closing each at teardown."""
-    displays: list[ProgressDisplay] = []
-
-    def create(manager: FakeManager | None = None, refresh_interval: float = NEVER) -> ProgressDisplay:
-        display = ProgressDisplay(
-            manager or FakeManager(),  # pyright: ignore[reportArgumentType]
-            refresh_interval=refresh_interval,
-            renderer=renderer,
-        )
-        displays.append(display)
-        return display
-
-    yield create
-
-    for display in displays:
-        display.close()
-        assert not display._thread.is_alive()
+def output(monkeypatch: pytest.MonkeyPatch) -> Mock:
+    """Make every new display draw on a mock output."""
+    output = Mock(spec=["show", "print", "close"])
+    monkeypatch.setattr(display_module, "_auto_output", Mock(return_value=output))
+    return output
 
 
-@pytest.mark.parametrize("refresh_interval", [0.0, -0.01, float("nan")])
-def test_progress_display_rejects_nonpositive_refresh_intervals(refresh_interval: float) -> None:
-    """Redraws need a positive interval."""
-    with pytest.raises(ValueError, match="refresh_interval must be positive"):
-        ProgressDisplay(FakeManager(), refresh_interval=refresh_interval, renderer=Mock())  # pyright: ignore[reportArgumentType]
+def shown(output: Mock) -> list[str]:
+    """Return the text of the live lines last shown."""
+    ((drawn,), _) = output.show.call_args
+    return [line.plain for line in drawn]
 
 
-def test_progress_display_follows_accepted_runs_and_redraws_in_the_background(
-    make_display: Callable[..., ProgressDisplay],
-    renderer: Mock,
-) -> None:
-    """The daemon redraw thread shows the manager's accepted runs, never its queued ones."""
-    running, queued = make_running(1), make_simulation(2)
-    drawn = Event()
-    renderer.show.side_effect = lambda _active: drawn.set()
+def test_progress_display_draws_accepted_runs_never_queued_ones(output: Mock) -> None:
+    """Runs a worker took are drawn in the order seen; queued ones never are."""
+    queued, second, first = make_simulation(1), make_running(2), make_running(3)
+    display = ProgressDisplay()
 
-    display = make_display(FakeManager([running, queued]), refresh_interval=0.01)
+    display.update([queued, second])
+    display.update([first])
 
-    assert display._thread.daemon
-    assert display._thread.name == "trnrun-progress"
-    assert drawn.wait(TEST_TIMEOUT)
-    assert renderer.show.call_args.args == ([running.snapshot()],)
+    assert shown(output) == plain(second, first)
+    output.print.assert_not_called()
 
 
-def test_progress_display_picks_up_a_queued_run_once_accepted(
-    make_display: Callable[..., ProgressDisplay],
-    renderer: Mock,
-) -> None:
-    """A queued run is drawn from the first redraw after a worker accepts it."""
-    simulation = make_simulation()
-    display = make_display(FakeManager([simulation]))
-    display._tick()
-    _ = simulation.apply(SimulationReply(SimulationState.ACCEPTED))
-    display._tick()
+def test_progress_display_redraws_changed_rows(output: Mock) -> None:
+    """A row that changes again is redrawn in place, keeping its order."""
+    first, second = make_running(1), make_running(2)
+    display = ProgressDisplay()
+    display.update([first, second])
 
-    assert renderer.show.call_args_list == [call([]), call([simulation.snapshot()])]
+    apply_event(first, ProgressEvent(100.0, 0.5, 500.0, 500.0))
+    display.update([first])
+
+    assert shown(output) == plain(first, second)
+    assert "(50%)" in shown(output)[0]
 
 
-def test_progress_display_prints_each_finished_run_once_then_drops_it(
-    make_display: Callable[..., ProgressDisplay],
-    renderer: Mock,
-) -> None:
-    """Finished runs are printed once and leave the live rows; unfinished ones keep their order."""
-    first, second, third = make_running(1), make_running(2), make_running(3)
-    display = make_display(FakeManager([first, second, third]))
-    display._tick()
-    renderer.reset_mock()
+def test_progress_display_prints_each_finished_run_once_then_drops_it(output: Mock) -> None:
+    """A finished run is printed above the live rows and leaves them, even one never seen running."""
+    first, second, third = make_running(1), make_running(2), make_simulation(3)
+    display = ProgressDisplay()
+    display.update([first, second])
+    output.reset_mock()
     finish(second)
+    finish(third)
 
-    display._tick()
-    display._tick()
+    display.update([second, third])
 
-    renderer.finished.assert_called_once_with(second.snapshot())
-    assert renderer.show.call_args_list == [call([first.snapshot(), third.snapshot()])] * 2
-    assert list(display._rows) == [1, 3]
+    assert [printed.plain for ((printed,), _) in output.print.call_args_list] == plain(second, third)
+    assert shown(output) == plain(first)
+    assert list(display._rows) == [1]
 
 
-def test_progress_display_logs_renderer_failures_without_repeating_lines(
-    make_display: Callable[..., ProgressDisplay],
-    renderer: Mock,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """A failing renderer is logged; its final line is not retried and redraws continue."""
+def test_progress_display_close_clears_rows_and_releases_output(output: Mock) -> None:
+    """Close prints nothing more, forgets the rows, and releases the output, leaving runs as they were."""
+    running = make_running()
+    display = ProgressDisplay()
+    display.update([running])
+    output.reset_mock()
+    before = (running.info, running.logs)
+
+    display.close()
+
+    assert output.method_calls == [call.close()]
+    assert display._rows == {}
+    assert (running.info, running.logs) == before
+
+
+def test_progress_display_uses_the_given_console(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A console passed in receives the live region and final lines."""
+    monkeypatch.delattr(builtins, "get_ipython", raising=False)
+    buffer = StringIO()
     simulation = make_running()
-    display = make_display(FakeManager([simulation]))
-    display._tick()
-    renderer.reset_mock()
+    display = ProgressDisplay(Console(file=buffer, width=200, color_system=None))
+
+    display.update([simulation])
     finish(simulation)
-    renderer.finished.side_effect = RuntimeError("render failed")
-
-    with caplog.at_level(logging.ERROR, logger="trnrun.display"):
-        display._tick()
-    display._tick()
-
-    assert [record.exc_info[1] for record in caplog.records if record.exc_info] == [renderer.finished.side_effect]
-    renderer.finished.assert_called_once()
-    renderer.show.assert_called_once_with([])
-
-
-@pytest.mark.parametrize("finished_status", [SimulationStatus.DONE, SimulationStatus.CANCELLED, SimulationStatus.ERROR])
-def test_progress_display_close_clears_rows_and_releases_renderer(
-    make_display: Callable[..., ProgressDisplay],
-    renderer: Mock,
-    finished_status: SimulationStatus,
-) -> None:
-    """Close prints only daemon-confirmed finished runs, then clears the live region and rows."""
-    running, done = make_simulation(1), make_running(2)
-    apply_event(running, StatusEvent(SimulationStatus.RUNNING, "still running"))
-    apply_event(running, ProgressEvent(5.0, 0.5, 500.0, 500.0))
-    apply_event(running, LogEvent("Notice", message="retained"))
-    display = make_display(FakeManager([running, done]))
-    display._tick()
-    renderer.reset_mock()
-    finish(done, finished_status)
-    before = [(simulation, simulation._reply, simulation.snapshot(), simulation.logs) for simulation in (running, done)]
-
-    display.close()
+    display.update([simulation])
     display.close()
 
-    assert not display._thread.is_alive()
-    assert renderer.method_calls == [
-        call.finished(done.snapshot()),
-        call.show([]),
-        call.close(),
-    ]
-    assert display._rows == {}
-    for simulation, reply, snapshot, logs in before:
-        assert simulation._reply is reply
-        assert simulation.snapshot() == snapshot
-        assert simulation.logs == logs
-    assert not running.is_finished
-
-
-@pytest.mark.parametrize("state", [SimulationState.QUEUED, SimulationState.ACCEPTED, SimulationState.RUNNING])
-def test_progress_display_close_suppresses_unfinished_runs(
-    make_display: Callable[..., ProgressDisplay],
-    renderer: Mock,
-    state: SimulationState,
-) -> None:
-    """Unfinished runs never get a final line or remain in the last frame, even with a DONE status."""
-    simulation = make_simulation()
-    _ = simulation.apply(
-        SimulationReply(state, status=StatusEvent(SimulationStatus.DONE), notices=1, logs=(LogEvent("Notice"),)),
-    )
-    reply, snapshot, logs = simulation._reply, simulation.snapshot(), simulation.logs
-    display = make_display(FakeManager([simulation]))
-    display._tick()
-    renderer.reset_mock()
-
-    display.close()
-    display.close()
-
-    assert renderer.method_calls == [call.show([]), call.close()]
-    assert display._rows == {}
-    assert not display._thread.is_alive()
-    assert simulation._reply is reply
-    assert simulation.snapshot() == snapshot
-    assert simulation.logs == logs
-    assert not simulation.is_finished
-
-
-def test_progress_display_context_closes(make_display: Callable[..., ProgressDisplay], renderer: Mock) -> None:
-    """Leaving the context closes the display."""
-    with make_display() as display:
-        assert display._thread.is_alive()
-    assert not display._thread.is_alive()
-    renderer.close.assert_called_once_with()
-
-
-def test_progress_display_selects_a_renderer_automatically(monkeypatch: pytest.MonkeyPatch, renderer: Mock) -> None:
-    """Without a renderer, the environment decides between terminal and notebook."""
-    monkeypatch.setattr(display_module, "_auto_renderer", Mock(return_value=renderer))
-
-    display = ProgressDisplay(FakeManager(), refresh_interval=NEVER)  # pyright: ignore[reportArgumentType]
-    display.close()
-
-    renderer.close.assert_called_once_with()
+    assert render_line(simulation).plain.rstrip() in buffer.getvalue()

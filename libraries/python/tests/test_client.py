@@ -44,7 +44,6 @@ def simulation_data(run_id: str, state: str = "RUNNING", **fields: object) -> di
         "status": None,
         "config": None,
         "progress": None,
-        "logStart": 0,
         "logs": [],
         "notices": 0,
         "warnings": 0,
@@ -90,8 +89,8 @@ def test_add_sends_the_deck_and_runner_arguments(client: DaemonClient, process: 
     ]
 
 
-def test_changes_parse_each_simulation(client: DaemonClient, process: ScriptedProcess) -> None:
-    """Each changed simulation is parsed with its new logs and where they start."""
+def test_pull_parses_each_simulation(client: DaemonClient, process: ScriptedProcess) -> None:
+    """Each pulled simulation is parsed with its new logs."""
     log = {
         "severity": "Warning",
         "time": 5.0,
@@ -104,14 +103,12 @@ def test_changes_parse_each_simulation(client: DaemonClient, process: ScriptedPr
     process.replies.append(
         {
             "ok": True,
-            "revision": 5,
             "simulations": [
                 simulation_data(
                     "1",
                     "FINISHED",
                     status={"status": "DONE", "message": ""},
                     exitCode=0,
-                    logStart=1,
                     logs=[log],
                     warnings=2,
                     succeeded=True,
@@ -120,54 +117,37 @@ def test_changes_parse_each_simulation(client: DaemonClient, process: ScriptedPr
         },
     )
 
-    assert client.changes().simulations["1"] == SimulationReply(
+    assert client.pull()["1"] == SimulationReply(
         SimulationState.FINISHED,
         exit_code=0,
         status=StatusEvent(SimulationStatus.DONE),
         logs=(LogEvent("Warning", 5.0, message="late"),),
-        log_start=1,
         warnings=2,
         succeeded=True,
     )
 
 
-def test_changes_send_since_and_return_the_revision_with_replies_by_run_id(
+def test_pull_keys_the_simulations_by_run_id_in_the_daemons_order(
     client: DaemonClient,
     process: ScriptedProcess,
 ) -> None:
-    """Changes ask from a revision and key the changed runs by run ID, in the daemon's order."""
-    process.replies.append(
-        {"ok": True, "revision": 12, "simulations": [simulation_data("2", logStart=3), simulation_data("1", "QUEUED")]},
-    )
-    process.replies.append({"ok": True, "revision": 12, "simulations": []})
+    """Pull sends only its command and keys the runs by run ID, in the daemon's order."""
+    process.replies.append({"ok": True, "simulations": [simulation_data("2"), simulation_data("1", "QUEUED")]})
 
-    changes = client.changes(since=7)
-    everything = client.changes()
+    simulations = client.pull()
 
-    assert process.requests == [{"cmd": "changes", "since": 7}, {"cmd": "changes", "since": 0}]
-    assert changes.revision == 12
-    assert list(changes.simulations) == ["2", "1"]
-    assert changes.simulations["2"].log_start == 3
-    assert changes.simulations["1"].state is SimulationState.QUEUED
-    assert everything.simulations == {}
-
-
-def test_remove_names_the_run(client: DaemonClient, process: ScriptedProcess) -> None:
-    """Remove sends only the run ID."""
-    client.remove("1")
-
-    assert process.requests == [{"cmd": "remove", "runId": "1"}]
+    assert process.requests == [{"cmd": "pull"}]
+    assert list(simulations) == ["2", "1"]
+    assert simulations["1"].state is SimulationState.QUEUED
 
 
 @pytest.mark.parametrize(
     ("reply", "message"),
     [
-        ({"ok": True, "simulations": []}, "'revision' must be an integer"),
-        ({"ok": True, "revision": True, "simulations": []}, "'revision' must be an integer"),
-        ({"ok": True, "revision": 1}, "'simulations' must be a list of objects"),
-        ({"ok": True, "revision": 1, "simulations": {}}, "'simulations' must be a list of objects"),
-        ({"ok": True, "revision": 1, "simulations": [1]}, "'simulations' must be a list of objects"),
-        ({"ok": True, "revision": 1, "simulations": [{"state": "QUEUED"}]}, "'runId' must be a string"),
+        ({"ok": True}, "'simulations' must be a list of objects"),
+        ({"ok": True, "simulations": {}}, "'simulations' must be a list of objects"),
+        ({"ok": True, "simulations": [1]}, "'simulations' must be a list of objects"),
+        ({"ok": True, "simulations": [{"state": "QUEUED"}]}, "'runId' must be a string"),
     ],
 )
 def test_malformed_replies_raise_value_error(
@@ -180,7 +160,17 @@ def test_malformed_replies_raise_value_error(
     process.replies.append(reply)
 
     with pytest.raises(ValueError, match=message):
-        _ = client.changes()
+        _ = client.pull()
+
+
+def test_pull_with_a_run_id_names_it(client: DaemonClient, process: ScriptedProcess) -> None:
+    """Pulling one run sends its run ID; the reply holds it, or nothing."""
+    process.replies.append({"ok": True, "simulations": [simulation_data("2")]})
+    process.replies.append({"ok": True, "simulations": []})
+
+    assert list(client.pull("2")) == ["2"]
+    assert client.pull("2") == {}
+    assert process.requests == [{"cmd": "pull", "runId": "2"}] * 2
 
 
 def test_shutdown_asks_the_daemon_then_waits_for_its_exit(client: DaemonClient, process: ScriptedProcess) -> None:
@@ -204,17 +194,22 @@ def test_kill_and_context_exit_kill_the_daemon(client: DaemonClient, process: Sc
 # -----------------------------------------------------------------
 # Real daemon
 # -----------------------------------------------------------------
-def _await_state(client: DaemonClient, run_id: str, state: SimulationState) -> SimulationReply:
-    """Poll until `run_id` reaches `state`, returning its reply with all its logs."""
+def _await_state(client: DaemonClient, run_id: str, state: SimulationState) -> tuple[SimulationReply, list[LogEvent]]:
+    """Poll until `run_id` reaches `state`, returning its last reply and every log entry the polls returned."""
     deadline = monotonic() + TEST_TIMEOUT
-    while (reply := client.changes().simulations[run_id]).state is not state:
+    logs: list[LogEvent] = []
+    while True:
+        reply = client.pull(run_id).get(run_id)
+        if reply is not None:
+            logs.extend(reply.logs)
+            if reply.state is state:
+                return reply, logs
         assert monotonic() < deadline, f"run {run_id} never reached {state}"
         sleep(0.01)
-    return reply
 
 
 def test_real_daemon_serves_every_command(tmp_path: Path, fake_trnrun: Path) -> None:
-    """Add, poll only what changed, and remove a run through the bundled daemon."""
+    """Add and poll a run to its end through the bundled daemon, which then forgets it."""
     deck = tmp_path / "done-a.dck"
     deck.touch()
 
@@ -222,19 +217,15 @@ def test_real_daemon_serves_every_command(tmp_path: Path, fake_trnrun: Path) -> 
         client.add("1", deck)
         with pytest.raises(ValueError, match="Invalid or duplicate runId: 1"):
             client.add("1", deck)
-        full = _await_state(client, "1", SimulationState.FINISHED)
+        final, logs = _await_state(client, "1", SimulationState.FINISHED)
 
-        latest = client.changes()
-        assert latest.simulations == {"1": full}
-        assert client.changes(latest.revision).simulations == {}
-        client.remove("1")
-        assert client.changes().simulations == {}
+        assert client.pull() == {}
         with pytest.raises(ValueError, match="Unknown runId: 1"):
-            client.remove("1")
+            _ = client.pull("1")  # Forgotten once pulled finished.
+        client.add("1", deck)  # Forgotten, so its run ID is free again.
 
-    assert full.succeeded
-    assert full.log_start == 0
-    assert len(full.logs) == full.notices + full.warnings + full.fatals == 3
+    assert final.succeeded
+    assert len(logs) == final.notices + final.warnings + final.fatals == 3
 
 
 def test_real_daemon_shutdown_finishes_running_runs_before_exiting(tmp_path: Path, fake_trnrun: Path) -> None:
@@ -264,4 +255,4 @@ def test_real_daemon_shutdown_finishes_running_runs_before_exiting(tmp_path: Pat
     assert gate.with_suffix(".released").is_file()
     assert client._process._process.returncode == 0
     with pytest.raises(RuntimeError, match="daemon closure"):
-        _ = client.changes()
+        _ = client.pull()
