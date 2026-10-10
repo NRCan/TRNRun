@@ -18,6 +18,12 @@ proc columns(scheduler: Scheduler, runId, expressions: string): Row =
   defer: reader.close()
   reader.getRow(sql("SELECT " & expressions & " FROM runs WHERE run_id = ?"), runId)
 
+proc queued(scheduler: Scheduler): int =
+  ## Runs `QUEUED` in the database.
+  let reader = db_sqlite.open(scheduler.databasePath, "", "", "")
+  defer: reader.close()
+  parseInt(reader.getValue(sql"SELECT count(*) FROM runs WHERE state = 'QUEUED'"))
+
 proc stateOf(scheduler: Scheduler, runId: string): SimulationState =
   ## Saved state of `runId`.
   parseEnum[SimulationState](scheduler.columns(runId, "state")[0])
@@ -123,7 +129,7 @@ proc runTests() =
       scheduler.waitFor("third", ssFinished)
       check scheduler.columns("second", "succeeded") == @["1"]
 
-    test "holds only dispatched runs in memory and reads every run from the database":
+    test "holds only dispatched runs in memory and queues the rest in the database":
       let scheduler = newScheduler(trnrun, 2, testDirectory / "memory.sqlite3")
       defer: scheduler.shutdown()
 
@@ -133,12 +139,12 @@ proc runTests() =
       for runId in runIds:
         scheduler.add(runId, doneDeck)
       check scheduler.running.len == 2
-      check scheduler.queue.len == 3
+      check scheduler.queued == 3
       for runId in runIds:
         scheduler.waitFor(runId, ssFinished)
         check scheduler.running.len <= 2
       check scheduler.running.len == 0
-      check scheduler.queue.len == 0
+      check scheduler.queued == 0
       for runId in runIds:
         check scheduler.columns(runId, "succeeded") == @["1"]
 
@@ -214,7 +220,6 @@ proc runTests() =
       scheduler.waitFor("running", ssRunning)
       scheduler.abandon() # Returns although the gate keeps TRNRun running.
       check scheduler.running.len == 0
-      check scheduler.queue.len == 0
       expect ValueError:
         scheduler.add("late", doneDeck)
       scheduler.abandon()
@@ -225,6 +230,7 @@ proc runTests() =
         @["FINISHED", "CANCELLED", "Interrupted", "Interrupted: the client disconnected", "1", "1"]
       check scheduler.columns("queued", "state, error") ==
         @["FINISHED", "Not started: the client disconnected"]
+      check scheduler.queued == 0
       check not fileExists(path & ".lock")
 
       release(deckFile) # Lets TRNRun exit so the test can join the workers.

@@ -271,20 +271,24 @@ proc runTests() =
       defer: third.closeDaemon()
       check third.request(%*{"cmd": "ready"})["ok"].getBool()
 
-    test "a killed daemon's runs are finished as interrupted by the next one":
+    test "the next daemon finishes a killed one's runs as interrupted, without running them":
       let
         deckFile = testDirectory / "gate-killed.dck"
+        queuedDeck = testDirectory / "done-killed.dck"
         databaseOption = "--database:" & (testDirectory / "killed.sqlite3")
-        killed = startDaemon(trnrunOption, databaseOption)
+        killed = startDaemon(trnrunOption, "--maxConcurrent:1", databaseOption)
       defer: killed.closeDaemon()
       writeFile(deckFile, "fake TRNSYS deck")
+      writeFile(queuedDeck, "fake TRNSYS deck")
       let reader = killed.openReader()
       defer: reader.close()
       discard killed.request(%*{"cmd": "add", "runId": "run", "deckFile": deckFile})
+      discard killed.request(%*{"cmd": "add", "runId": "queued", "deckFile": queuedDeck})
       reader.waitForState("run", "RUNNING")
       killed.kill() # No chance to save anything: the run stays RUNNING.
       discard killed.waitForExit(5_000)
       check reader.columns("run", "state, finished_at IS NULL") == @["RUNNING", "1"]
+      check reader.columns("queued", "state") == @["QUEUED"]
 
       let next = startDaemon(trnrunOption, databaseOption)
       defer: next.closeDaemon()
@@ -292,6 +296,8 @@ proc runTests() =
       reader.waitForState("run", "FINISHED")
       check reader.columns("run", "trnrun_status, error") ==
         @["CANCELLED", "Interrupted: its daemon stopped unexpectedly"]
+      check reader.columns("queued", "state, error, started_at IS NULL") ==
+        @["FINISHED", "Not started: its daemon stopped unexpectedly", "1"]
       check next.request(%*{"cmd": "shutdown"}) == %*{"ok": true}
       check next.waitForExit(5_000) == 0
 

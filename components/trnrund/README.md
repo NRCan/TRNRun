@@ -79,6 +79,7 @@ The database has two tables. `runs` holds one row per run:
 | `error` | text | Execution error reported by the daemon |
 | `submitted_at`, `started_at`, `finished_at` | text | Timestamps, see below |
 | `deck_file` | text | Absolute deck path |
+| `trnrun_args` | text | The `trnrunArgs` it was added with, as a JSON array |
 | `start_time`, `stop_time`, `time_step` | real | TRNRun's `CONFIG`: simulated hours |
 | `setting` | text | TRNRun's `SETTING` event as JSON, without its `kind` |
 
@@ -95,7 +96,7 @@ event:
 | `unit_id`, `type_id`, `message_code` | integer | TRNSYS unit, type, and message code; `NULL` if none |
 | `message`, `information` | text | TRNSYS text; `NULL` if none |
 
-`PRAGMA user_version` returns the schema version, currently `1`. It changes
+`PRAGMA user_version` returns the schema version, currently `2`. It changes
 whenever this layout does, and a daemon refuses a database of another version,
 so a client can check it once after opening.
 
@@ -154,7 +155,8 @@ finished before the client started.
 
 Open the database read-only, for example with `?mode=ro` in a SQLite URI, and
 keep read transactions short. It is in WAL mode, so keep it on a local disk
-and leave its `-wal` and `-shm` files beside it.
+and leave its `-wal` and `-shm` files beside it; the daemon refuses to start
+where WAL is unavailable, such as on a network share.
 
 Runs stay in the database after the daemon exits, and a `runId` can never be
 reused in the same database, even by a later daemon. Use a new database, or
@@ -178,8 +180,9 @@ through real TRNSYS; adjust its configuration for your installation.
 
 ## Shutdown and failures
 
-- The `shutdown` command acknowledges immediately, cancels runs not yet
-  dispatched, waits for submitted runs to finish, and joins the workers.
+- The `shutdown` command acknowledges immediately, cancels queued runs as
+  `FINISHED` and `CANCELLED` with the error `Not started: the daemon shut down`,
+  waits for dispatched runs to finish, and joins the workers.
 - Closing stdin exits immediately, without waiting for running simulations.
   Before exiting, the daemon saves every unfinished run as `FINISHED` and
   `CANCELLED`, with the error `Not started: the client disconnected` or
@@ -188,8 +191,8 @@ through real TRNSYS; adjust its configuration for your installation.
   when the daemon exits.
 - If the daemon dies without saving, for example when it is killed, the next
   daemon to open the database finishes its unfinished runs the same way, with
-  the reason `its daemon stopped unexpectedly`. Until then, those runs keep
-  their last saved state.
+  the reason `its daemon stopped unexpectedly`, and never runs them. Until
+  then, those runs keep their last saved state.
 - A database failure is fatal: the daemon exits rather than acknowledge a run
   it could not save.
 - Startup and fatal diagnostics go to stderr; stdout is reserved for replies

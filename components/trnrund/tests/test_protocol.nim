@@ -1,10 +1,10 @@
-import std/[deques, importutils, json, os, sets, strutils, tempfiles, unittest]
+import std/[importutils, json, options, os, sets, strutils, tempfiles, unittest]
 import db_connector/db_sqlite
 
 import ../src/[database, messages, protocol, scheduler]
 import ./fake_trnrun
 
-privateAccess(Scheduler) # TRNRun arguments are only in memory: they are not saved.
+privateAccess(Scheduler)
 
 proc createDeck(directory, name: string): string =
   result = directory / name
@@ -61,9 +61,8 @@ proc runTests() =
       }) == %*{"ok": true, "state": "QUEUED"}
       check "b" in scheduler.running
       check "a" notin scheduler.running
-      check scheduler.queue.len == 1
-      check scheduler.queue[0].runId == "a"
-      check scheduler.queue[0].trnrunArgs == @["--pollMs:50"]
+      check scheduler.database.nextQueued() ==
+        some((runId: "a", deckFile: doneDeck, trnrunArgs: @["--pollMs:50"]))
 
     test "invalid submissions remain ordinary error replies":
       let scheduler = newScheduler(trnrun, 1, testDirectory / "invalid.sqlite3")

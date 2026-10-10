@@ -5,7 +5,7 @@
 ## worker. Shutdown finishes submitted work, then stops every worker.
 ##
 ## The work channel remains open to avoid a Nim 2.2 ORC crash when closing
-## channels that transported moved strings, so a pool is started only once.
+## channels that transported moved strings, so start a pool only once.
 
 import ./messages
 import ./trnrun
@@ -24,7 +24,6 @@ type
     ## workers run, since each holds a `ptr Channel[Work]` into it.
     work: Channel[Work]
     threads: seq[Thread[WorkerContext]]
-    started: bool ## Remains true after shutdown or a failed thread startup.
 
 # Worker
 
@@ -83,18 +82,14 @@ proc start*(
 ) =
   ## Starts `workers` threads that run the TRNRun at `trnrunPath`.
   ##
-  ## Workers report to `inbox`. Raises `ValueError` if the pool was already
-  ## started, `workers` < 1, or `inbox` is nil. If a thread fails to start,
-  ## the ones already running are stopped before the error propagates.
-  if pool.started:
-    raise newException(ValueError, "Worker pool has already been started")
-  if workers < 1:
-    raise newException(ValueError, "'workers' must be at least 1")
-  if inbox == nil:
-    raise newException(ValueError, "Worker pool inbox must not be nil")
+  ## Workers report to `inbox`. Asserts the pool is not running, `workers`
+  ## >= 1, and `inbox` is set. If a thread fails to start, the ones already
+  ## running are stopped before the error propagates.
+  doAssert pool.threads.len == 0, "Worker pool is already running"
+  doAssert workers >= 1, "'workers' must be at least 1"
+  doAssert inbox != nil, "Worker pool inbox must not be nil"
 
   pool.work.open()
-  pool.started = true
 
   {.push warning[ProveInit]: off, warning[Uninit]: off.}
   pool.threads = newSeq[Thread[WorkerContext]](workers)
@@ -110,9 +105,7 @@ proc start*(
   {.pop.}
 
 proc submit*(pool: var WorkerPool, work: Work) =
-  ## Hands `wkRun` work to the next free worker; `ValueError` otherwise or if stopped.
-  if pool.threads.len == 0:
-    raise newException(ValueError, "Worker pool is not running")
-  if work.kind != wkRun:
-    raise newException(ValueError, "Only run work can be submitted")
+  ## Hands `wkRun` work to the next free worker; asserts the pool is running.
+  doAssert pool.threads.len > 0, "Worker pool is not running"
+  doAssert work.kind == wkRun, "Only run work can be submitted"
   pool.work.send(work)

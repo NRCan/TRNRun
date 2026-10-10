@@ -69,12 +69,34 @@ suite "run database":
   test "submits a queued run, NULL where TRNRun has not reported yet":
     db.submit("run", "deck.dck")
     check "run" in db
-    check columns("run", "revision, state, deck_file, notices, warnings, fatals") ==
-      @["1", "QUEUED", "deck.dck", "0", "0", "0"]
+    check columns("run", "revision, state, deck_file, trnrun_args, notices, warnings, fatals") ==
+      @["1", "QUEUED", "deck.dck", "[]", "0", "0", "0"]
     check columns("run", """setting IS NULL AND trnrun_status IS NULL AND
       trnrun_message IS NULL AND start_time IS NULL AND sim_time IS NULL AND
       exit_code IS NULL AND error IS NULL AND succeeded IS NULL AND
       started_at IS NULL AND finished_at IS NULL""") == @["1"]
+
+  test "nextQueued returns the run queued longest, with its TRNRun arguments":
+    check db.nextQueued().isNone
+    db.submit("first", "first.dck", @["--pollMs:50", "--guiVisibility:hidden"])
+    db.submit("second", "second.dck")
+    db.submit("third", "third.dck")
+    check db.nextQueued() == some((runId: "first", deckFile: "first.dck",
+      trnrunArgs: @["--pollMs:50", "--guiVisibility:hidden"]))
+    db.accept("first")
+    db.accept("third") # Out of order: the queue follows the database alone.
+    check db.nextQueued() ==
+      some((runId: "second", deckFile: "second.dck", trnrunArgs: newSeq[string]()))
+    db.accept("second")
+    check db.nextQueued().isNone
+
+  test "nextQueued raises DatabaseError on corrupt TRNRun arguments":
+    db.submit("corrupt", "deck.dck")
+    let writer = db_sqlite.open(path, "", "", "")
+    writer.exec(sql"UPDATE runs SET trnrun_args = 'not json' WHERE run_id = 'corrupt'")
+    writer.close()
+    expect DatabaseError:
+      discard db.nextQueued()
 
   test "each change bumps the revision and keeps the other columns":
     db.submit("other", "deck.dck")
@@ -190,7 +212,7 @@ suite "run database":
 
     db.interrupt("the daemon shut down", {ssQueued})
     check columns("running", "state") == @["RUNNING"]
-    db.interrupt("the client disconnected")
+    db.interrupt("the client disconnected", Unfinished)
 
     const Outcome = """state, trnrun_status, trnrun_message, error, exit_code IS NULL,
       started_at IS NULL, finished_at IS NOT NULL, succeeded"""
@@ -210,6 +232,9 @@ suite "run database":
         index: "runs_state"),
       (query: "SELECT count(*) FROM runs WHERE state IN ('QUEUED', 'ACCEPTED')",
         index: "runs_state"),
+      (query: """SELECT run_id, deck_file, trnrun_args FROM runs
+          WHERE state = 'QUEUED' ORDER BY revision LIMIT 1""",
+        index: "runs_state"), # A single plan row: no sort.
       (query: "SELECT * FROM logs WHERE run_id = 'run' ORDER BY log_id",
         index: "logs_run_id"),
     ]
@@ -231,7 +256,7 @@ suite "run database":
   test "reopening keeps every run and continues the revisions":
     db.submit("first", "deck.dck")
     db.submit("second", "deck.dck")
-    db.interrupt("the daemon shut down")
+    db.interrupt("the daemon shut down", {ssQueued})
     db.close()
     db = openDatabase(path)
     check "first" in db
@@ -243,15 +268,18 @@ suite "run database":
   test "reopening finishes the runs an earlier daemon left unfinished, keeping their fields":
     db.finished("done")
     db.submit("queued", "deck.dck")
+    db.submit("accepted", "deck.dck")
+    db.accept("accepted")
     db.reported("running")
     let before = columns("running", Reported & ", started_at, setting")
     let lastRevision = parseInt(reader.getValue(sql"SELECT max(revision) FROM runs"))
     db.close() # As if the daemon died: nothing marked these runs finished.
 
     db = openDatabase(path)
-    check reader.getValue(sql"SELECT count(*) FROM runs WHERE state != 'FINISHED'") == "0"
-    check reader.getAllRows(sql"""SELECT run_id FROM runs
-      WHERE revision > ? ORDER BY revision""", lastRevision) == @[@["queued"], @["running"]]
+    check reader.getAllRows(sql"""SELECT run_id, state FROM runs
+      WHERE revision > ? ORDER BY revision""", lastRevision) ==
+      @[@["queued", "FINISHED"], @["accepted", "FINISHED"], @["running", "FINISHED"]]
+    check db.nextQueued().isNone # The new daemon only runs its own submissions.
     check columns("queued", "trnrun_status, trnrun_message, error, started_at IS NULL") ==
       @["CANCELLED", "Not started", "Not started: its daemon stopped unexpectedly", "1"]
     check columns("running", "trnrun_status, trnrun_message, error, exit_code IS NULL") ==

@@ -5,9 +5,8 @@
 ## post `Message`s to the scheduler inbox instead, as does the thread reading
 ## client requests. One shared inbox lets the scheduler block on a single
 ## channel, since Nim channels cannot wait on several at once. Work flows the
-## other way through one shared worker channel. Both are flat objects of plain
-## values so channel deep copies stay trivial; each kind lists the fields it
-## sets, and the rest keep their defaults.
+## other way through one shared worker channel. Both are flat objects: each
+## kind lists the fields it sets, and the rest keep their defaults.
 
 import std/options
 

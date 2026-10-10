@@ -58,12 +58,11 @@ proc readRequests(inbox: ptr Channel[Message]) {.thread.} =
     discard # A broken pipe means the client is gone, like a closed one.
   inbox[].send(Message(kind: mkClosed))
 
-proc main(): int =
+proc main() =
   ## Collects user input from the command line and serves client requests.
   ##
-  ## Returns 0. Failures raise instead: `ValueError` for usage errors, mapped
-  ## to exit code 2 at the top level, and anything else to 1.
-  result = 0
+  ## Failures raise: `ValueError` for usage errors, mapped to exit code 2 at
+  ## the top level, and anything else to 1.
   var input = defaultCliInput()
 
   var parser = initOptParser()
@@ -76,10 +75,10 @@ proc main(): int =
       case parser.key
       of "help", "h":
         echo HelpText
-        return 0
+        return
       of "version", "v":
         echo NimblePkgVersion
-        return 0
+        return
       else:
         if not input.applyOption(parser.key, parser.val):
           let dashes = if parser.kind == cmdShortOption: "-" else: "--"
@@ -98,14 +97,14 @@ proc main(): int =
     let message = scheduler.nextRequest()
     if message.kind == mkClosed:
       scheduler.abandon()
-      return 0
+      return
 
     let (reply, shutdown) = scheduler.handleRequest(message.line)
     stdout.writeLine(reply)
     stdout.flushFile()
     if shutdown:
       scheduler.shutdown()
-      return 0
+      return
 
 proc writeError(message: string) =
   ## Reports a fatal diagnostic for humans. Clients must not parse stderr.
@@ -119,9 +118,10 @@ when isMainModule:
   let exitCode =
     try:
       main()
+      0
     except ValueError as error:
       writeError(error.msg)
-      2
+      if daemonScheduler == nil: 2 else: 1 # Once serving, a ValueError is a bug, not a usage error.
     except CatchableError as error:
       writeError(error.msg)
       1

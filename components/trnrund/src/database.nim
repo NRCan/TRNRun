@@ -7,7 +7,7 @@
 
 import std/[json, options, os, oserrors, sequtils, strutils, winlean]
 import db_connector/db_sqlite
-from db_connector/sqlite3 import PStmt, SQLITE_DONE, SQLITE_ROW, column_text, step
+from db_connector/sqlite3 import PStmt, SQLITE_DONE, SQLITE_ROW, column_count, column_text, step
 import ./events
 
 type
@@ -25,13 +25,16 @@ type
     ssRunning = "RUNNING" ## The TRNRun process started.
     ssFinished = "FINISHED" ## Completed or failed; see `succeeded`.
 
+  QueuedRun* = tuple[runId, deckFile: string, trnrunArgs: seq[string]]
+    ## What a worker needs to run a queued run.
+
   Database* = object
     path*: string ## Absolute and normalized.
     connection: DbConn
     lock: Handle ## Exclusive handle on the lock file.
 
 const
-  SchemaVersion* = 1 ## Bump whenever the tables or the `setting` JSON change what clients read.
+  SchemaVersion* = 2 ## Bump whenever the tables or the `setting` JSON change what clients read.
   Schema = [
     """CREATE TABLE runs (
       -- Identity and daemon lifecycle
@@ -58,14 +61,16 @@ const
       finished_at TEXT,
       -- Set once at submission or launch
       deck_file TEXT NOT NULL,
+      trnrun_args TEXT NOT NULL,
       start_time REAL,
       stop_time REAL,
       time_step REAL,
       setting TEXT)""",
     # Serves readers polling with `revision > ?` and each save's `max(revision)`.
     "CREATE UNIQUE INDEX runs_revision ON runs (revision)",
-    # Serves `state = ?` and `state IN (...)`, such as the few RUNNING runs among many QUEUED.
-    "CREATE INDEX runs_state ON runs (state)",
+    # Serves `state = ?` and `state IN (...)`, such as the few RUNNING runs among many
+    # QUEUED, and the oldest queued run, since a queued row keeps its submission revision.
+    "CREATE INDEX runs_state ON runs (state, revision)",
     """CREATE TABLE logs (
       log_id INTEGER PRIMARY KEY,
       run_id TEXT NOT NULL,
@@ -88,9 +93,10 @@ const
 
 proc execute(
     self: Database, query: string, args: varargs[JsonNode, `%`]
-): Option[string] {.discardable.} =
-  ## Runs one statement with `args` bound by JSON kind; returns its first value, if any.
-  # db_sqlite splices quoted args into the SQL and its getValue ignores errors.
+): seq[Row] {.discardable.} =
+  ## Runs one statement with `args` bound by JSON kind; returns its rows.
+  # db_sqlite splices quoted args into the SQL, and has no NULL for a none `Option`.
+  result = @[]
   let statement = self.connection.prepare(query)
   try:
     for index, arg in args:
@@ -102,10 +108,12 @@ proc execute(
       of JFloat: statement.bindParam(position, arg.getFloat())
       of JString: statement.bindParam(position, arg.getStr())
       of JObject, JArray: statement.bindParam(position, $arg)
-    case step(statement.PStmt)
-    of SQLITE_ROW: some($column_text(statement.PStmt, 0))
-    of SQLITE_DONE: none(string)
-    else: dbError(self.connection)
+    while true:
+      case step(statement.PStmt)
+      of SQLITE_ROW:
+        result.add((0'i32 ..< column_count(statement.PStmt)).mapIt($column_text(statement.PStmt, it)))
+      of SQLITE_DONE: break
+      else: dbError(self.connection)
   finally:
     finalize(statement)
 
@@ -130,15 +138,27 @@ proc update(self: Database, runId, assignments: string, args: varargs[JsonNode, 
 
 proc contains*(self: Database, runId: string): bool =
   ## Whether `runId` was ever saved, by this daemon or an earlier one.
-  self.execute("SELECT 1 FROM runs WHERE run_id = ?", runId).isSome
+  self.execute("SELECT 1 FROM runs WHERE run_id = ?", runId).len > 0
 
-proc submit*(self: Database, runId, deckFile: string) =
+proc submit*(self: Database, runId, deckFile: string, trnrunArgs: seq[string] = @[]) =
   ## Saves a new run as `QUEUED`; `runId` must not be in the database yet.
   self.execute("""INSERT INTO runs (run_id, revision, state, notices, warnings, fatals,
-      submitted_at, deck_file)
+      submitted_at, deck_file, trnrun_args)
     VALUES (?, (SELECT coalesce(max(revision), 0) + 1 FROM runs), ?, 0, 0, 0, """ &
-      Now & ", ?)",
-    runId, ssQueued, deckFile)
+      Now & ", ?, ?)",
+    runId, ssQueued, deckFile, trnrunArgs)
+
+proc nextQueued*(self: Database): Option[QueuedRun] =
+  ## The run queued longest, if any; `DatabaseError` if its saved arguments are corrupt.
+  result = none(QueuedRun)
+  for row in self.execute("""SELECT run_id, deck_file, trnrun_args
+      FROM runs WHERE state = ? ORDER BY revision LIMIT 1""", ssQueued):
+    let trnrunArgs =
+      try:
+        parseJson(row[2]).to(seq[string])
+      except ValueError as error: # A ValueError would reach the client as a rejected request.
+        raise newException(DatabaseError, "Corrupt trnrun_args of run " & row[0] & ": " & error.msg)
+    return some((runId: row[0], deckFile: row[1], trnrunArgs: trnrunArgs))
 
 proc accept*(self: Database, runId: string) =
   ## Marks `runId` handed to a worker.
@@ -206,17 +226,18 @@ proc finish*(self: Database, runId: string, exitCode: Option[int], error: string
   let message = if error.len > 0: error else: "TRNRun exited without a terminal status"
   self.finish(runId, exitCode, error, StatusEvent(status: statusError, message: message))
 
-proc interrupt*(self: Database, reason: string, states = Unfinished) =
-  ## Finishes every run in `states` that the daemon stops tracking before TRNRun exits.
+proc interrupt*(self: Database, reason: string, states: set[SimulationState]) =
+  ## Finishes every run in `states`, which the daemon stops tracking before TRNRun exits.
   ##
   ## A queued run never started; any other may have, and its TRNRun is killed
   ## with the daemon. Either way it is CANCELLED, unless TRNRun already
   ## reported a terminal status, and its error gives `reason`, such as
   ## `Not started: the daemon shut down`.
-  let selected = toSeq(states).mapIt("'" & $it & "'").join(", ")
+  let states = toSeq(states)
   self.transaction:
-    for row in self.connection.getAllRows(sql("SELECT run_id, state FROM runs WHERE state IN (" &
-        selected & ") ORDER BY revision")):
+    # Reads every row before finishing any, since finishing changes what the query selects.
+    for row in self.execute("SELECT run_id, state FROM runs WHERE state IN (" &
+        states.mapIt("?").join(", ") & ") ORDER BY revision", states.mapIt(%it)):
       let outcome = if row[1] == $ssQueued: "Not started" else: "Interrupted"
       self.finish(row[0], none(int), outcome & ": " & reason,
         StatusEvent(status: statusCancelled, message: outcome))
@@ -243,7 +264,7 @@ proc lockDatabase(path: string): Handle =
 
 proc migrate(self: Database) =
   ## Creates the schema in a new database, or refuses one of another version.
-  let version = self.execute("PRAGMA user_version").get().parseInt()
+  let version = self.execute("PRAGMA user_version")[0][0].parseInt()
   if version == 0:
     self.transaction:
       for statement in Schema:
@@ -268,10 +289,13 @@ proc openDatabase*(path: string): Database =
   try:
     result.connection = db_sqlite.open(result.path, "", "", "")
     result.execute("PRAGMA busy_timeout = 5000")
-    result.execute("PRAGMA journal_mode = WAL")
+    # SQLite silently keeps its old mode where WAL is unsupported, such as on a network share.
+    if result.execute("PRAGMA journal_mode = WAL")[0][0] != "wal":
+      raise newException(DatabaseError, "Cannot use WAL mode; keep the database on a local disk: " & path)
     result.execute("PRAGMA synchronous = NORMAL")
     result.migrate()
-    result.interrupt("its daemon stopped unexpectedly") # Runs an earlier daemon left unfinished.
+    # Runs an earlier daemon left unfinished; this one only runs its own.
+    result.interrupt("its daemon stopped unexpectedly", Unfinished)
   except CatchableError:
     result.close()
     raise

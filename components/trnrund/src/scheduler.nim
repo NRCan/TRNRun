@@ -10,11 +10,11 @@
 ##
 ## Every change to a simulation is saved to the database as it is applied, so
 ## clients reading it see each run's progress without asking the daemon. The
-## database is the record of every run: the scheduler only remembers which
-## runs wait for a worker and which a worker has, so its memory does not grow
-## with the number of finished runs.
+## database is the record of every run, and the queue: the scheduler only
+## remembers which runs a worker has, so its memory does not grow with the
+## number of queued or finished runs.
 
-import std/[deques, options, sequtils, sets, strutils]
+import std/[options, sequtils, sets, strutils]
 import ./database
 import ./events
 import ./job
@@ -36,16 +36,17 @@ type
     isShutDown: bool
     running: HashSet[string]
       ## Dispatched runs until their exit is applied; at most `maxConcurrent`.
-    queue: Deque[Work]
-      ## Runs waiting for a worker; still `QUEUED` in the database.
 
 proc dispatch(self: Scheduler) =
-  ## Hands queued runs to the pool while a worker is free.
-  while self.queue.len > 0 and self.running.len < self.maxConcurrent:
-    let work = self.queue.popFirst()
-    self.database.accept(work.runId)
-    self.running.incl(work.runId)
-    self.pool.submit(work)
+  ## Hands the longest-queued runs to the pool while a worker is free.
+  while not self.isShutDown and self.running.len < self.maxConcurrent:
+    let next = self.database.nextQueued()
+    if next.isNone:
+      return
+    let (runId, deckFile, trnrunArgs) = next.get()
+    self.database.accept(runId)
+    self.running.incl(runId)
+    self.pool.submit(Work(kind: wkRun, runId: runId, deckFile: deckFile, trnrunArgs: trnrunArgs))
 
 proc apply(self: Scheduler, message: Message) =
   ## Applies one worker message; an exit frees a worker for the next queued run.
@@ -97,9 +98,7 @@ proc add*(
   if trnrunArgs.anyIt(it.startsWith("--deckFile")):
     raise newException(ValueError, "Pass the deck as deckFile, not in trnrunArgs")
 
-  let deckFile = validateDeck(deckFile)
-  self.database.submit(runId, deckFile)
-  self.queue.addLast(Work(kind: wkRun, runId: runId, deckFile: deckFile, trnrunArgs: trnrunArgs))
+  self.database.submit(runId, validateDeck(deckFile), trnrunArgs)
   self.dispatch()
   if runId in self.running: ssAccepted else: ssQueued
 
@@ -124,7 +123,6 @@ proc shutdown*(self: Scheduler) =
   if self.isShutDown:
     return
   self.isShutDown = true
-  self.queue.clear()
   self.database.interrupt("the daemon shut down", {ssQueued})
   while self.running.len > 0:
     self.apply(self.inbox.recv()) # Drops client messages that arrive meanwhile.
@@ -141,13 +139,12 @@ proc abandon*(self: Scheduler) =
   ## `shutdown`.
   if self.isShutDown:
     return
-  self.isShutDown = true
-  self.queue.clear()
+  self.isShutDown = true # Also stops exits applied below from dispatching queued runs.
   for _ in 1 .. self.inbox.peek(): # Bounded: running TRNRun may keep posting.
     let (available, message) = self.inbox.tryRecv()
     if not available:
       break
     self.apply(message)
-  self.database.interrupt("the client disconnected")
+  self.database.interrupt("the client disconnected", Unfinished)
   self.running.clear()
   self.database.close()
