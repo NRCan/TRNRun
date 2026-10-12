@@ -11,7 +11,9 @@ Requires Nim 2.2.10 or later, the
 [`db_connector`](https://github.com/nim-lang/db_connector) package, and a
 configured C compiler for tests. SQLite itself is the `winsqlite3.dll` built
 into Windows 10 and later, so there is no DLL to ship. Release builds use Zig,
-which must be on `PATH`. Run these commands from this directory:
+which must be on `PATH`. The daemon compiles TRNRun's option parser from
+`../trnrun/src`, so build it inside the full repository. Run these commands
+from this directory:
 
 ```sh
 nimble install -d
@@ -57,6 +59,12 @@ the absolute `databasePath` to read:
 `add` replies at once with the run's `state`: `QUEUED`, or `ACCEPTED` if a
 worker took the run immediately. To follow a run or wait for it to finish,
 poll the database; see below.
+
+`trnrunArgs` are TRNRun options, such as `--watchTmp:true`. `add` checks them
+with TRNRun's own parser and rejects the run if TRNRun would refuse one, so a
+typo fails at once instead of when the run starts. The daemon passes the deck
+and `runId` itself, so `trnrunArgs` cannot hold a deck path, `--deckFile`,
+`--runId`, `--help`, or `--version`.
 
 See [`src/protocol.nim`](src/protocol.nim) for request fields and defaults.
 
@@ -137,7 +145,7 @@ SELECT * FROM logs WHERE run_id = ? ORDER BY log_id;
 ```
 
 A run is done once `state` is `FINISHED`, after TRNRun exits. Do not use
-`trnrun_status = 'DONE'` or `percent = 100` instead: TRNRun can report them
+`trnrun_status = 'DONE'` or `percent = 1` instead: TRNRun can report them
 before it exits, and output may still follow. `FINISHED` includes failed and
 cancelled runs; `succeeded` tells them apart, and its logs are then complete.
 

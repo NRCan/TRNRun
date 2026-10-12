@@ -1,4 +1,4 @@
-import std/[importutils, json, options, os, sets, strutils, tempfiles, unittest]
+import std/[deques, importutils, json, os, strutils, tempfiles, unittest]
 import db_connector/db_sqlite
 
 import ../src/[database, messages, protocol, scheduler]
@@ -59,10 +59,10 @@ proc runTests() =
       check scheduler.call(%*{
         "cmd": "add", "runId": "a", "deckFile": doneDeck, "trnrunArgs": ["--pollMs:50"]
       }) == %*{"ok": true, "state": "QUEUED"}
-      check "b" in scheduler.running
-      check "a" notin scheduler.running
-      check scheduler.database.nextQueued() ==
-        some((runId: "a", deckFile: doneDeck, trnrunArgs: @["--pollMs:50"]))
+      check scheduler.running == 1
+      check scheduler.queue.len == 1
+      let queued = scheduler.queue.peekFirst()
+      check (queued.runId, queued.deckFile, queued.trnrunArgs) == ("a", doneDeck, @["--pollMs:50"])
 
     test "invalid submissions remain ordinary error replies":
       let scheduler = newScheduler(trnrun, 1, testDirectory / "invalid.sqlite3")
@@ -85,7 +85,7 @@ proc runTests() =
         ready = $(%*{"cmd": "ready"})
       defer: scheduler.shutdown()
       discard scheduler.call(%*{"cmd": "add", "runId": "done", "deckFile": doneDeck})
-      while "done" in scheduler.running: # Its exit is applied while waiting for requests.
+      while scheduler.running > 0: # Its exit is applied while waiting for requests.
         scheduler.requestInbox[].send(Message(kind: mkRequest, line: ready))
         check scheduler.nextRequest().line == ready
       scheduler.requestInbox[].send(Message(kind: mkClosed))
@@ -98,7 +98,7 @@ proc runTests() =
       defer: connection.close()
       connection.exec(sql"""CREATE TRIGGER fail_submission BEFORE INSERT ON runs
         BEGIN SELECT RAISE(ABORT, 'injected failure'); END""")
-      expect DatabaseError:
+      expect DbError:
         discard scheduler.call(%*{"cmd": "add", "runId": "run", "deckFile": doneDeck})
       connection.exec(sql"DROP TRIGGER fail_submission")
 

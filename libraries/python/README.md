@@ -438,8 +438,8 @@ The same as [`SimulationManager`](#simulationmanager): `max_concurrent`,
 
   Queue a simulation, which starts once a worker is free. `trnrun_args` are
   `trnrun.exe` flags, such as `SimulationConfig.to_cli_args()`. Raises
-  `ValueError` if `run_id` is empty or in use, or the deck is missing or not a
-  `.dck` or `.trd` file.
+  `ValueError` if `run_id` is empty or in use, the deck is missing or not a
+  `.dck` or `.trd` file, or `trnrun.exe` would reject `trnrun_args`.
 
 - _`pull(run_id: str | None = None) -> dict[str, SimulationReply]`_
 

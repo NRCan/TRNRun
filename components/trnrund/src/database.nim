@@ -11,8 +11,6 @@ from db_connector/sqlite3 import PStmt, SQLITE_DONE, SQLITE_ROW, column_count, c
 import ./events
 
 type
-  DatabaseError* = DbError
-
   SimulationState* = enum
     ## Lifecycle of a run, independent of TRNRun `STATUS`.
     ##
@@ -24,9 +22,6 @@ type
     ssAccepted = "ACCEPTED" ## A pool slot is reserved; worker pickup may be pending.
     ssRunning = "RUNNING" ## The TRNRun process started.
     ssFinished = "FINISHED" ## Completed or failed; see `succeeded`.
-
-  QueuedRun* = tuple[runId, deckFile: string, trnrunArgs: seq[string]]
-    ## What a worker needs to run a queued run.
 
   Database* = object
     path*: string ## Absolute and normalized.
@@ -69,7 +64,7 @@ const
     # Serves readers polling with `revision > ?` and each save's `max(revision)`.
     "CREATE UNIQUE INDEX runs_revision ON runs (revision)",
     # Serves `state = ?` and `state IN (...)`, such as the few RUNNING runs among many
-    # QUEUED, and the oldest queued run, since a queued row keeps its submission revision.
+    # QUEUED, and the queue in order, since a queued row keeps its submission revision.
     "CREATE INDEX runs_state ON runs (state, revision)",
     """CREATE TABLE logs (
       log_id INTEGER PRIMARY KEY,
@@ -148,18 +143,6 @@ proc submit*(self: Database, runId, deckFile: string, trnrunArgs: seq[string] = 
       Now & ", ?, ?)",
     runId, ssQueued, deckFile, trnrunArgs)
 
-proc nextQueued*(self: Database): Option[QueuedRun] =
-  ## The run queued longest, if any; `DatabaseError` if its saved arguments are corrupt.
-  result = none(QueuedRun)
-  for row in self.execute("""SELECT run_id, deck_file, trnrun_args
-      FROM runs WHERE state = ? ORDER BY revision LIMIT 1""", ssQueued):
-    let trnrunArgs =
-      try:
-        parseJson(row[2]).to(seq[string])
-      except ValueError as error: # A ValueError would reach the client as a rejected request.
-        raise newException(DatabaseError, "Corrupt trnrun_args of run " & row[0] & ": " & error.msg)
-    return some((runId: row[0], deckFile: row[1], trnrunArgs: trnrunArgs))
-
 proc accept*(self: Database, runId: string) =
   ## Marks `runId` handed to a worker.
   self.update(runId, "state = ?", ssAccepted)
@@ -168,39 +151,50 @@ proc start*(self: Database, runId: string) =
   ## Marks `runId` running once its TRNRun process started.
   self.update(runId, "state = ?, started_at = " & Now, ssRunning)
 
+proc recordSetting(self: Database, runId: string, setting: SettingEvent) =
+  ## Replaces the settings of `runId`.
+  self.update(runId, "setting = ?", setting)
+
+proc recordStatus(self: Database, runId: string, status: StatusEvent) =
+  ## Replaces the latest TRNRun status of `runId`.
+  self.update(runId, "trnrun_status = ?, trnrun_message = ?", status.status, status.message)
+
+proc recordConfig(self: Database, runId: string, config: ConfigEvent) =
+  ## Replaces the simulation parameters of `runId`.
+  self.update(runId, "start_time = ?, stop_time = ?, time_step = ?",
+    config.start, config.stop, config.step)
+
+proc recordProgress(self: Database, runId: string, progress: ProgressEvent) =
+  ## Replaces the progress of `runId`.
+  self.update(runId, "percent = ?, sim_time = ?, elapsed_ms = ?, eta_ms = ?",
+    progress.percent, progress.time, progress.elapsedMs, progress.etaMs)
+
+proc recordLog(self: Database, runId: string, log: LogEvent) =
+  ## Appends a log entry to `runId` and counts it by severity, atomically.
+  let counter =
+    case log.severity
+    of Notice: "notices"
+    of Warning: "warnings"
+    of Fatal: "fatals"
+  self.transaction:
+    self.update(runId, counter & " = " & counter & " + 1")
+    self.execute("""INSERT INTO logs (run_id, severity, sim_time,
+        unit_id, type_id, message_code, message, information)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+      runId, log.severity, log.time,
+      log.unitId, log.typeId, log.messageCode, log.message, log.information)
+
 proc record*(self: Database, runId: string, event: SimulationEvent) =
   ## Saves one TRNRun event of `runId`.
   ##
   ## `SETTING`, `STATUS`, `CONFIG` and `PROGRESS` replace the previous value;
   ## each `LOG` is appended and counted by severity, atomically.
   case event.kind
-  of eventSetting:
-    self.update(runId, "setting = ?", event.settingData)
-  of eventStatus:
-    let status = event.statusData
-    self.update(runId, "trnrun_status = ?, trnrun_message = ?", status.status, status.message)
-  of eventConfig:
-    let config = event.configData
-    self.update(runId, "start_time = ?, stop_time = ?, time_step = ?",
-      config.start, config.stop, config.step)
-  of eventProgress:
-    let progress = event.progressData
-    self.update(runId, "percent = ?, sim_time = ?, elapsed_ms = ?, eta_ms = ?",
-      progress.percent, progress.time, progress.elapsedMs, progress.etaMs)
-  of eventLog:
-    let log = event.logData
-    let counter =
-      case log.severity
-      of Notice: "notices"
-      of Warning: "warnings"
-      of Fatal: "fatals"
-    self.transaction:
-      self.update(runId, counter & " = " & counter & " + 1")
-      self.execute("""INSERT INTO logs (run_id, severity, sim_time,
-          unit_id, type_id, message_code, message, information)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-        runId, log.severity, log.time,
-        log.unitId, log.typeId, log.messageCode, log.message, log.information)
+  of eventSetting: self.recordSetting(runId, event.settingData)
+  of eventStatus: self.recordStatus(runId, event.statusData)
+  of eventConfig: self.recordConfig(runId, event.configData)
+  of eventProgress: self.recordProgress(runId, event.progressData)
+  of eventLog: self.recordLog(runId, event.logData)
 
 proc finish(
     self: Database, runId: string, exitCode: Option[int], error: string, fallback: StatusEvent
@@ -259,8 +253,8 @@ proc lockDatabase(path: string): Handle =
   if result == INVALID_HANDLE_VALUE:
     let error = osLastError()
     if error.int32 == ErrorSharingViolation:
-      raise newException(DatabaseError, "Database is in use by another trnrund: " & path)
-    raise newException(DatabaseError, "Cannot lock " & lockPath & ": " & osErrorMsg(error))
+      raise newException(DbError, "Database is in use by another trnrund: " & path)
+    raise newException(DbError, "Cannot lock " & lockPath & ": " & osErrorMsg(error))
 
 proc migrate(self: Database) =
   ## Creates the schema in a new database, or refuses one of another version.
@@ -271,7 +265,7 @@ proc migrate(self: Database) =
         self.execute(statement)
       self.execute("PRAGMA user_version = " & $SchemaVersion)
   elif version != SchemaVersion:
-    raise newException(DatabaseError, "Database " & self.path & " has schema version " &
+    raise newException(DbError, "Database " & self.path & " has schema version " &
       $version & "; this trnrund needs " & $SchemaVersion)
 
 proc close*(self: Database) =
@@ -283,7 +277,7 @@ proc close*(self: Database) =
     discard closeHandle(self.lock)
 
 proc openDatabase*(path: string): Database =
-  ## Opens or creates the database at `path`, holding it until `close`; raises `DatabaseError`.
+  ## Opens or creates the database at `path`, holding it until `close`; raises `DbError`.
   let path = path.absolutePath().normalizedPath()
   result = Database(path: path, lock: lockDatabase(path))
   try:
@@ -291,7 +285,7 @@ proc openDatabase*(path: string): Database =
     result.execute("PRAGMA busy_timeout = 5000")
     # SQLite silently keeps its old mode where WAL is unsupported, such as on a network share.
     if result.execute("PRAGMA journal_mode = WAL")[0][0] != "wal":
-      raise newException(DatabaseError, "Cannot use WAL mode; keep the database on a local disk: " & path)
+      raise newException(DbError, "Cannot use WAL mode; keep the database on a local disk: " & path)
     result.execute("PRAGMA synchronous = NORMAL")
     result.migrate()
     # Runs an earlier daemon left unfinished; this one only runs its own.

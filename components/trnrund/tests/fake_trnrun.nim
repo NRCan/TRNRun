@@ -12,9 +12,9 @@ import std/[os, strutils]
 const
   GateTimeoutMs = 10_000 ## Gated runs stop waiting for their release after this.
   ProgressGateLines* = [
-    """{"kind":"PROGRESS","time":2.5,"percent":25,"elapsedMs":100,"etaMs":300}""",
-    """{"kind":"PROGRESS","time":5,"percent":50,"elapsedMs":200,"etaMs":200}""",
-    """{"kind":"PROGRESS","time":7.5,"percent":75,"elapsedMs":300,"etaMs":100}""",
+    """{"kind":"PROGRESS","time":2.5,"percent":0.25,"elapsedMs":100,"etaMs":300}""",
+    """{"kind":"PROGRESS","time":5,"percent":0.5,"elapsedMs":200,"etaMs":200}""",
+    """{"kind":"PROGRESS","time":7.5,"percent":0.75,"elapsedMs":300,"etaMs":100}""",
   ]
   DoneLines* = [
     """{"kind":"STATUS","status":"RUNNING","message":""}""",
@@ -22,7 +22,7 @@ const
     """{"kind":"LOG","severity":"Notice","time":0,"message":"first"}""",
     """{"kind":"LOG","severity":"Warning","time":5,"message":"second"}""",
     """{"kind":"LOG","severity":"Notice","time":10,"message":"third"}""",
-    """{"kind":"PROGRESS","time":10,"percent":100,"elapsedMs":5,"etaMs":0}""",
+    """{"kind":"PROGRESS","time":10,"percent":1,"elapsedMs":5,"etaMs":0}""",
     """{"kind":"STATUS","status":"DONE","message":""}""",
   ]
     ## What a successful run prints: three logs, then a `DONE` status.

@@ -31,7 +31,7 @@ proc reported(db: Database, runId: string) =
   db.record(runId, statusEvent("RUNNING", "going"))
   db.record(runId, event("""{"kind":"CONFIG","start":0,"stop":8760,"step":0.25}"""))
   db.record(runId, event(
-    """{"kind":"PROGRESS","time":4380,"percent":50,"elapsedMs":1234.5,"etaMs":1234.5}"""))
+    """{"kind":"PROGRESS","time":4380,"percent":0.5,"elapsedMs":1234.5,"etaMs":1234.5}"""))
   db.record(runId, logEvent("Warning", "careful"))
 
 proc finished(db: Database, runId: string) =
@@ -76,27 +76,9 @@ suite "run database":
       exit_code IS NULL AND error IS NULL AND succeeded IS NULL AND
       started_at IS NULL AND finished_at IS NULL""") == @["1"]
 
-  test "nextQueued returns the run queued longest, with its TRNRun arguments":
-    check db.nextQueued().isNone
-    db.submit("first", "first.dck", @["--pollMs:50", "--guiVisibility:hidden"])
-    db.submit("second", "second.dck")
-    db.submit("third", "third.dck")
-    check db.nextQueued() == some((runId: "first", deckFile: "first.dck",
-      trnrunArgs: @["--pollMs:50", "--guiVisibility:hidden"]))
-    db.accept("first")
-    db.accept("third") # Out of order: the queue follows the database alone.
-    check db.nextQueued() ==
-      some((runId: "second", deckFile: "second.dck", trnrunArgs: newSeq[string]()))
-    db.accept("second")
-    check db.nextQueued().isNone
-
-  test "nextQueued raises DatabaseError on corrupt TRNRun arguments":
-    db.submit("corrupt", "deck.dck")
-    let writer = db_sqlite.open(path, "", "", "")
-    writer.exec(sql"UPDATE runs SET trnrun_args = 'not json' WHERE run_id = 'corrupt'")
-    writer.close()
-    expect DatabaseError:
-      discard db.nextQueued()
+  test "saves TRNRun arguments as a JSON array":
+    db.submit("run", "deck.dck", @["--pollMs:50", "--guiVisibility:hidden"])
+    check parseJson(columns("run", "trnrun_args")[0]) == %["--pollMs:50", "--guiVisibility:hidden"]
 
   test "each change bumps the revision and keeps the other columns":
     db.submit("other", "deck.dck")
@@ -104,7 +86,7 @@ suite "run database":
     check reader.getAllRows(sql"SELECT run_id, revision, state FROM runs ORDER BY revision") ==
       @[@["other", "1", "QUEUED"], @["run", "9", "RUNNING"]]
     check columns("run", Reported) == @[
-      "deck.dck", "0.0", "8760.0", "0.25", "4380.0", "50.0", "1234.5", "1234.5", "0", "1", "0"
+      "deck.dck", "0.0", "8760.0", "0.25", "4380.0", "0.5", "1234.5", "1234.5", "0", "1", "0"
     ]
     check columns("run", "trnrun_status, trnrun_message") == @["RUNNING", "going"]
     check parseJson(columns("run", "setting")[0]) == %Setting
@@ -114,10 +96,10 @@ suite "run database":
     db.record("run", statusEvent("DONE", "finished"))
     db.record("run", event("""{"kind":"CONFIG","start":2,"stop":20,"step":0.5}"""))
     db.record("run", event(
-      """{"kind":"PROGRESS","time":20,"percent":100,"elapsedMs":9,"etaMs":0}"""))
+      """{"kind":"PROGRESS","time":20,"percent":1,"elapsedMs":9,"etaMs":0}"""))
     check columns("run", """trnrun_status, trnrun_message, start_time, stop_time, time_step,
       sim_time, percent, elapsed_ms, eta_ms""") ==
-      @["DONE", "finished", "2.0", "20.0", "0.5", "20.0", "100.0", "9.0", "0.0"]
+      @["DONE", "finished", "2.0", "20.0", "0.5", "20.0", "1.0", "9.0", "0.0"]
 
   test "appends each LOG and counts it by severity":
     db.started("run")
@@ -166,7 +148,7 @@ suite "run database":
     check columns("run", "state, trnrun_status, trnrun_message, exit_code, error, succeeded") ==
       @["FINISHED", "DONE", "", "0", "Output capture failed", "0"]
     check columns("run", Reported) == @[
-      "deck.dck", "0.0", "8760.0", "0.25", "4380.0", "50.0", "1234.5", "1234.5", "0", "1", "0"
+      "deck.dck", "0.0", "8760.0", "0.25", "4380.0", "0.5", "1234.5", "1234.5", "0", "1", "0"
     ]
 
   test "finish adds a daemon ERROR when TRNRun reported no terminal status":
@@ -232,8 +214,7 @@ suite "run database":
         index: "runs_state"),
       (query: "SELECT count(*) FROM runs WHERE state IN ('QUEUED', 'ACCEPTED')",
         index: "runs_state"),
-      (query: """SELECT run_id, deck_file, trnrun_args FROM runs
-          WHERE state = 'QUEUED' ORDER BY revision LIMIT 1""",
+      (query: "SELECT run_id FROM runs WHERE state = 'QUEUED' ORDER BY revision",
         index: "runs_state"), # A single plan row: no sort.
       (query: "SELECT * FROM logs WHERE run_id = 'run' ORDER BY log_id",
         index: "logs_run_id"),
@@ -279,7 +260,6 @@ suite "run database":
     check reader.getAllRows(sql"""SELECT run_id, state FROM runs
       WHERE revision > ? ORDER BY revision""", lastRevision) ==
       @[@["queued", "FINISHED"], @["accepted", "FINISHED"], @["running", "FINISHED"]]
-    check db.nextQueued().isNone # The new daemon only runs its own submissions.
     check columns("queued", "trnrun_status, trnrun_message, error, started_at IS NULL") ==
       @["CANCELLED", "Not started", "Not started: its daemon stopped unexpectedly", "1"]
     check columns("running", "trnrun_status, trnrun_message, error, exit_code IS NULL") ==
@@ -292,7 +272,7 @@ suite "run database":
     try:
       discard openDatabase(path)
       fail()
-    except DatabaseError as error:
+    except DbError as error:
       check "in use by another trnrund" in error.msg
     db.submit("still usable", "deck.dck")
     check "still usable" in db
@@ -311,7 +291,7 @@ suite "run database":
     try:
       discard openDatabase(path)
       fail()
-    except DatabaseError as error:
+    except DbError as error:
       check "injected failure" in error.msg
     check not fileExists(path & ".lock")
     check columns("run", "state") == @["RUNNING"]
@@ -324,7 +304,7 @@ suite "run database":
     let injector = db_sqlite.open(path, "", "", "")
     injector.exec(sql"""CREATE TRIGGER fail_log BEFORE INSERT ON logs
       BEGIN SELECT RAISE(ABORT, 'injected failure'); END""")
-    expect DatabaseError:
+    expect DbError:
       db.record("run", logEvent("Notice"))
     check columns("run", "revision, notices") == @["3", "0"]
     injector.exec(sql"DROP TRIGGER fail_log")
@@ -342,7 +322,7 @@ suite "run database":
     try:
       discard openDatabase(path)
       fail()
-    except DatabaseError as error:
+    except DbError as error:
       check ("schema version " & $(SchemaVersion + 1)) in error.msg
     check not fileExists(path & ".lock")
     check reader.getValue(sql"SELECT run_id FROM runs") == "kept"
@@ -352,5 +332,5 @@ suite "run database":
     db = openDatabase(path)
 
   test "cannot open a database in a missing directory":
-    expect DatabaseError:
+    expect DbError:
       discard openDatabase(directory / "missing" / "runs.sqlite3")

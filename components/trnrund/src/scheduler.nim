@@ -10,11 +10,11 @@
 ##
 ## Every change to a simulation is saved to the database as it is applied, so
 ## clients reading it see each run's progress without asking the daemon. The
-## database is the record of every run, and the queue: the scheduler only
-## remembers which runs a worker has, so its memory does not grow with the
-## number of queued or finished runs.
+## database is the record of every run; the scheduler only keeps in memory the
+## runs waiting for a worker and those a worker has, which a new daemon never
+## resumes anyway.
 
-import std/[options, sequtils, sets, strutils]
+import std/[deques, options]
 import ./database
 import ./events
 import ./job
@@ -34,19 +34,18 @@ type
 
     maxConcurrent: int
     isShutDown: bool
-    running: HashSet[string]
+    queue: Deque[Work]
+      ## Submitted runs waiting for a worker, oldest first.
+    running: int
       ## Dispatched runs until their exit is applied; at most `maxConcurrent`.
 
 proc dispatch(self: Scheduler) =
   ## Hands the longest-queued runs to the pool while a worker is free.
-  while not self.isShutDown and self.running.len < self.maxConcurrent:
-    let next = self.database.nextQueued()
-    if next.isNone:
-      return
-    let (runId, deckFile, trnrunArgs) = next.get()
-    self.database.accept(runId)
-    self.running.incl(runId)
-    self.pool.submit(Work(kind: wkRun, runId: runId, deckFile: deckFile, trnrunArgs: trnrunArgs))
+  while not self.isShutDown and self.running < self.maxConcurrent and self.queue.len > 0:
+    let work = self.queue.popFirst()
+    self.database.accept(work.runId)
+    inc self.running
+    self.pool.submit(work)
 
 proc apply(self: Scheduler, message: Message) =
   ## Applies one worker message; an exit frees a worker for the next queued run.
@@ -59,7 +58,7 @@ proc apply(self: Scheduler, message: Message) =
       self.database.record(message.runId, event.get())
   of mkExited:
     self.database.finish(message.runId, message.exitCode, message.error)
-    self.running.excl(message.runId)
+    dec self.running
     self.dispatch()
   of mkRequest, mkClosed:
     discard # Only nextRequest returns client messages; elsewhere they are dropped.
@@ -70,11 +69,11 @@ proc newScheduler*(
     trnrunPath: string, maxConcurrent: int, databasePath: string
 ): Scheduler =
   ## Starts a scheduler that runs the TRNRun at `trnrunPath` and saves to
-  ## `databasePath`. Raises `ValueError` on bad input, `DatabaseError` if the
+  ## `databasePath`. Raises `ValueError` on bad input, `DbError` if the
   ## database cannot be opened.
   if maxConcurrent < 1:
     raise newException(ValueError, "'maxConcurrent' must be at least 1")
-  let trnrunPath = validateTrnrun(trnrunPath)
+  let trnrunPath = validateFile(trnrunPath, "TRNRun")
   initJobGuard()
   result = Scheduler(maxConcurrent: maxConcurrent, database: openDatabase(databasePath))
   result.inbox.open()
@@ -95,12 +94,13 @@ proc add*(
     raise newException(ValueError, "Scheduler is shut down")
   if runId.len == 0 or runId in self.database:
     raise newException(ValueError, "Invalid or duplicate runId: " & runId)
-  if trnrunArgs.anyIt(it.startsWith("--deckFile")):
-    raise newException(ValueError, "Pass the deck as deckFile, not in trnrunArgs")
+  validateTrnrunArgs(trnrunArgs)
 
-  self.database.submit(runId, validateDeck(deckFile), trnrunArgs)
+  let deckFile = validateDeck(deckFile)
+  self.database.submit(runId, deckFile, trnrunArgs)
+  self.queue.addLast(Work(kind: wkRun, runId: runId, deckFile: deckFile, trnrunArgs: trnrunArgs))
   self.dispatch()
-  if runId in self.running: ssAccepted else: ssQueued
+  if self.queue.len == 0: ssAccepted else: ssQueued # The new run is last, so it left the queue only if all did.
 
 proc requestInbox*(self: Scheduler): ptr Channel[Message] =
   ## Inbox address for the thread that posts `mkRequest` and `mkClosed`.
@@ -124,7 +124,8 @@ proc shutdown*(self: Scheduler) =
     return
   self.isShutDown = true
   self.database.interrupt("the daemon shut down", {ssQueued})
-  while self.running.len > 0:
+  self.queue.clear()
+  while self.running > 0:
     self.apply(self.inbox.recv()) # Drops client messages that arrive meanwhile.
   self.pool.shutdown()
   self.database.close()
@@ -146,5 +147,6 @@ proc abandon*(self: Scheduler) =
       break
     self.apply(message)
   self.database.interrupt("the client disconnected", Unfinished)
-  self.running.clear()
+  self.queue.clear()
+  self.running = 0
   self.database.close()

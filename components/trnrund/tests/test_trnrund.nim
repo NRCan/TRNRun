@@ -149,7 +149,7 @@ proc runTests() =
 
       reader.waitForState("run", "FINISHED")
       check reader.columns("run", "deck_file, succeeded, trnrun_status, percent, notices, warnings") ==
-        @[deckFile, "1", "DONE", "100.0", "2", "1"]
+        @[deckFile, "1", "DONE", "1.0", "2", "1"]
       let finished = reader.columns("run", "*")
       var messages: seq[string] = @[]
       for row in reader.rows(sql"SELECT message FROM logs WHERE run_id = 'run' ORDER BY log_id"):
@@ -176,7 +176,7 @@ proc runTests() =
       defer: reader.close()
       check daemon.request(%*{"cmd": "add", "runId": "run", "deckFile": deckFile}) ==
         %*{"ok": true, "state": "ACCEPTED"}
-      reader.waitFor("run", "sim_time = 7.5 AND percent = 75 AND elapsed_ms = 300 AND eta_ms = 100")
+      reader.waitFor("run", "sim_time = 7.5 AND percent = 0.75 AND elapsed_ms = 300 AND eta_ms = 100")
       check reader.columns("run", "state") == @["RUNNING"]
       check not fileExists(deckFile.changeFileExt("released"))
       writeFile(deckFile.changeFileExt("release"), "")

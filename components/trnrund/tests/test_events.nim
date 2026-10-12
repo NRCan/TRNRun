@@ -30,11 +30,11 @@ suite "TRNRun event parsing":
     check config.configData == ConfigEvent(start: 0, stop: 8760, step: 0.25)
 
     let progress = parseLine(
-      """{"kind":"PROGRESS","time":10,"percent":50,"elapsedMs":20,"etaMs":20}"""
+      """{"kind":"PROGRESS","time":10,"percent":0.5,"elapsedMs":20,"etaMs":20}"""
     )
     check progress.kind == eventProgress
     check progress.progressData ==
-      ProgressEvent(time: 10, percent: 50, elapsedMs: 20, etaMs: 20)
+      ProgressEvent(time: 10, percent: 0.5, elapsedMs: 20, etaMs: 20)
 
     let log = parseLine(
       """{"kind":"LOG","severity":"Fatal","time":1.5,"unitId":3,"typeId":56,""" &

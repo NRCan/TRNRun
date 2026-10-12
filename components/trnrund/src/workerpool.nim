@@ -68,9 +68,6 @@ proc runWorker(context: WorkerContext) {.thread.} =
 
 proc shutdown*(pool: var WorkerPool) =
   ## Finishes submitted work, then stops and joins every worker. Safe to repeat.
-  if pool.threads.len == 0:
-    return
-
   for _ in pool.threads:
     pool.work.send(Work(kind: wkStop))
   for thread in pool.threads.mitems:
@@ -80,15 +77,8 @@ proc shutdown*(pool: var WorkerPool) =
 proc start*(
     pool: var WorkerPool, trnrunPath: string, workers: int, inbox: ptr Channel[Message]
 ) =
-  ## Starts `workers` threads that run the TRNRun at `trnrunPath`.
-  ##
-  ## Workers report to `inbox`. Asserts the pool is not running, `workers`
-  ## >= 1, and `inbox` is set. If a thread fails to start, the ones already
-  ## running are stopped before the error propagates.
-  doAssert pool.threads.len == 0, "Worker pool is already running"
-  doAssert workers >= 1, "'workers' must be at least 1"
-  doAssert inbox != nil, "Worker pool inbox must not be nil"
-
+  ## Starts `workers` threads that run the TRNRun at `trnrunPath` and report
+  ## to `inbox`.
   pool.work.open()
 
   {.push warning[ProveInit]: off, warning[Uninit]: off.}
@@ -96,16 +86,9 @@ proc start*(
   for index in 0 ..< workers:
     let context =
       WorkerContext(work: addr pool.work, inbox: inbox, trnrunPath: trnrunPath)
-    try:
-      createThread(pool.threads[index], runWorker, context)
-    except CatchableError:
-      pool.threads.setLen(index)
-      pool.shutdown()
-      raise
+    createThread(pool.threads[index], runWorker, context)
   {.pop.}
 
 proc submit*(pool: var WorkerPool, work: Work) =
-  ## Hands `wkRun` work to the next free worker; asserts the pool is running.
-  doAssert pool.threads.len > 0, "Worker pool is not running"
-  doAssert work.kind == wkRun, "Only run work can be submitted"
+  ## Hands `wkRun` work to the next free worker.
   pool.work.send(work)

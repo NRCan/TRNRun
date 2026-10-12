@@ -6,9 +6,6 @@
 ## and closes the job handle, whether normally, through an unhandled exception,
 ## or by crashing.
 
-when not defined(windows):
-  {.error: "job.nim is Windows-only. Guard the import with `when defined(windows)`.".}
-
 import std/[oserrors, winlean]
 
 # Win32 API

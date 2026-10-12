@@ -1,4 +1,4 @@
-import std/[os, unittest]
+import std/[os, strutils, unittest]
 import db_connector/db_sqlite
 
 include ../src/scheduler
@@ -63,8 +63,8 @@ proc runTests() =
         (runId: "kept", deckFile: doneDeck, trnrunArgs: newSeq[string]()),
         (runId: "missing", deckFile: testDirectory / "missing.dck", trnrunArgs: newSeq[string]()),
         (runId: "text", deckFile: createDeck(testDirectory, "deck.txt"), trnrunArgs: newSeq[string]()),
-        (runId: "colon", deckFile: doneDeck, trnrunArgs: @["--deckFile:other.dck"]),
-        (runId: "equals", deckFile: doneDeck, trnrunArgs: @["--deckFile=other.dck"]),
+        (runId: "deck", deckFile: doneDeck, trnrunArgs: @["--deckFile:other.dck"]),
+        (runId: "unknown", deckFile: doneDeck, trnrunArgs: @["--pollMs:50", "--watchTMP:true"]),
       ]
       for testCase in cases:
         checkpoint("runId: " & testCase.runId)
@@ -129,7 +129,7 @@ proc runTests() =
       scheduler.waitFor("third", ssFinished)
       check scheduler.columns("second", "succeeded") == @["1"]
 
-    test "holds only dispatched runs in memory and queues the rest in the database":
+    test "queues waiting runs in memory and shows them QUEUED in the database":
       let scheduler = newScheduler(trnrun, 2, testDirectory / "memory.sqlite3")
       defer: scheduler.shutdown()
 
@@ -138,12 +138,14 @@ proc runTests() =
       let runIds = ["a", "b", "c", "d", "e"]
       for runId in runIds:
         scheduler.add(runId, doneDeck)
-      check scheduler.running.len == 2
+      check scheduler.running == 2
+      check scheduler.queue.len == 3
       check scheduler.queued == 3
       for runId in runIds:
         scheduler.waitFor(runId, ssFinished)
-        check scheduler.running.len <= 2
-      check scheduler.running.len == 0
+        check scheduler.running <= 2
+      check scheduler.running == 0
+      check scheduler.queue.len == 0
       check scheduler.queued == 0
       for runId in runIds:
         check scheduler.columns(runId, "succeeded") == @["1"]
@@ -169,7 +171,6 @@ proc runTests() =
         check saved("run", "state, started_at IS NOT NULL") == @["RUNNING", "1"]
         release(deckFile)
         scheduler.waitFor("run", ssFinished)
-        check "run" notin scheduler.running
         check saved("run", "succeeded") == @["1"]
         let logs = reader.getAllRows(sql"SELECT message FROM logs WHERE run_id = 'run' ORDER BY log_id")
         check logs.len == 3
@@ -185,7 +186,7 @@ proc runTests() =
       check reader.getValue(sql"SELECT count(*) FROM logs") == "6"
 
     test "rejects a database in a missing directory":
-      expect DatabaseError:
+      expect DbError:
         discard newScheduler(trnrun, 1, testDirectory / "missing" / "runs.sqlite3")
 
     test "shutdown cancels queued runs, waits for running ones, and is idempotent":
@@ -198,7 +199,7 @@ proc runTests() =
       scheduler.add("queued", doneDeck)
       release(deckFile)
       scheduler.shutdown()
-      check scheduler.running.len == 0
+      check scheduler.running == 0
 
       check scheduler.columns("running", "state, succeeded") == @["FINISHED", "1"]
       check scheduler.columns("queued",
@@ -219,7 +220,7 @@ proc runTests() =
       scheduler.add("queued", doneDeck)
       scheduler.waitFor("running", ssRunning)
       scheduler.abandon() # Returns although the gate keeps TRNRun running.
-      check scheduler.running.len == 0
+      check scheduler.running == 0
       expect ValueError:
         scheduler.add("late", doneDeck)
       scheduler.abandon()

@@ -8,9 +8,6 @@
 ## Children inherit the daemon's kill-on-close Job Object, so they cannot
 ## outlive it.
 
-when not defined(windows):
-  {.error: "trnrun.nim is Windows-only.".}
-
 import std/[options, os, osproc, streams]
 
 type

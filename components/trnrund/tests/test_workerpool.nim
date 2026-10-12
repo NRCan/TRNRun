@@ -43,37 +43,6 @@ proc runTests() =
     doneDeck = createDeck(testDirectory, "done.dck")
 
   suite "worker pool":
-    test "rejects invalid start arguments and starting a running pool":
-      var
-        pool = default(WorkerPool)
-        inbox = default(Channel[Message])
-      inbox.open()
-
-      expect AssertionDefect:
-        pool.start(trnrun, 0, addr inbox)
-      expect AssertionDefect:
-        pool.start(trnrun, 1, nil)
-
-      pool.start(trnrun, 1, addr inbox)
-      expect AssertionDefect:
-        pool.start(trnrun, 1, addr inbox)
-      pool.shutdown()
-
-    test "accepts only run work, and only while running":
-      var
-        pool = default(WorkerPool)
-        inbox = default(Channel[Message])
-      inbox.open()
-
-      expect AssertionDefect:
-        pool.submit(runWork("early", doneDeck))
-      pool.start(trnrun, 1, addr inbox)
-      expect AssertionDefect:
-        pool.submit(Work(kind: wkStop))
-      pool.shutdown()
-      expect AssertionDefect:
-        pool.submit(runWork("late", doneDeck))
-
     test "reports launch, every output line, then exit for each run":
       var
         pool = default(WorkerPool)

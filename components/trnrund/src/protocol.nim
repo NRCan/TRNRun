@@ -14,7 +14,8 @@
 ## ========== ======================================= ======================
 ##
 ## `add` replies at once with the run's `state`: `ACCEPTED` if a worker took
-## it, else `QUEUED`.
+## it, else `QUEUED`. `trnrunArgs` are TRNRun options, rejected at once if
+## TRNRun would refuse one; see `validate`.
 ##
 ## Clients read simulations from the database at `databasePath`, polling it to
 ## follow or wait for a run; see `database`. A simulation is done when its
@@ -28,6 +29,7 @@
 ## meanwhile get no reply.
 
 import std/json
+from db_connector/db_common import DbError
 import ./[database, scheduler]
 
 proc requireField(request: JsonNode, name: string): JsonNode =
@@ -57,7 +59,7 @@ proc handleRequest*(
   ## Runs one request line and returns its reply line.
   ##
   ## `shutdown` is true when the client asked the daemon to shut down. Any
-  ## failure but a `DatabaseError` becomes an `ok: false` reply.
+  ## failure but a `DbError` becomes an `ok: false` reply.
   result = (reply: "", shutdown: false)
   var reply = %*{"ok": true}
   try:
@@ -68,7 +70,7 @@ proc handleRequest*(
     of "add": reply["state"] = %scheduler.handleAdd(request)
     of "shutdown": result.shutdown = true
     else: raise newException(ValueError, "Unknown cmd: " & cmd)
-  except DatabaseError:
+  except DbError:
     raise
   except CatchableError as error:
     reply = %*{"ok": false, "error": error.msg}

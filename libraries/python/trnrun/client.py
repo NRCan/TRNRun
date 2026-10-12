@@ -57,8 +57,9 @@ class DaemonClient:
     def add(self, run_id: str, deck_file: str | Path, trnrun_args: Sequence[str] = ()) -> None:
         """Queue a simulation, which starts once a worker is free.
 
-        Raises ``ValueError`` if ``run_id`` is empty or in use, or the deck is
-        missing or not a ``.dck`` or ``.trd`` file.
+        Raises ``ValueError`` if ``run_id`` is empty or in use, the deck is
+        missing or not a ``.dck`` or ``.trd`` file, or ``trnrun.exe`` would
+        reject ``trnrun_args``.
         """
         _ = self._process.request(
             {"cmd": "add", "runId": run_id, "deckFile": str(deck_file), "trnrunArgs": list(trnrun_args)},
