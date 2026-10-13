@@ -1,15 +1,14 @@
-"""Typed runner events, daemon simulation replies, and their parsers.
+"""Typed runner events and the simulation state pulled from the daemon's database.
 
-The daemon nests the latest event of each kind in its simulation replies,
-without its ``kind`` tag or timestamp. The parsers decode those nested events
-and individual log entries.
+The daemon saves the latest event of each kind in a run's row, without its
+``kind`` tag or timestamp; ``trnrun.database`` reads them back. The ``SETTING``
+event is saved as JSON, decoded by ``parse_setting``.
 """
 
 # pyright: reportAny=false
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
@@ -156,7 +155,9 @@ class SimulationState(StrEnum):
     """Daemon-owned lifecycle, independent of the runner-reported status.
 
     ``QUEUED → ACCEPTED → RUNNING → FINISHED``. A run whose runner fails to
-    launch goes from ``ACCEPTED`` to ``FINISHED``.
+    launch goes from ``ACCEPTED`` to ``FINISHED``; one the daemon stops
+    tracking first, when it shuts down or exits, finishes as cancelled from
+    whatever state it reached.
     """
 
     QUEUED = "QUEUED"
@@ -167,9 +168,10 @@ class SimulationState(StrEnum):
 
 @dataclass(frozen=True)
 class SimulationReply:
-    """One daemon reply for a simulation: its ``simulation`` reply object.
+    """A simulation's state at one moment: its row in the daemon's database.
 
-    ``Simulation.info`` holds the latest one, without its ``logs``.
+    ``RunDatabase.get()`` reads the current one; ``RunDatabase.pull()`` returns
+    changed snapshots. Log entries are read separately with ``RunDatabase.logs()``.
 
     Attributes
     ----------
@@ -181,11 +183,8 @@ class SimulationReply:
         Execution error reported by the daemon, independent of runner status.
     setting, status, config, progress
         Latest event of each kind, or None before the runner reports one.
-    logs : tuple of LogEvent
-        Only the entries not pulled before; ``Simulation.logs``
-        accumulates them.
     notices, warnings, fatals
-        Number of log entries the daemon holds, by severity.
+        Number of log entries the daemon saved so far, by severity.
     succeeded : bool
         Whether the run finished with ``DONE``, exit code 0, and no error.
     """
@@ -197,7 +196,6 @@ class SimulationReply:
     status: StatusEvent | None = None
     config: ConfigEvent | None = None
     progress: ProgressEvent | None = None
-    logs: tuple[LogEvent, ...] = ()
     notices: int = 0
     warnings: int = 0
     fatals: int = 0
@@ -207,35 +205,8 @@ class SimulationReply:
 # -----------------------------------------------------------------
 # Event Parsers
 # -----------------------------------------------------------------
-def parse_status(data: Any) -> StatusEvent:
-    """Parse a nested STATUS event."""
-    return StatusEvent(
-        SimulationStatus(data["status"]),
-        data["message"],
-    )
-
-
-def parse_progress(data: Any) -> ProgressEvent:
-    """Parse a nested PROGRESS event."""
-    return ProgressEvent(
-        data["time"],
-        data["percent"],
-        data["elapsedMs"],
-        data["etaMs"],
-    )
-
-
-def parse_config(data: Any) -> ConfigEvent:
-    """Parse a nested CONFIG event."""
-    return ConfigEvent(
-        data["start"],
-        data["stop"],
-        data["step"],
-    )
-
-
 def parse_setting(data: Any) -> SettingEvent:
-    """Parse a nested SETTING event."""
+    """Parse a saved SETTING event."""
     return SettingEvent(
         trnexe_path=data["trnexePath"],
         gui_visibility=data["guiVisibility"],
@@ -254,40 +225,4 @@ def parse_setting(data: Any) -> SettingEvent:
         kill_on_stall=data["killOnStall"],
         severity=data["severity"],
         write_events=data["writeEvents"],
-    )
-
-
-def parse_log(data: Any) -> LogEvent:
-    """Parse one log entry of a daemon reply."""
-    return LogEvent(
-        severity=data["severity"],
-        time=data["time"],
-        unit_id=data["unitId"],
-        type_id=data["typeId"],
-        message_code=data["messageCode"],
-        message=data["message"],
-        information=data["information"],
-    )
-
-
-def _optional[T](parse: Callable[[Any], T], data: Any) -> T | None:
-    """Parse a nullable nested object."""
-    return None if data is None else parse(data)
-
-
-def parse_simulation_reply(data: Any) -> SimulationReply:
-    """Parse one simulation object from a daemon reply, ignoring its inputs."""
-    return SimulationReply(
-        state=SimulationState(data["state"]),
-        exit_code=data["exitCode"],
-        error=data["error"],
-        setting=_optional(parse_setting, data["setting"]),
-        status=_optional(parse_status, data["status"]),
-        config=_optional(parse_config, data["config"]),
-        progress=_optional(parse_progress, data["progress"]),
-        logs=tuple(parse_log(entry) for entry in data["logs"]),
-        notices=data["notices"],
-        warnings=data["warnings"],
-        fatals=data["fatals"],
-        succeeded=data["succeeded"],
     )

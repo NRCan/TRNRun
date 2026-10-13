@@ -1,790 +1,344 @@
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/NRCan/TRNRun/main/assets/trnrun-white.svg">
-    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/NRCan/TRNRun/main/assets/trnrun-black.svg">
-    <img alt="TRNRun" src="https://raw.githubusercontent.com/NRCan/TRNRun/main/assets/trnrun-black.svg">
-  </picture>
-</p>
+# TRNRun for Python
 
-Thin Python wrapper for running and monitoring
-[TRNSYS](https://www.trnsys.com/) batch simulations. The
-package includes the `trnrun.exe` runner and `trnrund.exe` daemon.
+A thin wrapper for the Windows `trnrund` daemon, plus a simulation manager
+with a live progress display built on Rich.
+Requires Python 3.12 or later and the native `trnrund.exe` and `trnrun.exe`.
+Real simulations also require TRNSYS.
 
-## Contents
-
-- [Requirements](#requirements)
-- [Installation](#installation)
-- [Core and convenience](#core-and-convenience)
-- [Quick start](#quick-start)
-- [Run a batch](#run-a-batch)
-- [`SimulationConfig`](#simulationconfig)
-- [`SimulationManager`](#simulationmanager)
-- [`DaemonClient`](#daemonclient)
-- [`Simulation`](#simulation)
-- [`ProgressDisplay`](#progressdisplay)
-- [Building your own display](#building-your-own-display)
-- [Migrating from 0.6](#migrating-from-06)
-- [Examples](#examples)
-
-## Requirements
-
-- Windows x64
-- Python 3.12 or newer
-- TRNSYS 17 or 18
-- Optional: [Type3830 Progress Tracker](https://github.com/NRCan/TRNRun/tree/main/components/type3830) for
-  progress and stall monitoring
-
-## Installation
-
-For the built-in Rich progress display used by the quick start and batch
-examples, install the optional `display` extra:
-
-```powershell
-pip install "trnrun[display]"
-```
-
-Or with uv:
-
-```powershell
-uv add "trnrun[display]"
-```
-
-For direct client or non-display manager usage, Rich is not required:
-
-```powershell
-pip install trnrun
-```
-
-The equivalent uv command is `uv add trnrun`. The manager still defaults to
-`display=True`, which uses Rich and requires the `display` extra. Pass
-`display=False` to use it without Rich.
-
-## Core and convenience
-
-- **Core (`trnrun`)** exports only `DaemonClient`, `SimulationConfig`,
-  `SimulationReply`, `SimulationState`, and `SimulationStatus`. It handles
-  direct daemon requests and their configuration/replies, without importing
-  convenience code or Rich. You choose run IDs, poll for replies, and keep any
-  logs you need.
-- **Convenience (`trnrun.convenience`)** exports `Display`, `ProgressDisplay`,
-  `Simulation`, and `SimulationManager`. It adds background polling, live
-  simulation handles, and optional display. The manager remains usable without
-  Rich when `display=False`; custom displays need only their own dependencies.
-
-A direct client run with no display:
+Just want to launch a batch and watch it? Skip to the
+[simulation manager](#simulation-manager), which needs no polling code.
 
 ```python
 import time
 
-from trnrun import DaemonClient, SimulationConfig, SimulationState
+from trnrun import Daemon, SimulationConfig
 
-with DaemonClient(max_concurrent=1) as client:
-    client.add("run", r"C:\path\to\deck.dck", SimulationConfig().to_cli_args())
+config = SimulationConfig(watch_tmp=True)
+
+with Daemon("runs.sqlite3", max_concurrent=2) as daemon:
+    daemon.add("1", "model.dck", config)
+
     while True:
-        time.sleep(0.25)
-        reply = client.pull("run").get("run")
-        if reply is not None and reply.state is SimulationState.FINISHED:
-            print(f"Succeeded: {reply.succeeded}")
+        run = daemon.database.get_run("1")
+        if run is not None and run["state"] == "FINISHED":
+            print(dict(run))
             break
-    client.shutdown()
+        daemon.check()  # Raises if trnrund crashed, instead of waiting forever.
+        time.sleep(0.2)
+
+    logs = daemon.database.get_logs("1")
 ```
 
-For the same run with background polling and a live handle, but no display:
+## API
+
+- `Daemon(database_path="trnrund.sqlite3", *, max_concurrent=None,
+  trnrun_path=None, overwrite=False, executable=...)` starts the daemon and
+  waits for its `ready` reply before opening the database.
+  - `database_path` is created if missing; its directory must exist. An
+    existing database keeps its runs, logs, and taken run IDs.
+  - `max_concurrent` limits simulations running at once; `None` means
+    `max(CPUs - 1, 1)`.
+  - `trnrun_path` is the TRNRun runner; `None` means `trnrun.exe` beside
+    the daemon executable.
+  - `overwrite=True` **permanently deletes** the database's history; see
+    [Database safety](#database-safety). It must be an actual `bool`.
+  - `executable` defaults to `trnrun/bin/trnrund.exe` inside the package,
+    with `trnrun.exe` beside it. To use an existing build, pass
+    `executable=r"C:\path\to\trnrund.exe"` and, if needed,
+    `trnrun_path=r"C:\path\to\trnrun.exe"`.
+
+  Relative paths resolve from Python's current working directory.
+- `add(run_id, deck_file, trnrun_args=())` submits a run. `run_id` must be
+  new to the database, even across restarts, so a script rerun on the same
+  database needs new IDs (for example with a batch prefix or `uuid`) or
+  `overwrite=True`. It accepts a `SimulationConfig` or raw CLI arguments as
+  `trnrun_args`.
+  A relative `deck_file` resolves from Python's working directory at the time
+  of the call, even after `os.chdir()`.
+  A config is validated and converted automatically before submission.
+  Omitting it sends no overrides and keeps the native runner's defaults.
+  The method sends one JSON line to stdin and reads its reply, returning only
+  after the run is saved. Rejected requests raise `ValueError`; process and
+  protocol failures also raise exceptions; a request to a daemon that has
+  exited raises `RuntimeError` with its exit code and its stderr message,
+  such as `trnrund exited with code 2: 'maxConcurrent' must be at least 1`.
+  The daemon writes to stderr only for startup and fatal errors, so nothing is
+  printed to the console, which also keeps notebooks and windowless GUI apps
+  free of stray output and console windows.
+- `cancel(run_id)` stops one run and returns once the daemon has recorded the
+  request. A queued run is already `FINISHED` with `trnrun_status`
+  `CANCELLED` on return. A running one has its TRNRun killed, along with
+  TRNSYS, and becomes `FINISHED`/`CANCELLED` shortly after; poll the
+  database as usual. Its `error` tells which: `Not started: cancelled by the
+  client` or `Interrupted: cancelled by the client`. Cancelling a finished run
+  changes nothing, so a run that finishes just before keeps its real outcome.
+  An unknown `run_id` raises `ValueError`. `shutdown()` blocks until running
+  runs finish, so cancel a hanging run before calling it.
+- `check()` raises `RuntimeError` if the daemon exited before `shutdown()` or
+  `close()`. The database cannot tell a crashed daemon from runs still in
+  progress, so call it in every loop that polls `database`.
+- `database_path` is the path returned by the daemon, not a guessed filename.
+- `database` is a read-only `TrnRunDatabase`, a `sqlite3.Connection` subclass
+  with `sqlite3.Row` results and autocommit enabled. All queries go through
+  it: use its [query helpers](#standalone-database-access), such as
+  `get_run()`, `get_changed_runs()`, and `get_new_logs()`, or normal
+  parameterized SQL on `runs` and `logs`. JSON columns remain JSON text.
+  Finish cursors promptly to keep reads short.
+- `close()` closes the database and stdin, waits for the daemon to exit, and
+  **cancels unfinished simulations**. It is safe to call more than once,
+  including after the daemon crashed.
+  Leaving a `with` block calls `close()`; wait for your runs inside the block.
+- `shutdown()` cancels queued runs, waits for running simulations to finish,
+  then closes the process pipes. The database and query helpers remain usable
+  until `close()` or context-manager exit, so you can read final results and
+  cancellations. Later requests are rejected. It can wait indefinitely if a
+  simulation hangs; shutdown alone does not release the database reader.
+
+Calls are synchronous and an instance is intended for one thread. There are
+no request timeouts, background polling, or result objects. A run finishes
+when `state` is `FINISHED`; check `succeeded` to distinguish success from failure.
+See the [daemon documentation](../../components/trnrund/README.md) for the
+complete database schema, incremental polling queries, and CLI options.
+
+## Standalone database access
+
+`trnrun.database` opens saved results without starting a daemon or requiring
+TRNSYS. It uses the same database class as `Daemon`.
+
+```python
+from contextlib import closing
+
+from trnrun import TrnRunDatabase
+
+with closing(TrnRunDatabase("runs.sqlite3")) as connection:
+    running = connection.get_running_runs()
+    print(f"Running: {len(running)}")
+
+    changed = connection.get_changed_runs(after_revision=0)
+    for row in changed:
+        print(row["run_id"], row["state"], row["succeeded"])
+
+    logs = connection.get_logs("1")
+```
+
+- `TrnRunDatabase(path)` opens an existing database with SQLite URI
+  `mode=ro`, autocommit enabled, and named `sqlite3.Row` results. It does not
+  create a missing database or migrate one. Schema version must be `2`;
+  incompatible versions raise `ValueError` after closing the connection.
+  Native SQLite errors propagate.
+- `connection.get_run(run_id)` returns one current snapshot as a
+  `sqlite3.Row`, or `None` if the ID is unknown.
+- `connection.get_logs(run_id)` returns its logs ordered by `log_id`, or `[]`
+  if there are none, including for an unknown run ID.
+- `connection.get_new_logs(after_log_id, run_id=None)` returns only logs
+  with a larger `log_id`, of every run or of `run_id`, ordered by `log_id`.
+  Use it to follow logs as they arrive: start from `0` to include existing
+  logs, then advance your cursor to the last returned `log_id`.
+- `connection.count_runs_by_state()` returns a dict such as
+  `{"QUEUED": 40, "ACCEPTED": 0, "RUNNING": 2, "FINISHED": 103}`, with every
+  state present, for summaries and batch progress.
+- `connection.get_latest_revision()` returns the maximum revision, or `0`
+  for an empty database. Use it only to initialize monitoring, before seeding
+  running rows or submitting runs. Do not use it to advance the cursor each
+  poll; advance from the rows returned by `get_changed_runs()` instead.
+- `connection.get_running_runs()` returns current `RUNNING` rows, ordered by
+  revision, to seed a progress display.
+- `connection.get_changed_runs(after_revision)` returns `ACCEPTED`,
+  `RUNNING`, and `FINISHED` rows with a newer revision, ordered by revision;
+  `QUEUED` rows are skipped. These are latest snapshots, not an event
+  history; intermediate states between polls can be skipped. Advance your
+  cursor to the largest revision returned, not a separately queried database
+  maximum. An empty result is `[]`; JSON text and `NULL` values are returned
+  unchanged.
+
+`TrnRunDatabase` is exported from `trnrun` for direct opening, type
+annotations, and `help(TrnRunDatabase)`. Its constructor enforces read-only
+opening and schema validation. With a daemon, use `daemon.database` instead
+of opening another connection.
+
+Use `connection.execute(sql, parameters)` for custom queries. Bind values
+with `?` parameters rather than interpolating them into SQL. Connections
+retain SQLite's default single-thread restriction; no hidden polling or
+revision cursor is added.
+
+A SQLite connection's own `with` block does **not** close it. Use
+`contextlib.closing` as above, or call `close()` in `finally`. Standalone
+connections belong to the caller, while `daemon.close()` closes its reader.
+After shutdown, query helpers still work until that reader is closed.
+
+### Common queries
+
+The helpers cover polling; for anything else, query the `runs` and `logs`
+tables directly. The [daemon documentation](../../components/trnrund/README.md#reading-the-database)
+describes every column.
+
+```python
+# Failed runs and why. Only FINISHED runs have a succeeded value.
+failed = connection.execute(
+    "SELECT run_id, trnrun_status, error, fatals FROM runs"
+    " WHERE state = 'FINISHED' AND NOT succeeded ORDER BY revision",
+).fetchall()
+
+# Wall-clock duration in seconds of each run that started and finished.
+durations = connection.execute(
+    "SELECT run_id, (julianday(finished_at) - julianday(started_at)) * 86400 AS seconds"
+    " FROM runs WHERE finished_at IS NOT NULL AND started_at IS NOT NULL",
+).fetchall()
+
+# Fatal log entries of one run, with the TRNSYS unit and type that raised them.
+fatals = connection.execute(
+    "SELECT sim_time, unit_id, type_id, message FROM logs"
+    " WHERE run_id = ? AND severity = 'Fatal' ORDER BY log_id",
+    ("1",),
+).fetchall()
+
+# JSON columns are text; decode them yourself.
+import json
+args = json.loads(connection.get_run("1")["trnrun_args"])
+```
+
+## Simulation configuration
+
+`SimulationConfig()` supplies the current native runner's defaults, with
+named, typed fields for editor autocomplete. Use `help(SimulationConfig)` for
+all options, their units, CLI mappings, and effects.
 
 ```python
 from trnrun import SimulationConfig
-from trnrun.convenience import SimulationManager
-
-with SimulationManager(max_concurrent=1, display=False) as manager:
-    simulation = manager.add(r"C:\path\to\deck.dck", SimulationConfig())
-    simulation.wait()
-    print(f"Succeeded: {simulation.succeeded}")
-```
-
-## Quick start
-
-```python
-from trnrun import SimulationConfig
-from trnrun.convenience import SimulationManager
 
 config = SimulationConfig()
-
-with SimulationManager(max_concurrent=1) as manager:
-    simulation = manager.add(r"C:\path\to\deck.dck", config)
-    simulation.wait()
-
-if simulation.succeeded:
-    print(f"Completed: {simulation.deck_path}")
-else:
-    print(f"Failed: {simulation.deck_path}")
+config.trnexe_path = r"C:\TRNSYS18\Exe\TrnEXE64.exe"
+config.watch_tmp = True
+config.watch_timeout_ms = 3_600_000
+config.kill_on_timeout = True
+# Reuse config directly with daemon.add("1", "model.dck", config).
 ```
 
-## Run a batch
+The default TRNSYS path is `C:\TRNSYS18\Exe\TrnEXE64.exe`; change it for your
+installation. Creating a config does not access the executable. Passing it
+to `Daemon.add()` calls `to_cli_args()`, which checks the executable exists,
+resolves its path from Python's working directory, and returns unquoted
+argument strings without changing the config. You can still call
+`to_cli_args()` yourself if you need a raw argument list.
+Boolean fields require actual `True`/`False`, not strings or integers.
+Other option values are parsed by the daemon when submitted.
+
+Common defaults:
+
+| Field | Default | Meaning |
+| ----- | ------- | ------- |
+| `gui_visibility` | `"hidden"` | No TRNSYS window |
+| `watch_log` | `True` | Read TRNSYS log entries |
+| `watch_tmp` | `False` | Progress tracking; enabling requires Type3830 |
+| `detect_timeout_ms` | `300000` | Five-minute launch-detection timeout |
+| `watch_timeout_ms` | `0` | Unlimited runtime monitoring |
+| `stall_timeout_ms` | `0` | Stall detection disabled |
+| `poll_ms` | `100` | Native runner polling interval in milliseconds |
+| `kill_on_timeout`, `kill_on_stall` | `False` | Do not kill on timeout/stall |
+| `clean_on_success`, `write_events` | `False` | No cleanup or event-file replacement |
+
+The config emits every field explicitly. Its defaults therefore need to stay
+aligned with the bundled runner. `Daemon.add()` still accepts raw CLI argument
+lists if you prefer native defaults or need an option not exposed here.
+`poll_ms` controls the runner, not the Python display's refresh interval.
+
+## Simulation manager
+
+`trnrun.batch` is for scripts and notebooks that just want to launch
+simulations and follow them, without polling code or run IDs.
+`SimulationManager` starts the daemon, numbers the runs, keeps one
+`Simulation` handle per run up to date from a background thread, and shows
+their progress live.
 
 ```python
-from pathlib import Path
-
 from trnrun import SimulationConfig
-from trnrun.convenience import SimulationManager
+from trnrun.batch import SimulationManager
 
 config = SimulationConfig(watch_tmp=True)
-decks = sorted(Path(r"C:\path\to\decks").glob("*.dck"))
 
 with SimulationManager(max_concurrent=4) as manager:
-    simulations = [manager.add(deck, config) for deck in decks]
-    manager.wait()
+    simulations = [manager.add(deck, config) for deck in ["a.dck", "b.dck", "c.dck"]]
+    manager.wait()  # Returns once every run has finished, failed ones included.
 
-succeeded = [simulation for simulation in simulations if simulation.succeeded]
-print(f"{len(succeeded)} succeeded, {len(simulations) - len(succeeded)} failed")
+for simulation in simulations:
+    print(simulation.id, simulation.deck_path.name, simulation.succeeded, simulation.status)
+    for log in simulation.logs:
+        if log.severity == "Fatal":
+            print("   ", log.time, log.message)
 ```
 
-## `SimulationConfig`
+- `SimulationManager(max_concurrent=None, *, database=None, trnrun_path=None,
+  executable=..., poll_interval=0.25, display=True)`. Runs are kept in a
+  temporary database, deleted on shutdown. Pass `database="runs.sqlite3"` to
+  keep them; reusing that file numbers new runs after the ones already there,
+  and never deletes them.
+- `add(deck_file, config=None)` queues a deck and returns its `Simulation`
+  right away; `config` defaults to `SimulationConfig()` and is copied, so you
+  can change it between calls.
+- `wait(simulation=None, *, timeout=None)` blocks until that run has
+  finished, or every run when none is given. A failed run still finishes:
+  check `succeeded`. If the daemon crashes or the manager is shut down
+  first, it raises that error instead.
+- `cancel(simulation)` stops a queued or running run, which then finishes
+  as `CANCELLED`. A finished run keeps its outcome.
+- `active` lists the unfinished runs; `database_path` is where they are kept.
+- `shutdown()`, called when leaving the `with` block, cancels unfinished runs
+  and closes the display. Handles stay readable afterwards.
 
-`SimulationConfig` defines how one deck is launched and monitored. The
-`trnrun.exe` runner itself is chosen per [`SimulationManager`](#simulationmanager).
+A `Simulation` has `id`, `deck_path`, and `config`, then live state read from
+the database: `state` (`QUEUED`, `ACCEPTED`, `RUNNING`, `FINISHED`), TRNRun's
+`status`, `progress` (`percent` from 0 to 1, simulated `time`, `elapsed_ms`,
+`eta_ms`), `notices`/`warnings`/`fatals`, `succeeded`, `error`,
+`is_finished`, and every log entry in `logs`.
 
-### TRNSYS executable and window
+Everything else is in `simulation.info`, a frozen snapshot of the run:
+`info.status.message`, `info.exit_code`, `info.submitted_at`/`started_at`/
+`finished_at` (UTC), `info.config` (TRNSYS start, stop, step), and
+`info.setting` (the settings TRNRun applied). Read `info` once when several
+fields must agree.
 
-- _`trnexe_path`_ (`str | Path`, default:
-  `C:\TRNSYS18\Exe\TrnEXE64.exe`)
+The display keeps one live line per running simulation and prints each
+finished one once above them, in terminals and Jupyter notebooks alike:
 
-  Path to the `TrnEXE64.exe` or `TrnEXE.exe` executable.
+```text
+[1] …\decks\model.dck | Status: DONE       | Logs: N:2 W:1 F:0  | Elapsed: 00:01:12 | ETA: 00:00:00 | [####################]  8,760 /  8,760 (100%)
+```
 
-- _`gui_visibility`_ (`str`, default: `"hidden"`)
+If the daemon crashes, `wait()` raises its error instead of hanging, and so
+do later `add()` calls. Call `add()`, `cancel()`, and `shutdown()` from the
+thread that created the manager.
 
-  Controls the TRNSYS simulation window. Values are case-insensitive:
+### Using it from a GUI
 
-  - `keep` / `keepOpen`: show the window and leave it open after the simulation.
-  - `auto` / `autoClose`: show the window and close it after the simulation.
-  - `min` / `minimized`: minimize the window and leave it open afterward.
-  - `minAuto` / `minimizedAuto`: minimize the window and close it afterward.
-  - `hidden`: hide the window and close it after the simulation.
-
-### Launch detection
-
-- _`wait_for_gui`_ (`bool`, default: `True`)
-
-  Wait for a recognized TRNSYS simulation window as part of the launch-readiness checks.
-
-- _`wait_for_lst`_ (`bool`, default: `True`)
-
-  Wait for the component-order header in the deck's `.lst` file.
-
-- _`wait_for_tmp`_ (`bool`, default: `False`)
-
-  Wait for a Type3830 `.tmp` file. Do not enable this for a deck without
-  Type3830, or launch detection will wait until its deadline.
-
-- _`detect_timeout_ms`_ (`int`, default: `300_000`)
-
-  Maximum time, in milliseconds, to wait for launch readiness. Set to `0` to
-  wait indefinitely. The runner holds the launch mutex for the current Windows
-  session until detection completes.
-
-- _`extra_delay_ms`_ (`int`, default: `0`)
-
-  Additional delay in milliseconds after all enabled readiness checks pass.
-
-### Runtime monitoring
-
-- _`poll_ms`_ (`int`, default: `100`)
-
-  Polling interval in milliseconds for the TRNSYS process and output files.
-  Values below `1` are clamped to `1`.
-
-- _`watch_log`_ (`bool`, default: `True`)
-
-  Read the deck's `.log` file and emit parsed `LOG` events.
-
-- _`watch_tmp`_ (`bool`, default: `False`)
-
-  Read Type3830 `.tmp` updates and emit configuration and progress events.
-  Required for progress-based `SimulationStatus.CANCELLED` and
-  `SimulationStatus.STALLED` outcomes.
-
-- _`watch_timeout_ms`_ (`int`, default: `0`)
-
-  Maximum runtime-monitoring duration in milliseconds. `0` means unlimited.
-
-- _`stall_timeout_ms`_ (`int`, default: `0`)
-
-  Maximum milliseconds without simulation-time progress. `0` disables stall
-  detection. Requires `watch_tmp=True` and a valid Type3830 snapshot.
-
-- _`kill_on_timeout`_ (`bool`, default: `False`)
-
-  Terminate the owned TRNSYS process when launch detection or runtime
-  monitoring times out. If disabled, a detection timeout proceeds to runtime
-  monitoring; after a runtime-monitoring timeout, `trnrun.exe` stops polling
-  and waits for the process to exit.
-
-- _`kill_on_stall`_ (`bool`, default: `False`)
-
-  Terminate the owned TRNSYS process after detecting a stall. Without it,
-  `trnrun.exe` waits for the process to exit.
-
-### Output and cleanup
-
-- _`clean_on_success`_ (`bool`, default: `False`)
-
-  Delete `.tmp`, `.log`, `.lst`, and `.PTI` sidecar files after a successful
-  run.
-
-- _`severity`_ (`str`, default: `"Notice"`)
-
-  Minimum emitted log severity: `Notice`, `Warning`, or `Fatal`,
-  case-insensitively.
-
-- _`write_events`_ (`bool`, default: `False`)
-
-  Mirror emitted runner events to a `.jsonl` file beside the deck, replacing
-  any existing file when the run starts.
-
-A configuration with every parameter set explicitly:
+Pass `display=False` and read the handles from your own timer; the manager
+still updates them in the background, and reading never blocks:
 
 ```python
-from pathlib import Path
+manager = SimulationManager(display=False)
+simulation = manager.add("model.dck", config)
 
-from trnrun import SimulationConfig
-
-config = SimulationConfig(
-    trnexe_path=Path(r"C:\TRNSYS18\Exe\TrnEXE64.exe"),
-    gui_visibility="hidden",
-    wait_for_gui=True,
-    wait_for_lst=True,
-    wait_for_tmp=True,
-    detect_timeout_ms=300_000,
-    extra_delay_ms=0,
-    poll_ms=100,
-    watch_log=True,
-    watch_tmp=True,
-    watch_timeout_ms=300_000,
-    stall_timeout_ms=300_000,
-    clean_on_success=True,
-    kill_on_timeout=True,
-    kill_on_stall=True,
-    severity="Notice",
-    write_events=False,
-)
+def on_timer():
+    progress = simulation.progress
+    progress_bar.set(progress.percent if progress else 0)
 ```
 
-## `SimulationManager`
+Any object with `update(changed)` and `close()` methods can also be passed as
+`display=`; the manager calls `update` from its thread with the simulations
+that changed. Applications that need their own polling, run IDs, or database
+handling should use `Daemon` directly instead.
 
-`SimulationManager` owns one `trnrund.exe` daemon, through a
-[`DaemonClient`](#daemonclient). Its job is to submit runs and keep their
-`Simulation` handles current. The daemon runs the simulations and keeps their
-state.
+## Database safety
 
-A background thread polls the daemon every `poll_interval` seconds, so the
-handles keep moving whether or not you call `wait()`: a notebook cell can
-submit runs and return while the display keeps following them. Each poll is
-one `pull` of the runs changed since the previous poll, with only their new
-log entries, so it costs what changed, not the number of runs. The thread
-applies them to the handles, stops tracking finished runs, as the daemon does
-once they are pulled, updates the display, then settles the finished handles,
-releasing `wait()`. It is the only thread that changes a handle, so reading one
-never waits.
+By default, the daemon preserves existing runs and logs, and run IDs must be
+unique even across restarts. Keep the database on a local disk; its parent
+directory must already exist. Only one daemon may own a database at a time.
 
-By default the manager shows its runs with a
-[`ProgressDisplay`](#progressdisplay), which requires `pip install "trnrun[display]"`
-and is closed on `shutdown()`. Pass `display=False` for no display or when you
-show the runs yourself, for example in a GUI; this does not require Rich. See
-[Building your own display](#building-your-own-display).
+**Passing `overwrite=True` permanently deletes existing database history.**
+Close all readers before doing so. The wrapper never enables overwrite itself.
 
-Simulation state comes only from daemon replies. Once the daemon reports
-`FINISHED`, that state and log history never change. A failed poll, such as
-the daemon exiting, stops the background thread and is kept in `failure`;
-`add()` and `wait()` then raise it. When syncing stops, by a failure or by
-`shutdown()`, every unfinished handle is settled with that error, so its
-`wait()` raises it instead of hanging. It keeps its last reply; it is not
-marked finished.
+## Native executables and packaging
 
-Once a run has finished, the manager stops tracking it: it leaves `active`, and
-the handle you got from `add()` is the only reference left, so keep the handles
-you need.
-
-### Parameters
-
-- _`max_concurrent`_ (`int`, default: logical processor count minus one, at
-  least `1`)
-
-  Maximum number of runners that may execute concurrently. Additional
-  submissions wait in the daemon's queue for a worker.
-
-- _`trnrun_path`_ (`str | Path`, default: bundled `trnrun.exe`)
-
-  Path to the `trnrun.exe` runner used for every simulation of this manager.
-
-- _`trnrund_path`_ (`str | Path`, default: bundled `trnrund.exe`)
-
-  Path to the `trnrund.exe` daemon.
-
-- _`poll_interval`_ (`float`, default: `0.25`)
-
-  Seconds between polls of the daemon, and so between display updates. Must
-  be positive.
-
-- _`display`_ (`bool | Display`, default: `True`)
-
-  `True` shows the runs with a new [`ProgressDisplay`](#progressdisplay) and
-  requires the `display` extra; `False` shows nothing and works without Rich.
-  Any other object with `update(changed)` and `close()`
-  methods, such as a `ProgressDisplay` drawing on your own Rich console, is
-  updated instead.
-
-An explicitly configured manager:
-
-```python
-from pathlib import Path
-
-from trnrun.convenience import SimulationManager
-
-with SimulationManager(
-    max_concurrent=4,
-    trnrun_path=Path(r"C:\path\to\trnrun.exe"),
-    trnrund_path=Path(r"C:\path\to\trnrund.exe"),
-    poll_interval=0.25,
-    display=True,
-) as manager:
-    ...
-```
-
-### Methods and properties
-
-- _`display`_ (`Display | None`)
-
-  The display the background thread updates, or `None` with `display=False`.
-
-- _`active`_ (`list[Simulation]`)
-
-  Copy of the list of unfinished handles in submission order, including runs
-  still queued for a worker.
-
-- _`failure`_ (`Exception | None`)
-
-  The error that stopped background updates, such as the daemon exiting, or
-  `None` while they run. A GUI can check it on its timer.
-
-- _`add(deck_file: str | Path, config: SimulationConfig) -> Simulation`_
-
-  Submit `deck_file` to the daemon's queue using `config`, then return its
-  handle. The run starts once a worker is free. Raises `FileNotFoundError` for
-  a missing TRNSYS executable, before submitting anything. Raises `ValueError`
-  with the daemon's message if the daemon rejects the run, such as for a
-  missing deck or one that is not a `.dck` or `.trd` file, and `RuntimeError`
-  once the manager is closed, the daemon exited, or with the `failure` that
-  stopped background updates.
-
-- _`wait(timeout: float | None = None) -> None`_
-
-  Block until every run has finished, including runs added meanwhile. To wait
-  for one run, use [`Simulation.wait()`](#simulation). Raises `TimeoutError`
-  if runs are unfinished after `timeout` seconds, `RuntimeError` once the
-  manager is closed, and the `failure` that stopped background updates.
-
-- _`shutdown() -> None`_
-
-  Kill the daemon and its runs, stop background updates, settle unfinished
-  handles, so their `wait()` raises that the manager is closed, and close the
-  display. Simulation handles retain their last daemon reply and logs. Later
-  calls do nothing.
-
-Example manager workflow with every method and property:
-
-```python
-from trnrun import SimulationConfig
-from trnrun.convenience import SimulationManager
-
-config = SimulationConfig(watch_tmp=True)
-manager = SimulationManager(max_concurrent=2)
-
-try:
-    first = manager.add(r"C:\path\to\first.dck", config)
-    second = manager.add(r"C:\path\to\second.dck", config)
-    print(f"Unfinished: {len(manager.active)}")
-    print(f"Display: {manager.display}")
-
-    first.wait()
-    print(f"First status: {first.status}")
-
-    manager.wait(timeout=3600)
-    print(f"Background failure: {manager.failure}")
-    print(f"First succeeded: {first.succeeded}")
-    print(f"Second succeeded: {second.succeeded}")
-
-finally:
-    manager.shutdown()
-```
-
-## `DaemonClient`
-
-`DaemonClient` starts one `trnrund.exe` daemon and sends it requests, one
-method per daemon command. It keeps no state: you choose each run ID and
-decide when to poll. `SimulationManager` is built on it; use the client
-directly when you want that control yourself. Requests from several threads
-are serialized.
-
-A request the daemon rejects, or a malformed reply, raises `ValueError` with
-the daemon's message; a daemon that exited raises `RuntimeError`.
-
-### Parameters
-
-The same as [`SimulationManager`](#simulationmanager): `max_concurrent`,
-`trnrun_path`, and `trnrund_path`.
-
-### Methods
-
-- _`add(run_id: str, deck_file: str | Path, trnrun_args: Sequence[str] = ()) -> None`_
-
-  Queue a simulation, which starts once a worker is free. `trnrun_args` are
-  `trnrun.exe` flags, such as `SimulationConfig.to_cli_args()`. Raises
-  `ValueError` if `run_id` is empty or in use, the deck is missing or not a
-  `.dck` or `.trd` file, or `trnrun.exe` would reject `trnrun_args`.
-
-- _`pull(run_id: str | None = None) -> dict[str, SimulationReply]`_
-
-  The simulations changed since they were last pulled, their submission
-  included, by run ID, in submission order. Each carries only the log entries
-  not pulled before, so keep what you receive: each change is pulled once. A
-  finished simulation is pulled with its final entries, then forgotten,
-  freeing its run ID. With `run_id`, only that simulation is pulled, leaving
-  the others for a later pull: the result holds it, or nothing if it has not
-  changed. Raises `ValueError` for an unknown or already forgotten `run_id`.
-
-- _`shutdown(timeout: float | None = None) -> None`_
-
-  Have the daemon finish queued runs as cancelled without starting them, wait
-  for running ones, and exit. Waits for the exit, up to `timeout` seconds if
-  given; on `subprocess.TimeoutExpired`, `kill()` still stops it.
-
-- _`kill() -> None`_
-
-  Kill the daemon and the simulations it runs. Leaving a `with` block calls it.
-
-A run is done when its `state` is `SimulationState.FINISHED`, which includes
-failed runs; `succeeded` tells them apart. Its finished reply carries its
-final log entries.
-
-```python
-import time
-
-from trnrun import DaemonClient, SimulationConfig, SimulationState
-
-args = SimulationConfig(watch_tmp=True).to_cli_args()
-
-with DaemonClient(max_concurrent=2) as client:
-    client.add("first", r"C:\path\to\first.dck", args)
-    client.add("second", r"C:\path\to\second.dck", args)
-
-    logs, unfinished = {"first": 0, "second": 0}, {"first", "second"}
-    while unfinished:
-        time.sleep(0.5)
-        for run_id, reply in client.pull().items():
-            logs[run_id] += len(reply.logs)
-            if reply.state is SimulationState.FINISHED:
-                print(f"{run_id}: succeeded={reply.succeeded}, logs={logs[run_id]}")
-                unfinished.discard(run_id)
-
-    client.shutdown()
-```
-
-## `Simulation`
-
-`SimulationManager.add()` returns a live `Simulation` for one run. The
-manager's background thread keeps it current; inspect it rather than updating
-it yourself.
-
-Each daemon reply replaces the handle's `info` as a whole, so every property is
-safe to read from any thread, but separate reads may reflect different
-replies. Read `info` once when several fields must agree, as a display does.
-
-### Methods and properties
-
-The submission comes first, then the daemon state in the order trnrund keeps
-it, then conveniences derived from it.
-
-- _`id`_ (`int`)
-
-  Manager-assigned simulation identifier. The daemon uses its string form as the
-  run ID.
-
-- _`deck_path`_ (`Path`)
-
-  Absolute path to the submitted deck.
-
-- _`config`_ (`SimulationConfig`)
-
-  Independent copy of the configuration used for this run.
-
-- _`info`_ (`SimulationReply`)
-
-  The daemon's latest reply, frozen: `state`, `exit_code`, `error`, `setting`,
-  `status`, `config`, `progress`, `notices`, `warnings`, `fatals`, and
-  `succeeded`, all from the same moment. Its `logs` is empty; the history is in
-  `logs` below. A later reply replaces it rather than changing it, so a
-  finished run's `info` is final.
-
-- _`state`_ (`SimulationState`)
-
-  Daemon lifecycle: `QUEUED`, `ACCEPTED`, `RUNNING`, then `FINISHED` once the
-  runner has exited or failed to launch, or the daemon shut down before
-  starting it.
-
-- _`exit_code`_ (`int | None`)
-
-  Runner exit code, or `None` until it exits or if it could not be launched.
-
-- _`error`_ (`str`)
-
-  Execution error reported by the daemon, such as a launch failure; otherwise
-  `""`.
-
-- _`setting_event`_ (`SettingEvent | None`)
-
-  `trnrun.exe` settings reported when the simulation starts, or `None` before they
-  are received.
-
-- _`status`_ (`SimulationStatus | None`)
-
-  Latest runner status, or `None` before the first status event. A finished run
-  always has one, because the daemon reports `ERROR` if the runner exited
-  without a terminal status.
-
-- _`status_event`_ (`StatusEvent | None`)
-
-  Latest status event, including its optional `message`, or `None` before the
-  first status event.
-
-- _`config_event`_ (`ConfigEvent | None`)
-
-  Latest simulation-time configuration event, containing `start`, `stop`, and
-  `step`, or `None` before Type3830 reports it.
-
-- _`progress`_ (`ProgressEvent | None`)
-
-  Latest Type3830 progress event, or `None` when progress has not been reported.
-  `percent` is a fraction from `0` to `1`; `elapsed_ms` and `eta_ms` are milliseconds.
-
-- _`logs`_ (`list[LogEvent]`)
-
-  Copy of all log events in arrival order. The complete history stays in memory
-  for the lifetime of the simulation object; no events are evicted. New logs are
-  fetched with each poll, and a finished run has all of them.
-
-- _`notices`_ (`int`)
-
-  Number of received `Notice` log events.
-
-- _`warnings`_ (`int`)
-
-  Number of received `Warning` log events.
-
-- _`fatals`_ (`int`)
-
-  Number of received `Fatal` log events.
-
-- _`succeeded`_ (`bool`)
-
-  Whether the run finished with status `SimulationStatus.DONE`, exit code `0`,
-  and no daemon error.
-
-- _`log_count`_ (`int`)
-
-  Total number of received log events.
-
-- _`is_accepted`_ (`bool`)
-
-  Whether a daemon worker has accepted the run, meaning `state` is past `QUEUED`.
-
-- _`is_running`_ (`bool`)
-
-  Whether `state` is `RUNNING`.
-
-- _`is_finished`_ (`bool`)
-
-  Whether `state` is `FINISHED`.
-
-- _`wait(timeout: float | None = None) -> None`_
-
-  Block until the run finishes; it may be called from any thread. Raises
-  `TimeoutError` if it has not finished after `timeout` seconds, and the error
-  that stopped its manager syncing it first, such as `RuntimeError` after
-  `shutdown()` or when the daemon exited.
-
-An example inspecting every property:
-
-```python
-from trnrun import SimulationConfig
-from trnrun.convenience import SimulationManager
-
-with SimulationManager(max_concurrent=1) as manager:
-    simulation = manager.add(r"C:\path\to\deck.dck", SimulationConfig(watch_tmp=True))
-    simulation.wait()
-
-print(f"ID: {simulation.id}")
-print(f"Deck: {simulation.deck_path}")
-print(f"Config: {simulation.config}")
-print(f"Info: {simulation.info}")
-print(f"State: {simulation.state}")
-print(f"Running: {simulation.is_running}")
-print(f"Accepted: {simulation.is_accepted}")
-print(f"Finished: {simulation.is_finished}")
-print(f"Succeeded: {simulation.succeeded}")
-print(f"Status: {simulation.status}")
-print(f"Status event: {simulation.status_event}")
-print(f"Progress: {simulation.progress}")
-print(f"Simulation config event: {simulation.config_event}")
-print(f"Runner settings: {simulation.setting_event}")
-print(f"Exit code: {simulation.exit_code}")
-print(f"Daemon error: {simulation.error}")
-print(f"Logs: {simulation.logs}")
-print(f"Log count: {simulation.log_count}")
-print(f"Notices: {simulation.notices}")
-print(f"Warnings: {simulation.warnings}")
-print(f"Fatals: {simulation.fatals}")
-```
-
-## `ProgressDisplay`
-
-`ProgressDisplay`, imported from `trnrun.convenience`, requires the optional
-Rich dependency installed with `pip install "trnrun[display]"`. It shows live
-progress of a manager's runs in a terminal, or in a Jupyter notebook when
-running inside a kernel. Every `SimulationManager` creates one by default
-(`display=True`). It has no thread of its own: the manager's background
-thread calls its `update()` after every poll that changed a run, and its
-`close()` on `shutdown()`.
-
-Each update prints every run that finished once, as a final line, and redraws
-one live line per unfinished run a worker has taken below them. Queued runs
-are never drawn: with 100,000 submissions and four workers, each redraw draws
-four lines. A failing display is logged to the `trnrun.convenience.manager` logger and
-never affects the runs.
-
-### Parameters
-
-- _`console`_ (`rich.console.Console | None`, default: `None`)
-
-  Rich console to draw on. By default a notebook output inside a Jupyter
-  kernel, otherwise the standard terminal.
-
-```python
-from rich.console import Console
-
-from trnrun import SimulationConfig
-from trnrun.convenience import ProgressDisplay, SimulationManager
-
-config = SimulationConfig(watch_tmp=True)
-display = ProgressDisplay(Console(stderr=True))
-with SimulationManager(max_concurrent=2, display=display) as manager:
-    for deck in (r"C:\path\to\first.dck", r"C:\path\to\second.dck"):
-        manager.add(deck, config)
-    manager.wait()
-```
-
-## Building your own display
-
-With `display=False`, `SimulationManager` prints nothing, so a GUI or any other
-display just reads the handles, which the manager keeps current. Keep the
-handles from `add()`, and from a timer on your UI thread, read each one's
-`info`, which never waits on the daemon. Once a handle is finished, it is
-final: show the outcome, then drop it.
-
-`examples/example_gui.py` is a complete one:
-
-```python
-import tkinter as tk
-
-from trnrun import SimulationConfig, SimulationState
-from trnrun.convenience import Simulation, SimulationManager
-
-root = tk.Tk()
-manager = SimulationManager(max_concurrent=2, display=False)  # The window is the display.
-labels: dict[Simulation, tk.Label] = {}  # Lines still changing.
-
-for deck in (r"C:\path\to\first.dck", r"C:\path\to\second.dck"):
-    label = tk.Label(root, anchor="w", width=60, text=f"{deck}: QUEUED")
-    label.pack()
-    labels[manager.add(deck, SimulationConfig(watch_tmp=True))] = label
-
-
-def tick() -> None:
-    for simulation, label in list(labels.items()):
-        info = simulation.info  # One read, so the fields below agree.
-        status = info.status.status if info.status else info.state
-        percent = f"{info.progress.percent:.0%}" if info.progress else ""
-        label["text"] = f"{simulation.deck_path.name}: {status} {percent}"
-        if info.state is SimulationState.FINISHED:
-            del labels[simulation]  # Final: drawn once, never again.
-    root.after(500, tick)
-
-
-def close() -> None:
-    manager.shutdown()
-    root.destroy()
-
-
-root.protocol("WM_DELETE_WINDOW", close)
-tick()
-root.mainloop()
-```
-
-Reading `active`, `failure`, or a handle never waits on the daemon. `add()`
-sends one short request, so it is fine on a UI thread; never call `wait()`
-there, since it blocks until the runs finish. If `manager.failure` is set, the
-daemon exited or stopped answering; handles keep their last state.
-
-To be told what changed instead of reading on a timer, pass any object with
-`update(changed: Sequence[Simulation])` and `close()` methods as `display`. The
-manager's background thread calls `update()` with the handles each poll
-changed, in submission order, including those that just finished, and `close()`
-on `shutdown()`. Since it runs on that thread, a GUI toolkit's widgets must be
-updated by handing the work to the UI thread, such as with a Qt signal.
-
-## Migrating from 0.6
-
-Version 0.7 replaces the `trnrunq.exe` queue with the `trnrund.exe` daemon,
-and moves the progress display into its own `ProgressDisplay`, which the
-manager still shows by default.
-
-- Import `Display`, `ProgressDisplay`, `Simulation`, and `SimulationManager`
-  from `trnrun.convenience` instead of `trnrun`. Explicit module imports also
-  move: `trnrun.manager`, `trnrun.simulation`, and `trnrun.display` become
-  `trnrun.convenience.manager`, `trnrun.convenience.simulation`, and
-  `trnrun.convenience.display`. Core config, client, and reply/state/status
-  imports remain at `trnrun`.
-- Rich is optional: install `pip install "trnrun[display]"` for the built-in
-  display (still the manager default), or `pip install trnrun` for client usage
-  or a manager with `display=False`.
-- `SimulationConfig.trnrun_path` moved to `SimulationManager(trnrun_path=...)`,
-  because one daemon runs every simulation with the same runner.
-- `SimulationManager(trnrunq_path=...)` is now `trnrund_path=...`.
-- `SimulationManager(refresh_interval=...)` was removed: the display is
-  updated after each poll, every `poll_interval` seconds. Pass
-  `display=False` to disable it. Display callbacks are replaced by any object
-  with `update(changed)` and `close()` passed as `display`, or by reading
-  handles with `info` for your own display.
-- `submitted`, `simulations`, `succeeded`, and `failed` were removed, because
-  the manager forgets finished runs. Keep the handles returned by `add()`.
-- `manager.wait()` takes a `timeout`; wait for one run with
-  `simulation.wait()`.
-- The manager still keeps handles current in the background, now by polling
-  the daemon every `poll_interval` seconds, and `failure` holds the error that
-  stopped polling. `DaemonClient` sends daemon requests directly.
-- On shutdown or a daemon failure, unfinished runs retain their last daemon
-  state, and both `wait()` methods raise instead of waiting indefinitely.
-- `Simulation.completion_event` and `QueueEvent` were removed. Use
-  `Simulation.state`, `exit_code`, and `error` instead.
-- Events no longer have a `timestamp`.
-- `succeeded` now also requires exit code `0` and no daemon error.
-- If the daemon rejects a deck, `add()` raises `ValueError` instead of
-  the run finishing as a failure.
-- `add(blocking=...)` was removed: `add()` returns once the daemon has queued
-  the run; use `wait()` to wait for it to finish.
-
-## Examples
-
-Runnable examples are available
-in the [TRNRun repository](https://github.com/NRCan/TRNRun/tree/main/libraries/python/examples).
-The single-run, batch, and notebook examples use the built-in display and need
-`pip install "trnrun[display]"`. The tkinter GUI example uses `display=False`
-and works with `pip install trnrun`, without Rich.
+This source package does not build native executables. Deploy both components
+using their existing `nimble deploy` tasks, or supply an executable path when
+constructing `Daemon`. The existing wheel build hook requires both executables
+in `trnrun/bin` and checks that their versions match the Python package version.

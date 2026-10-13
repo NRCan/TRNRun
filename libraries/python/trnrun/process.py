@@ -1,164 +1,139 @@
-"""Interactive `trnrund.exe` process answering one JSON request at a time."""
+"""The trnrund process: start it, exchange JSON lines with it, and report its exit."""
 
-from __future__ import annotations
-
-import contextlib
 import json
 import subprocess
-from _thread import LockType
+from contextlib import suppress
 from pathlib import Path
-from threading import Lock
-from typing import IO, Final
 
-from trnrun.job import assign_to_job
+from .job import assign_to_job
 
-CREATE_NO_WINDOW: Final[int] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-SHUTDOWN_TIMEOUT: Final[float] = 5.0
+DEFAULT_EXECUTABLE = Path(__file__).parent / "bin" / "trnrund.exe"
 
 
-def _require_pipe(stream: IO[str] | None) -> IO[str]:
-    """Return a daemon pipe, rejecting a missing stream."""
-    if stream is None:
-        raise RuntimeError("TRNRun daemon pipes are unavailable")
-    return stream
+def _cli_args(
+    *,
+    database_path: str | Path,
+    max_concurrent: int | None,
+    trnrun_path: str | Path | None,
+    overwrite: bool,
+) -> list[str]:
+    """Return trnrund options with absolute paths; None keeps the daemon's default."""
+    if type(overwrite) is not bool:
+        raise TypeError(f"overwrite must be True or False, got {overwrite!r}")
+    args = [f"--database:{Path(database_path).absolute()}", f"--overwrite:{str(overwrite).lower()}"]
+    if max_concurrent is not None:
+        args.append(f"--maxConcurrent:{max_concurrent}")
+    if trnrun_path is not None:
+        args.append(f"--trnrun:{Path(trnrun_path).absolute()}")
+    return args
+
+
+def _parse_reply(line: str) -> dict[str, object]:
+    """Decode one reply line, which must be a JSON object with a boolean ok."""
+    reply: object = json.loads(line)
+    if isinstance(reply, dict) and isinstance(reply.get("ok"), bool):
+        return reply
+    raise RuntimeError(f"Invalid trnrund reply: {line.strip()}")
 
 
 class DaemonProcess:
-    """Manage a TRNRun daemon through synchronous JSON request/reply exchanges.
+    """A running trnrund answering one JSON request per line, in order.
 
-    Parameters
-    ----------
-    executable : str or Path
-        Path to the ``trnrund.exe`` daemon.
-    trnrun_path : str or Path
-        Path to the ``trnrun.exe`` runner used by the daemon.
-    max_concurrent : int
-        Maximum simultaneous runs, validated by the daemon.
-
-    Raises
-    ------
-    FileNotFoundError
-        If either executable is missing.
-    RuntimeError
-        If the daemon rejects its configuration or exits during startup.
-
-    Notes
-    -----
-    Construction waits for the daemon to acknowledge ``ready`` after successful
-    startup. Requests are serialized
-    by a lock so concurrent callers never receive each other's replies. A rejected
-    request raises ``ValueError``; daemon exit or shutdown raises ``RuntimeError``.
-
-    The owner must call ``shutdown()`` to kill and reap the daemon and close its
-    pipes, or ``wait()`` once the daemon acknowledged a ``shutdown`` request.
-    The daemon's job object terminates its runners when the daemon exits.
-    Process waits have a five-second timeout, and incomplete cleanup can be
-    retried. Shutdown may interrupt a request, but shutdown calls must not be
-    concurrent or reentrant.
+    stderr is captured rather than shown: trnrund writes to it only before a
+    fatal exit, and that text is added to the RuntimeError reporting the exit.
+    Use one thread per instance; requests are synchronous.
     """
 
     def __init__(
         self,
+        *,
+        database_path: str | Path,
+        max_concurrent: int | None,
+        trnrun_path: str | Path | None,
+        overwrite: bool,
         executable: str | Path,
-        trnrun_path: str | Path,
-        max_concurrent: int,
     ) -> None:
-        """Spawn the daemon and wait until it serves requests."""
-        executable = Path(executable).absolute()
-        if not executable.is_file():
-            raise FileNotFoundError(f"TRNRun daemon executable not found: {executable}")
-
-        trnrun_path = Path(trnrun_path).absolute()
-        if not trnrun_path.is_file():
-            raise FileNotFoundError(f"TRNRun executable not found: {trnrun_path}")
-
-        self._lock: LockType = Lock()
-        self._closing: bool = False
-        self._process: subprocess.Popen[str] = subprocess.Popen(
-            [str(executable), f"--trnrun:{trnrun_path}", f"--maxConcurrent:{max_concurrent}"],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            # Only startup and fatal diagnostics; runner output never reaches it.
-            stderr=subprocess.PIPE,
-            encoding="utf-8",
-            errors="replace",
-            creationflags=CREATE_NO_WINDOW,
+        """Start trnrund without a console window, in the kill-on-close job; do not wait for it."""
+        args = _cli_args(
+            database_path=database_path,
+            max_concurrent=max_concurrent,
+            trnrun_path=trnrun_path,
+            overwrite=overwrite,
         )
+        self._expect_exit: bool = False
+        self._diagnostics: str | None = None
         try:
-            self._stdin: IO[str] = _require_pipe(self._process.stdin)
-            self._stdout: IO[str] = _require_pipe(self._process.stdout)
-            self._stderr: IO[str] = _require_pipe(self._process.stderr)
-            _ = assign_to_job(self._process)
-            # Acknowledged only after successful daemon initialization.
-            _ = self.request({"cmd": "ready"})
-        except BaseException:
-            # Best-effort cleanup must preserve the original startup exception.
-            with contextlib.suppress(Exception):
-                self.shutdown()
-            raise
+            self._popen: subprocess.Popen[str] = subprocess.Popen(
+                [executable, *args],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+        except FileNotFoundError as error:
+            raise FileNotFoundError(
+                f"trnrund executable not found: {executable}. "
+                "Run 'nimble deploy' in components/trnrund, or pass executable=.",
+            ) from error
+        _ = assign_to_job(self._popen)
 
     def request(self, request: dict[str, object]) -> dict[str, object]:
-        """Send one strict JSON request and return its successful reply."""
-        line = json.dumps(request, separators=(",", ":"), allow_nan=False) + "\n"
-        reply_line = self._exchange(line)
-
-        reply: dict[str, object] = json.loads(reply_line)  # pyright: ignore[reportAny]
-        if reply.get("ok") is not True:
-            raise ValueError(reply.get("error", f"TRNRun daemon sent an invalid reply: {reply_line.strip()}"))
+        """Send one request and return its reply; raise ValueError if rejected."""
+        stdin, stdout = self._popen.stdin, self._popen.stdout
+        if stdin is None or stdout is None or stdin.closed:
+            raise RuntimeError("trnrund is closed")
+        try:
+            _ = stdin.write(json.dumps(request, ensure_ascii=False) + "\n")
+            stdin.flush()
+        except OSError:
+            raise self._exit_error() from None
+        # shortcut: replies can block; add timeouts if hang recovery is needed.
+        line = stdout.readline()
+        if not line:
+            raise self._exit_error()
+        reply = _parse_reply(line)
+        if not reply["ok"]:
+            raise ValueError(reply.get("error", "trnrund rejected the request"))
         return reply
 
-    def shutdown(self) -> None:
-        """Kill and reap the daemon, then close its pipes."""
-        self._closing = True
-        # Kill before taking the lock, so a request blocked on its reply sees EOF.
-        # Popen.kill is a no-op once the daemon has exited.
-        self._process.kill()
-        _ = self._process.wait(timeout=SHUTDOWN_TIMEOUT)
-        self._close_pipes()
+    def check(self) -> None:
+        """Raise RuntimeError if trnrund exited before wait() or close()."""
+        if not self._expect_exit and self._popen.poll() is not None:
+            raise self._exit_error()
 
-    def wait(self, timeout: float | None = None) -> None:
-        """Wait for the daemon to exit on its own, then close its pipes.
+    def wait(self) -> None:
+        """Wait for trnrund to exit by itself, as after shutdown, then close it.
 
-        Use after the daemon acknowledged a ``shutdown`` request. Later requests
-        raise ``RuntimeError``. On ``subprocess.TimeoutExpired`` the daemon keeps
-        running and ``shutdown()`` can still kill it.
+        Raises RuntimeError, with its diagnostics, if it exited with an error.
         """
-        self._closing = True
-        _ = self._process.wait(timeout=timeout)
-        self._close_pipes()
+        self._expect_exit = True
+        error = self._exit_error() if self._popen.wait() else None
+        self.close()
+        if error is not None:
+            raise error
 
-    def _close_pipes(self) -> None:
-        """Close the daemon pipes under the request lock."""
-        with self._lock:
-            for stream in (self._process.stdin, self._process.stdout, self._process.stderr):
-                if stream is not None:
-                    with contextlib.suppress(OSError):
-                        stream.close()
+    def close(self) -> None:
+        """Close stdin, which cancels unfinished runs, and wait for trnrund to exit.
 
-    def _exchange(self, line: str) -> str:
-        """Write one request line and read its reply under the transport lock."""
-        with self._lock:
-            if self._closing:
-                raise RuntimeError("Cannot send after daemon closure has started")
-            try:
-                _ = self._stdin.write(line)
-                self._stdin.flush()
-                reply_line = self._stdout.readline()
-            except BrokenPipeError as exc:
-                raise RuntimeError(self._exit_message()) from exc
-            if not reply_line:
-                raise RuntimeError(self._exit_message())
-            return reply_line
+        Safe to call again, after wait(), or after trnrund crashed.
+        """
+        self._expect_exit = True
+        for stream in (self._popen.stdin, self._popen.stdout, self._popen.stderr):
+            if stream is not None:
+                # A crashed trnrund leaves an unsent request whose flush fails; the
+                # stream is closed regardless.
+                with suppress(OSError):
+                    stream.close()
+        _ = self._popen.wait()
 
-    def _exit_message(self) -> str:
-        """Describe a broken pipe or EOF under the request lock, including diagnostics."""
-        if self._closing:
-            return "TRNRun daemon was shut down"
-        try:
-            # Reap before reading stderr, so diagnostics have reached EOF.
-            _ = self._process.wait(timeout=SHUTDOWN_TIMEOUT)
-            diagnostics = self._stderr.read().strip()
-        except (OSError, ValueError, subprocess.TimeoutExpired):
-            diagnostics = ""
-        message = f"TRNRun daemon exited with code {self._process.returncode}"
-        return f"{message}: {diagnostics}" if diagnostics else message
+    def _exit_error(self) -> RuntimeError:
+        """Describe how trnrund exited, waiting for it if needed."""
+        code = self._popen.wait()
+        if self._diagnostics is None:
+            stderr = self._popen.stderr
+            self._diagnostics = "" if stderr is None or stderr.closed else stderr.read().strip()
+        message = f"trnrund exited with code {code}"
+        return RuntimeError(f"{message}: {self._diagnostics}" if self._diagnostics else message)

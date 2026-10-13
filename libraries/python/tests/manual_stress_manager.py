@@ -19,7 +19,7 @@ from pathlib import Path
 from time import perf_counter
 
 from trnrun import SimulationConfig
-from trnrun.convenience import Simulation, SimulationManager
+from trnrun.batch import Simulation, SimulationManager
 
 # -----------------------------------------------------------------------------
 # Configuration
@@ -92,15 +92,16 @@ def main() -> int:
     failed = [simulation for simulation in simulations if not simulation.succeeded]
 
     print(
-        f"Finished in {elapsed:.1f}s: ",
-        f"{len(simulations) - len(failed):,}/{len(dck_files):,} succeeded, ",
-        f"{len(failed):,} failed.",
+        f"Finished in {elapsed:.1f}s: "
+        f"{len(simulations) - len(failed):,}/{len(simulations):,} succeeded, {len(failed):,} failed.",
     )
 
     for simulation in failed:
+        info = simulation.info
+        message = info.status.message if info.status is not None else ""
         print(
-            f"FAILED {simulation.deck_path.name}: status={simulation.status}, "
-            f"exit_code={simulation.exit_code}, error={simulation.error!r}",
+            f"FAILED [{simulation.id}] {simulation.deck_path.name}: status={simulation.status}, "
+            f"exit_code={info.exit_code}, error={simulation.error!r}, message={message!r}",
         )
 
     return 0 if not failed else 1

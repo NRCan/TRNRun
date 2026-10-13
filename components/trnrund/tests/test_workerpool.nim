@@ -1,4 +1,4 @@
-import std/[options, os, sequtils, unittest]
+import std/[atomics, options, os, sequtils, unittest]
 
 import ../src/[messages, workerpool]
 import ./fake_trnrun
@@ -26,8 +26,10 @@ proc drain(inbox: var Channel[Message]): seq[Message] =
       return
     result.add(message)
 
-proc runWork(runId, deckFile: string): Work =
-  Work(kind: wkRun, runId: runId, deckFile: deckFile)
+var neverCancelled: Atomic[bool] ## Shared by runs no test cancels.
+
+proc runWork(runId, deckFile: string, cancel = addr neverCancelled): Work =
+  Work(kind: wkRun, runId: runId, deckFile: deckFile, cancel: cancel)
 
 proc runTests() =
   let testDirectory = getTempDir() / "trnrund_workerpool_tests"
@@ -80,6 +82,27 @@ proc runTests() =
       check messages.len == 1
       check messages[0].exitCode.isNone
       check messages[0].error.len > 0
+      check not messages[0].cancelled
+
+    test "kills a running simulation once its cancel flag is set":
+      var
+        pool = default(WorkerPool)
+        inbox = default(Channel[Message])
+        cancel = default(Atomic[bool])
+      inbox.open()
+      pool.start(trnrun, 1, addr inbox)
+      defer: pool.shutdown()
+
+      let deckFile = createDeck(testDirectory, "gate-cancel.dck")
+      pool.submit(runWork("gate", deckFile, addr cancel))
+      check inbox.recv().kind == mkLaunched
+      cancel.store(true)
+      let messages = inbox.receiveUntilExited(1)
+
+      check messages.mapIt(it.kind) == @[mkExited]
+      check messages[0].cancelled
+      check messages[0].exitCode.isSome
+      check not fileExists(deckFile.changeFileExt("released"))
 
     test "shutdown finishes submitted work, then joins every worker":
       var

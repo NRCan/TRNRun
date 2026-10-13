@@ -28,18 +28,28 @@ Options:
   --trnrun:PATH      TRNRun executable (default: trnrun.exe beside trnrund)
   --maxConcurrent:N  Simulations run at once (default: max(CPUs - 1, 1))
   --database:PATH    SQLite database clients read (default: trnrund.sqlite3)
+  --overwrite:true/false  Delete and recreate the database (default: false)
 
 Read one JSON request per stdin line and write one JSON reply per stdout line:
   {"cmd":"add","runId":"1","deckFile":"model.dck"}
-Replies come in request order, one per request. add replies at once with the
-run's state, QUEUED or ACCEPTED.
+Replies come in request order, one per request. A successful add replies with
+exactly {"ok":true} after saving the run, with no state field. Rejected adds
+reply with {"ok":false,"error":...}; database failures are fatal, with no reply.
 
-Commands: ready, add, shutdown.
+Commands: ready, add, cancel, shutdown.
 ready returns the databasePath holding every run's state and logs; poll it to
 follow runs.
+{"cmd":"cancel","runId":"1"} stops a queued or running simulation, killing its
+TRNRun; it then finishes as CANCELLED. Finished runs are left unchanged.
 Closing stdin exits at once, killing running simulations and saving them as
 FINISHED, interrupted. One daemon at a time may use a database. Startup
 failures are written to stderr.
+
+Existing data and run IDs are preserved unless --overwrite:true is explicit.
+Overwrite deletes the database and its journals under the ownership lock,
+then recreates it. No rollback: deleted data stays gone if startup fails.
+Close all SQLite connections (including idle connections) before overwrite;
+wait for ready before opening readers. Keep the database on a local disk.
 
 Exit codes: 0 ok  1 fatal  2 usage error"""
 
@@ -87,7 +97,7 @@ proc main() =
       raise newException(ValueError, "Unexpected argument: " & parser.key)
 
   daemonScheduler =
-    newScheduler(input.trnrunPath, input.maxConcurrent, input.databasePath)
+    newScheduler(input.trnrunPath, input.maxConcurrent, input.databasePath, input.overwrite)
   let scheduler = daemonScheduler
   {.push warning[ProveInit]: off, warning[Uninit]: off.}
   createThread(reader, readRequests, scheduler.requestInbox)

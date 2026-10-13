@@ -185,6 +185,77 @@ proc runTests() =
       check reader.getValue(sql"SELECT count(*) FROM runs") == "2"
       check reader.getValue(sql"SELECT count(*) FROM logs") == "6"
 
+    test "cancel finishes a queued run at once, without starting it, and keeps the queue order":
+      let
+        scheduler = newScheduler(trnrun, 1, testDirectory / "cancel-queued.sqlite3")
+        deckFile = createDeck(testDirectory, "gate-cancel-queued.dck")
+      defer: scheduler.shutdown()
+
+      scheduler.add("first", deckFile)
+      scheduler.add("second", doneDeck)
+      scheduler.add("third", doneDeck)
+      scheduler.cancel("second")
+      check scheduler.columns("second",
+        "state, trnrun_status, trnrun_message, error, exit_code IS NULL, started_at IS NULL, succeeded") ==
+        @["FINISHED", "CANCELLED", "Not started", "Not started: cancelled by the client", "1", "1", "0"]
+      check scheduler.queue.len == 1
+      check scheduler.queue.peekFirst().runId == "third"
+
+      release(deckFile)
+      scheduler.waitFor("third", ssFinished)
+      check scheduler.columns("third", "succeeded") == @["1"]
+
+    test "cancel kills a running run, then frees its worker for the next queued run":
+      let
+        scheduler = newScheduler(trnrun, 1, testDirectory / "cancel-running.sqlite3")
+        deckFile = createDeck(testDirectory, "gate-cancel-running.dck")
+      defer: scheduler.shutdown()
+
+      scheduler.add("running", deckFile)
+      scheduler.add("next", doneDeck)
+      scheduler.waitFor("running", ssRunning)
+      scheduler.cancel("running")
+      scheduler.cancel("running") # Repeating it before the exit is applied changes nothing.
+      check scheduler.stateOf("running") == ssRunning # Finished only once its exit is applied.
+
+      scheduler.waitFor("running", ssFinished)
+      check scheduler.columns("running",
+        "trnrun_status, trnrun_message, error, exit_code IS NULL, started_at IS NOT NULL, succeeded") ==
+        @["CANCELLED", "Interrupted", "Interrupted: cancelled by the client", "1", "1", "0"]
+      check not fileExists(deckFile.changeFileExt("released"))
+      check "running" notin scheduler.dispatched
+
+      scheduler.waitFor("next", ssFinished)
+      check scheduler.columns("next", "succeeded") == @["1"]
+      check scheduler.running == 0
+
+    test "cancel of a just-dispatched run reports whether its TRNRun had started":
+      let
+        scheduler = newScheduler(trnrun, 1, testDirectory / "cancel-accepted.sqlite3")
+        deckFile = createDeck(testDirectory, "gate-cancel-accepted.dck")
+      defer: scheduler.shutdown()
+
+      scheduler.add("accepted", deckFile)
+      scheduler.cancel("accepted") # Races the worker's launch; either outcome is consistent.
+      scheduler.waitFor("accepted", ssFinished)
+      check scheduler.columns("accepted", "trnrun_status, succeeded") == @["CANCELLED", "0"]
+      check scheduler.columns("accepted",
+        "(error = 'Not started: cancelled by the client') = (started_at IS NULL)") == @["1"]
+      check not fileExists(deckFile.changeFileExt("released"))
+
+    test "cancel leaves finished runs unchanged and rejects unknown runIds":
+      let scheduler = newScheduler(trnrun, 1, testDirectory / "cancel-finished.sqlite3")
+      defer: scheduler.shutdown()
+
+      scheduler.add("done", doneDeck)
+      scheduler.waitFor("done", ssFinished)
+      let finished = scheduler.columns("done", "*")
+      scheduler.cancel("done")
+      check scheduler.columns("done", "*") == finished
+
+      expect ValueError:
+        scheduler.cancel("missing")
+
     test "rejects a database in a missing directory":
       expect DbError:
         discard newScheduler(trnrun, 1, testDirectory / "missing" / "runs.sqlite3")
@@ -208,6 +279,8 @@ proc runTests() =
 
       expect ValueError:
         scheduler.add("late", doneDeck)
+      expect ValueError:
+        scheduler.cancel("running")
       scheduler.shutdown()
 
     test "abandon finishes queued and running runs as interrupted without waiting":

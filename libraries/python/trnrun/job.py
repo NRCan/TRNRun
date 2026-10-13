@@ -1,11 +1,12 @@
 """Windows Job Object support, so TRNSYS children never outlive us.
 
-Provides `assign_to_job`, which places each freshly spawned TRNRun child into a
+Provides `assign_to_job`, which places each freshly spawned trnrund into a
 process-wide, kill-on-close Job Object. If this process is killed outright, an
-orphaned `trnrun.exe` (and the `TrnEXE64.exe` it drives) keeps running and holds
-a licence seat; `KILL_ON_JOB_CLOSE` makes Windows kill the job's members once
-the last handle closes, which happens automatically when we die. On non-Windows
-platforms it is a no-op, so callers never need to branch.
+orphaned `trnrund.exe` (and the `trnrun.exe` and `TrnEXE64.exe` it drives) can
+keep running and hold a licence seat; `KILL_ON_JOB_CLOSE` makes Windows kill the
+job's members, descendants included, once the last handle closes, which happens
+automatically when we die. On non-Windows platforms it is a no-op, so callers
+never need to branch.
 """
 
 from __future__ import annotations

@@ -7,6 +7,7 @@
 ## The work channel remains open to avoid a Nim 2.2 ORC crash when closing
 ## channels that transported moved strings, so start a pool only once.
 
+import std/atomics
 import ./messages
 import ./trnrun
 
@@ -31,10 +32,13 @@ proc runSimulation(context: WorkerContext, work: Work) =
   ## Runs one simulation and reports it to the scheduler inbox.
   ##
   ## Posts `mkLaunched` once the child exists, one `mkOutput` per line, then
-  ## exactly one `mkExited`, even when TRNRun fails to launch.
+  ## exactly one `mkExited`, even when TRNRun fails to launch or is cancelled.
+  ## The cancel flag is not read after `mkExited` is sent, since the scheduler
+  ## then frees it.
   let
     inbox = context.inbox
     runId = work.runId
+    cancel = work.cancel
 
   proc onLaunch() {.gcsafe, raises: [].} =
     inbox[].send(Message(kind: mkLaunched, runId: runId))
@@ -42,8 +46,11 @@ proc runSimulation(context: WorkerContext, work: Work) =
   proc onOutput(line: string) {.gcsafe, raises: [].} =
     inbox[].send(Message(kind: mkOutput, runId: runId, line: line))
 
+  proc isCancelled(): bool {.gcsafe, raises: [].} =
+    cancel[].load()
+
   let outcome = runTrnrun(
-    runId, work.deckFile, context.trnrunPath, work.trnrunArgs, onLaunch, onOutput
+    runId, work.deckFile, context.trnrunPath, work.trnrunArgs, onLaunch, onOutput, isCancelled
   )
   inbox[].send(
     Message(
@@ -51,6 +58,7 @@ proc runSimulation(context: WorkerContext, work: Work) =
       runId: runId,
       exitCode: outcome.exitCode,
       error: outcome.error,
+      cancelled: outcome.cancelled,
     )
   )
 
@@ -90,5 +98,5 @@ proc start*(
   {.pop.}
 
 proc submit*(pool: var WorkerPool, work: Work) =
-  ## Hands `wkRun` work to the next free worker.
+  ## Hands `wkRun` work, with its cancel flag allocated, to the next free worker.
   pool.work.send(work)

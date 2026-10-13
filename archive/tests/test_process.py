@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 import io
+import sqlite3
 import subprocess
 import sys
 from collections.abc import Callable, Iterator
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 from queue import Queue
 from threading import Event, Thread
 from time import monotonic, sleep
-from typing import IO, Any, cast
+from typing import IO
 from unittest.mock import MagicMock, Mock, call
 
 import pytest
@@ -20,7 +22,8 @@ from trnrun import process
 from trnrun.config import BUNDLED_TRNRUND_PATH
 
 TEST_TIMEOUT = 10.0
-STARTED = '{"ok":true}\n'  # Reply to the constructor's ready request.
+DATABASE = Path("runs.sqlite3")
+STARTED = '{"ok":true,"databasePath":"C:\\\\runs\\\\runs.sqlite3"}\n'  # Reply to the constructor's ready request.
 
 
 class ReplyPipe:
@@ -78,7 +81,7 @@ def make_daemon(
     monkeypatch: pytest.MonkeyPatch,
     executables: tuple[Path, Path],
 ) -> Iterator[Callable[..., Harness]]:
-    """Build daemons and ensure each is shut down by the test."""
+    """Build daemons and ensure each is killed by the test."""
     harnesses: list[Harness] = []
     monkeypatch.setattr(process, "assign_to_job", Mock(return_value=True))
 
@@ -86,6 +89,8 @@ def make_daemon(
         stdin: IO[str] | Mock | None = None,
         stdout: ReplyPipe | Mock | None = None,
         stderr: IO[str] | None = None,
+        *,
+        overwrite: bool = False,
     ) -> Harness:
         child = Mock(stdin=stdin if stdin is not None else io.StringIO())
         child.stdout = stdout if stdout is not None else ReplyPipe()
@@ -105,7 +110,7 @@ def make_daemon(
         popen = Mock(return_value=child)
         monkeypatch.setattr(process.subprocess, "Popen", popen)
 
-        daemon = process.DaemonProcess(*executables, 3)
+        daemon = process.DaemonProcess(*executables, 3, DATABASE, overwrite=overwrite)
         # Leave tests only the traffic after the startup request.
         if isinstance(child.stdout, ReplyPipe):
             child.stdout.reading.clear()
@@ -120,7 +125,7 @@ def make_daemon(
     for harness in harnesses:
         if isinstance(harness.child.stdout, ReplyPipe):
             harness.child.stdout.eof()
-        harness.daemon.shutdown()
+        harness.daemon.kill()
 
 
 def _start(action: Callable[[], object]) -> tuple[Thread, list[Exception]]:
@@ -165,24 +170,48 @@ def test_init_rejects_missing_executables(
         runner = tmp_path / "missing.exe"
 
     with pytest.raises(FileNotFoundError, match=message):
-        process.DaemonProcess(daemon, runner, 1)
+        process.DaemonProcess(daemon, runner, 1, DATABASE)
 
     popen.assert_not_called()
 
 
+@pytest.mark.parametrize("overwrite", ["true", "false", 0, 1, None])
+def test_init_rejects_non_boolean_overwrite(
+    monkeypatch: pytest.MonkeyPatch,
+    executables: tuple[Path, Path],
+    overwrite: object,
+) -> None:
+    """A destructive option must not silently coerce truthy strings or numbers."""
+    popen = Mock()
+    monkeypatch.setattr(process.subprocess, "Popen", popen)
+
+    with pytest.raises(TypeError, match="Expected a boolean for overwrite"):
+        process.DaemonProcess(*executables, 1, DATABASE, overwrite=overwrite)  # pyright: ignore[reportArgumentType]
+
+    popen.assert_not_called()
+
+
+@pytest.mark.parametrize("overwrite", [False, True])
 def test_init_spawns_configured_process_and_assigns_job(
     make_daemon: Callable[..., Harness],
     monkeypatch: pytest.MonkeyPatch,
     executables: tuple[Path, Path],
+    overwrite: bool,
 ) -> None:
-    """Construction passes the runner and concurrency, with three text pipes."""
+    """Construction passes the runner, concurrency, database, and explicit overwrite flag."""
     assign = Mock(return_value=True)
     monkeypatch.setattr(process, "assign_to_job", assign)
-    harness = make_daemon()
+    harness = make_daemon(overwrite=overwrite)
     daemon, runner = executables
 
     harness.popen.assert_called_once_with(
-        [str(daemon.absolute()), f"--trnrun:{runner.absolute()}", "--maxConcurrent:3"],
+        [
+            str(daemon.absolute()),
+            f"--trnrun:{runner.absolute()}",
+            "--maxConcurrent:3",
+            f"--database:{DATABASE.absolute()}",
+            f"--overwrite:{str(overwrite).lower()}",
+        ],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -192,6 +221,23 @@ def test_init_spawns_configured_process_and_assigns_job(
     )
     assign.assert_called_once_with(harness.child)
     assert harness.child.stdin.getvalue() == '{"cmd":"ready"}\n'
+    assert harness.daemon.database_path == Path(r"C:\runs\runs.sqlite3")
+
+
+def test_init_rejects_a_ready_reply_without_database_path(
+    monkeypatch: pytest.MonkeyPatch,
+    executables: tuple[Path, Path],
+) -> None:
+    """A daemon that does not say where its database is fails startup and is released."""
+    child = Mock(stdin=io.StringIO(), stdout=io.StringIO('{"ok":true}\n'), stderr=io.StringIO())
+    monkeypatch.setattr(process.subprocess, "Popen", Mock(return_value=child))
+    monkeypatch.setattr(process, "assign_to_job", Mock(return_value=True))
+
+    with pytest.raises(ValueError, match="'databasePath' must be a string"):
+        process.DaemonProcess(*executables, 1, DATABASE)
+
+    child.kill.assert_called_once_with()
+    assert child.stdout.closed
 
 
 @pytest.mark.parametrize("missing", ["stdin", "stdout", "stderr"])
@@ -209,7 +255,7 @@ def test_init_missing_pipe_cleans_up_available_resources(
     monkeypatch.setattr(process, "assign_to_job", assign)
 
     with pytest.raises(RuntimeError, match=r"^TRNRun daemon pipes are unavailable$"):
-        process.DaemonProcess(*executables, 1)
+        process.DaemonProcess(*executables, 1, DATABASE)
 
     assign.assert_not_called()
     child.kill.assert_called_once_with()
@@ -230,7 +276,7 @@ def test_init_reports_daemon_startup_failure_and_cleans_up(
     monkeypatch.setattr(process, "assign_to_job", Mock(return_value=True))
 
     with pytest.raises(RuntimeError, match=r"^TRNRun daemon exited with code 2: 'maxConcurrent' must be at least 1$"):
-        process.DaemonProcess(*executables, 0)
+        process.DaemonProcess(*executables, 0, DATABASE)
 
     child.kill.assert_called_once_with()
     assert child.stdin.closed
@@ -252,7 +298,7 @@ def test_init_rejected_ready_cleans_up(
     monkeypatch.setattr(process, "assign_to_job", Mock(return_value=True))
 
     with pytest.raises(ValueError, match="^Unknown cmd: ready$"):
-        process.DaemonProcess(*executables, 1)
+        process.DaemonProcess(*executables, 1, DATABASE)
 
     child.kill.assert_called_once_with()
     child.wait.assert_called_once_with(timeout=process.SHUTDOWN_TIMEOUT)
@@ -279,7 +325,7 @@ def test_init_failure_releases_acquired_resources(
         assign.side_effect = error
 
     with pytest.raises(RuntimeError) as caught:
-        process.DaemonProcess(*executables, 1)
+        process.DaemonProcess(*executables, 1, DATABASE)
 
     assert caught.value is error
     if failure == "spawn":
@@ -304,7 +350,7 @@ def test_startup_cleanup_preserves_original_exception(
     monkeypatch.setattr(process, "assign_to_job", Mock(side_effect=original))
 
     with pytest.raises(RuntimeError) as caught:
-        process.DaemonProcess(*executables, 1)
+        process.DaemonProcess(*executables, 1, DATABASE)
 
     assert caught.value is original
     child.kill.assert_called_once_with()
@@ -405,6 +451,24 @@ def test_eof_reports_exit_code_and_diagnostics(make_daemon: Callable[..., Harnes
         harness.daemon.request({"cmd": "pull"})
 
 
+def test_exit_error_describes_an_exited_daemon(make_daemon: Callable[..., Harness]) -> None:
+    """A running daemon has no exit error; an exited one reports its code and diagnostics."""
+    harness = make_daemon(stderr=io.StringIO("Database failed\n"))
+    assert harness.daemon.exit_error() is None
+
+    harness.child.poll.return_value = 1
+
+    def wait(*, timeout: float) -> int:
+        del timeout
+        harness.child.returncode = 1
+        return 1
+
+    harness.child.wait.side_effect = wait
+    error = harness.daemon.exit_error()
+    assert type(error) is RuntimeError
+    assert str(error) == "TRNRun daemon exited with code 1: Database failed"
+
+
 def test_concurrent_requests_never_interleave_replies(make_daemon: Callable[..., Harness]) -> None:
     """A second caller cannot write until the first caller has read its reply."""
     stdin = Mock()
@@ -430,14 +494,14 @@ def test_concurrent_requests_never_interleave_replies(make_daemon: Callable[...,
     assert stdin.write.call_args_list == [call('{"id":1}\n'), call('{"id":2}\n')]
 
 
-def test_shutdown_kills_before_waiting_for_blocked_request(make_daemon: Callable[..., Harness]) -> None:
+def test_kill_unblocks_request_before_waiting(make_daemon: Callable[..., Harness]) -> None:
     """Killing the daemon delivers EOF to an in-flight request before pipes close."""
     stdout = ReplyPipe()
     harness = make_daemon(stdout=stdout)
     requester, errors = _start(lambda: harness.daemon.request({"cmd": "pull"}))
     assert stdout.reading.wait(TEST_TIMEOUT)
 
-    harness.daemon.shutdown()
+    harness.daemon.kill()
     _join(requester)
 
     assert len(errors) == 1
@@ -447,8 +511,8 @@ def test_shutdown_kills_before_waiting_for_blocked_request(make_daemon: Callable
     assert harness.child.stdin.closed
 
 
-def test_shutdown_repeats_kill_wait_and_close(make_daemon: Callable[..., Harness]) -> None:
-    """Sequential shutdowns repeat every step, then reject further requests."""
+def test_kill_repeats_kill_wait_and_close(make_daemon: Callable[..., Harness]) -> None:
+    """Sequential kills repeat every step, then reject further requests."""
     stdin = Mock()
     harness = make_daemon(stdin=stdin)
     operations = Mock()
@@ -456,20 +520,24 @@ def test_shutdown_repeats_kill_wait_and_close(make_daemon: Callable[..., Harness
     operations.attach_mock(harness.child.wait, "wait")
     operations.attach_mock(stdin.close, "close")
 
-    harness.daemon.shutdown()
-    harness.daemon.shutdown()
+    harness.daemon.kill()
+    harness.daemon.kill()
 
-    assert operations.mock_calls == [
-        call.kill(),
-        call.wait(timeout=process.SHUTDOWN_TIMEOUT),
-        call.close(),
-    ] * 2
+    assert (
+        operations.mock_calls
+        == [
+            call.kill(),
+            call.wait(timeout=process.SHUTDOWN_TIMEOUT),
+            call.close(),
+        ]
+        * 2
+    )
     with pytest.raises(RuntimeError, match="Cannot send after daemon closure"):
         harness.daemon.request({})
     stdin.write.assert_not_called()
 
 
-def test_shutdown_reap_timeout_can_be_retried(make_daemon: Callable[..., Harness]) -> None:
+def test_kill_reap_timeout_can_be_retried(make_daemon: Callable[..., Harness]) -> None:
     """A failed reap leaves stdin open; a retry kills and waits again."""
     harness = make_daemon()
     error = subprocess.TimeoutExpired("daemon", 5)
@@ -483,31 +551,31 @@ def test_shutdown_reap_timeout_can_be_retried(make_daemon: Callable[..., Harness
     harness.child.wait.side_effect = wait
 
     with pytest.raises(subprocess.TimeoutExpired) as caught:
-        harness.daemon.shutdown()
+        harness.daemon.kill()
 
     assert caught.value is error
     assert harness.daemon._closing
     assert not harness.child.stdin.closed
-    harness.daemon.shutdown()
+    harness.daemon.kill()
     assert harness.child.stdin.closed
     assert harness.child.kill.call_count == 2
 
 
-def test_shutdown_kill_failure_can_be_retried(make_daemon: Callable[..., Harness]) -> None:
-    """Kill errors propagate before reaping, but a later shutdown can finish."""
+def test_kill_failure_can_be_retried(make_daemon: Callable[..., Harness]) -> None:
+    """Kill errors propagate before reaping, but a later kill can finish."""
     harness = make_daemon()
     error = OSError("kill failed")
     kill = harness.child.kill.side_effect
     harness.child.kill.side_effect = error
 
     with pytest.raises(OSError, match="kill failed") as caught:
-        harness.daemon.shutdown()
+        harness.daemon.kill()
 
     assert caught.value is error
     harness.child.wait.assert_not_called()
     assert not harness.child.stdin.closed
     harness.child.kill.side_effect = kill
-    harness.daemon.shutdown()
+    harness.daemon.kill()
     harness.child.wait.assert_called_once_with(timeout=process.SHUTDOWN_TIMEOUT)
     assert harness.child.stdin.closed
 
@@ -529,8 +597,8 @@ def test_wait_reaps_without_killing_then_rejects_requests(make_daemon: Callable[
     stdin.write.assert_not_called()
 
 
-def test_wait_timeout_leaves_the_daemon_for_shutdown(make_daemon: Callable[..., Harness]) -> None:
-    """A wait that times out keeps the pipes open, and shutdown can still kill."""
+def test_wait_timeout_leaves_the_daemon_for_kill(make_daemon: Callable[..., Harness]) -> None:
+    """A wait that times out keeps the pipes open, and kill can still clean up."""
     harness = make_daemon()
     error = subprocess.TimeoutExpired("daemon", 1)
     successful_wait = harness.child.wait.side_effect
@@ -542,20 +610,20 @@ def test_wait_timeout_leaves_the_daemon_for_shutdown(make_daemon: Callable[..., 
     assert caught.value is error
     assert not harness.child.stdin.closed
     harness.child.wait.side_effect = successful_wait
-    harness.daemon.shutdown()
+    harness.daemon.kill()
     harness.child.kill.assert_called_once_with()
     assert harness.child.stdin.closed
 
 
 @pytest.mark.parametrize("error_type", [BrokenPipeError, OSError])
-def test_shutdown_suppresses_close_oserror(make_daemon: Callable[..., Harness], error_type: type[OSError]) -> None:
+def test_kill_suppresses_close_oserror(make_daemon: Callable[..., Harness], error_type: type[OSError]) -> None:
     """An OS error closing one pipe does not prevent closing the others or releasing the lock."""
     stream = Mock()
     stream.close.side_effect = error_type("broken input")
     harness = make_daemon(stdin=stream)
 
-    harness.daemon.shutdown()
-    harness.daemon.shutdown()
+    harness.daemon.kill()
+    harness.daemon.kill()
 
     assert stream.close.call_args_list == [call(), call()]
     assert harness.child.stdout.closed
@@ -565,12 +633,12 @@ def test_shutdown_suppresses_close_oserror(make_daemon: Callable[..., Harness], 
 
 
 def test_real_subprocess_round_trip_and_cleanup(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """Real pipes carry UTF-8 requests and replies until owner shutdown."""
+    """Real pipes carry UTF-8 requests and replies until the owner kills the daemon."""
     popen = subprocess.Popen
     script = (
         "import json, sys\n"
         "for line in sys.stdin:\n"
-        "    print(json.dumps({'ok': True, 'echo': json.loads(line)}), flush=True)\n"
+        "    print(json.dumps({'ok': True, 'databasePath': 'runs.sqlite3', 'echo': json.loads(line)}), flush=True)\n"
     )
     monkeypatch.setattr(
         process.subprocess,
@@ -581,12 +649,12 @@ def test_real_subprocess_round_trip_and_cleanup(monkeypatch: pytest.MonkeyPatch,
     runner = tmp_path / "trnrun.exe"
     runner.touch()
 
-    daemon = process.DaemonProcess(sys.executable, runner, 1)
+    daemon = process.DaemonProcess(sys.executable, runner, 1, DATABASE)
     try:
-        assert daemon.request({"text": "café"}) == {"ok": True, "echo": {"text": "café"}}
+        assert daemon.request({"text": "café"})["echo"] == {"text": "café"}
         assert daemon._process.poll() is None
     finally:
-        daemon.shutdown()
+        daemon.kill()
 
     assert daemon._process.returncode is not None
     assert daemon._stdin.closed
@@ -594,31 +662,32 @@ def test_real_subprocess_round_trip_and_cleanup(monkeypatch: pytest.MonkeyPatch,
 
 
 def test_real_daemon_round_trip(tmp_path: Path, fake_trnrun: Path) -> None:
-    """The bundled daemon accepts a run, reports each change once, and forgets it once reported finished."""
+    """The bundled daemon names its database, accepts a run, and saves it there until it finishes."""
     deck = tmp_path / "done-a.dck"
     deck.touch()
-    daemon = process.DaemonProcess(BUNDLED_TRNRUND_PATH, fake_trnrun, 1)
+    database = tmp_path / "runs.sqlite3"
+    daemon = process.DaemonProcess(BUNDLED_TRNRUND_PATH, fake_trnrun, 1, database)
     try:
-        assert daemon.request({"cmd": "ready"}) == {"ok": True}
+        assert daemon.database_path == database
+        assert daemon.request({"cmd": "ready"}) == {"ok": True, "databasePath": str(database)}
         assert daemon.request({"cmd": "add", "runId": "1", "deckFile": str(deck)}) == {"ok": True}
         with pytest.raises(ValueError, match="Invalid or duplicate runId: 1"):
             daemon.request({"cmd": "add", "runId": "1", "deckFile": str(deck)})
+        with pytest.raises(ValueError, match="Unknown cmd: pull"):
+            daemon.request({"cmd": "pull"})
         deadline = monotonic() + TEST_TIMEOUT
-        logs: list[object] = []
-        simulation: dict[str, Any] = {"state": "QUEUED"}
-        while simulation["state"] != "FINISHED" and monotonic() < deadline:
-            for simulation in cast("list[dict[str, Any]]", daemon.request({"cmd": "pull"})["simulations"]):
-                logs.extend(simulation["logs"])
-            sleep(0.01)
-        assert simulation["state"] == "FINISHED"
-        assert daemon.request({"cmd": "pull"}) == {"ok": True, "simulations": []}
-        with pytest.raises(ValueError, match="Unknown cmd: remove"):
-            daemon.request({"cmd": "remove", "runId": "1"})
+        query = "SELECT state, succeeded, notices + warnings + fatals FROM runs WHERE run_id = '1'"
+        with closing(sqlite3.connect(f"{database.as_uri()}?mode=ro", uri=True)) as reader:
+            while (row := reader.execute(query).fetchone())[0] != "FINISHED":
+                assert monotonic() < deadline, "the run never finished"
+                sleep(0.01)
+            log_count: int = reader.execute("SELECT count(*) FROM logs WHERE run_id = '1'").fetchone()[0]
+        assert daemon.exit_error() is None
     finally:
-        daemon.shutdown()
+        daemon.kill()
 
-    assert simulation["succeeded"] is True
-    assert len(logs) == sum(simulation[name] for name in ("notices", "warnings", "fatals")) == 3
+    assert row[1:] == (1, 3)
+    assert log_count == 3
 
 
 @pytest.mark.parametrize(
@@ -629,7 +698,23 @@ def test_real_daemon_round_trip(tmp_path: Path, fake_trnrun: Path) -> None:
         (True, "invalid integer: True"),
     ],
 )
-def test_real_daemon_validates_concurrency(fake_trnrun: Path, max_concurrent: object, message: str) -> None:
+def test_real_daemon_validates_concurrency(
+    tmp_path: Path,
+    fake_trnrun: Path,
+    max_concurrent: object,
+    message: str,
+) -> None:
     """The daemon's own validation reaches the constructor."""
     with pytest.raises(RuntimeError, match=f"^TRNRun daemon exited with code 2: {message}$"):
-        process.DaemonProcess(BUNDLED_TRNRUND_PATH, fake_trnrun, max_concurrent)  # pyright: ignore[reportArgumentType]
+        process.DaemonProcess(BUNDLED_TRNRUND_PATH, fake_trnrun, max_concurrent, tmp_path / "runs.sqlite3")  # pyright: ignore[reportArgumentType]
+
+
+def test_real_daemon_refuses_a_database_in_use(tmp_path: Path, fake_trnrun: Path) -> None:
+    """Only one daemon at a time can use a database."""
+    database = tmp_path / "runs.sqlite3"
+    first = process.DaemonProcess(BUNDLED_TRNRUND_PATH, fake_trnrun, 1, database)
+    try:
+        with pytest.raises(RuntimeError, match=r"^TRNRun daemon exited with code 1: Database is in use"):
+            process.DaemonProcess(BUNDLED_TRNRUND_PATH, fake_trnrun, 1, database)
+    finally:
+        first.kill()

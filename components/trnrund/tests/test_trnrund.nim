@@ -108,7 +108,13 @@ proc runTests() =
         check command.output.contains("Usage:")
         check command.output.contains("--maxConcurrent:N")
         check command.output.contains("--database:PATH")
-        check command.output.contains("Commands: ready, add, shutdown.")
+        check command.output.contains("--overwrite:true/false")
+        check command.output.contains("including idle connections")
+        check command.output.contains("No rollback")
+        check command.output.contains("deletes the database and its journals")
+        check command.output.contains("Commands: ready, add, cancel, shutdown.")
+        check command.output.contains("exactly {\"ok\":true}")
+        check command.output.contains("with no state field")
         check command.output.contains("Exit codes: 0 ok")
       for option in ["-v", "--version"]:
         let command = runCommand(daemonExecutable, [option], testDirectory)
@@ -124,6 +130,8 @@ proc runTests() =
         (arguments: @[trnrunOption, "--maxConcurrent:0"],
           expected: "'maxConcurrent' must be at least 1"),
         (arguments: @["--database:"], expected: "'database' must not be empty"),
+        (arguments: @["--overwrite"], expected: "'overwrite' must be true or false"),
+        (arguments: @["--overwrite:yes"], expected: "'overwrite' must be true or false"),
         (arguments: @["--trnrun:missing.exe"], expected: "TRNRun not found:"),
         (arguments: newSeq[string](), expected: "TRNRun not found:"),
       ]
@@ -145,7 +153,7 @@ proc runTests() =
       let reader = daemon.openReader()
       defer: reader.close()
       check daemon.request(%*{"cmd": "add", "runId": "run", "deckFile": deckFile}) ==
-        %*{"ok": true, "state": "ACCEPTED"}
+        %*{"ok": true}
 
       reader.waitForState("run", "FINISHED")
       check reader.columns("run", "deck_file, succeeded, trnrun_status, percent, notices, warnings") ==
@@ -175,7 +183,7 @@ proc runTests() =
       let reader = daemon.openReader()
       defer: reader.close()
       check daemon.request(%*{"cmd": "add", "runId": "run", "deckFile": deckFile}) ==
-        %*{"ok": true, "state": "ACCEPTED"}
+        %*{"ok": true}
       reader.waitFor("run", "sim_time = 7.5 AND percent = 0.75 AND elapsed_ms = 300 AND eta_ms = 100")
       check reader.columns("run", "state") == @["RUNNING"]
       check not fileExists(deckFile.changeFileExt("released"))
@@ -185,30 +193,157 @@ proc runTests() =
       check daemon.request(%*{"cmd": "shutdown"}) == %*{"ok": true}
       check daemon.waitForExit(5_000) == 0
 
-    test "runIds stay taken after restarting against the same database":
+    test "default and explicit false preserve history; explicit true recreates it and permits ID reuse":
       let
         deckFile = testDirectory / "done-restart.dck"
         databaseOption = "--database:" & (testDirectory / "restart.sqlite3")
       writeFile(deckFile, "fake TRNSYS deck")
       var finished: Row = @[]
-      for launch in 1 .. 2:
+      for launch in 1 .. 3:
         checkpoint("launch " & $launch)
+        if launch == 3:
+          # No readers remain when replacing an incompatible old database.
+          let injector = db_sqlite.open(testDirectory / "restart.sqlite3", "", "", "")
+          injector.exec(sql"PRAGMA user_version = 999")
+          injector.exec(sql"CREATE TABLE obsolete (value TEXT)")
+          injector.close()
         block:
-          let daemon = startDaemon(trnrunOption, databaseOption)
+          let daemon =
+            if launch == 1: startDaemon(trnrunOption, databaseOption)
+            elif launch == 2: startDaemon(trnrunOption, databaseOption, "--overwrite:false")
+            else: startDaemon(trnrunOption, databaseOption, "--overwrite:true")
           defer: daemon.closeDaemon()
           let reader = daemon.openReader()
           defer: reader.close()
+          if launch == 3:
+            check reader.getValue(sql"SELECT count(*) FROM runs") == "0"
+            check reader.getValue(sql"SELECT count(*) FROM logs") == "0"
+            check reader.getValue(sql"PRAGMA user_version") == "2"
+            check reader.getValue(sql"PRAGMA journal_mode") == "wal"
+            check reader.getValue(sql"SELECT count(*) FROM sqlite_master WHERE name = 'obsolete'") == "0"
           let reply = daemon.request(%*{"cmd": "add", "runId": "historic", "deckFile": deckFile})
-          if launch == 1:
-            check reply == %*{"ok": true, "state": "ACCEPTED"}
+          if launch != 2:
+            check reply == %*{"ok": true}
             reader.waitForState("historic", "FINISHED")
             finished = reader.columns("historic", "*")
+            check reader.getValue(sql"SELECT min(log_id) FROM logs") == "1"
+            check reader.getValue(sql"SELECT max(log_id) FROM logs") == "3"
           else:
             check reply == %*{"ok": false, "error": "Invalid or duplicate runId: historic"}
             check reader.columns("historic", "*") == finished
             check reader.getValue(sql"SELECT count(*) FROM logs") == "3"
           check daemon.request(%*{"cmd": "shutdown"}) == %*{"ok": true}
           check daemon.waitForExit(5_000) == 0
+
+    test "Windows open connections refuse overwrite before journals are deleted and release ownership":
+      let
+        path = testDirectory / "busy-overwrite.sqlite3"
+        databaseOption = "--database:" & path
+        deck = testDirectory / "done-overwrite.dck"
+      writeFile(deck, "fake TRNSYS deck")
+      block:
+        let daemon = startDaemon(trnrunOption, databaseOption, "--overwrite:true")
+        defer: daemon.closeDaemon()
+        let reader = daemon.openReader()
+        defer: reader.close()
+        discard daemon.request(%*{"cmd": "add", "runId": "kept", "deckFile": deck})
+        reader.waitForState("kept", "FINISHED")
+        check daemon.request(%*{"cmd": "shutdown"}) == %*{"ok": true}
+        check daemon.waitForExit(5_000) == 0
+      for mode in ["idle", "reader", "writer"]:
+        checkpoint(mode)
+        block:
+          let blocker = db_sqlite.open(path, "", "", "")
+          defer: blocker.close()
+          if mode != "idle":
+            blocker.exec(sql(if mode == "writer": "BEGIN IMMEDIATE" else: "BEGIN"))
+          let rows = blocker.getAllRows(sql"SELECT * FROM runs")
+          let logs = blocker.getAllRows(sql"SELECT * FROM logs ORDER BY log_id")
+          let main = if mode == "writer": "" else: readFile(path)
+          let wal = if mode == "writer": "" else: readFile(path & "-wal")
+          let shm = if mode == "writer": "" else: readFile(path & "-shm")
+          writeFile(path & "-journal", "untouched journal")
+          let command = runCommand(daemonExecutable,
+            [trnrunOption, databaseOption, "--overwrite:true"], testDirectory)
+          check command.exitCode == 1
+          check command.output == ""
+          check command.error.contains("cannot delete " & path & ":")
+          check command.error.contains("Close all SQLite connections")
+          check not fileExists(path & ".lock")
+          check fileExists(path)
+          check fileExists(path & "-wal")
+          check fileExists(path & "-shm")
+          if mode != "writer":
+            check readFile(path) == main
+            check readFile(path & "-wal") == wal
+            check readFile(path & "-shm") == shm
+          check readFile(path & "-journal") == "untouched journal"
+          removeFile(path & "-journal")
+          check blocker.getAllRows(sql"SELECT * FROM runs") == rows
+          check blocker.getAllRows(sql"SELECT * FROM logs ORDER BY log_id") == logs
+          if mode != "idle":
+            blocker.exec(sql"ROLLBACK")
+      let daemon = startDaemon(trnrunOption, databaseOption, "--overwrite:true")
+      defer: daemon.closeDaemon()
+      let reader = daemon.openReader()
+      defer: reader.close()
+      check reader.getValue(sql"SELECT count(*) FROM runs") == "0"
+      check reader.getValue(sql"SELECT count(*) FROM logs") == "0"
+      check reader.getValue(sql"PRAGMA journal_mode") == "wal"
+      check daemon.request(%*{"cmd": "shutdown"}) == %*{"ok": true}
+      check daemon.waitForExit(5_000) == 0
+
+    test "overwrite replaces a non-SQLite file and stale journals before ready":
+      let path = testDirectory / "invalid-overwrite.sqlite3"
+      let contents = "not a SQLite database"
+      writeFile(path, contents)
+      let command = runCommand(daemonExecutable,
+        [trnrunOption, "--database:" & path, "--overwrite:false"], testDirectory)
+      check command.exitCode == 1
+      check command.error.contains("not a database")
+      check readFile(path) == contents
+      check not fileExists(path & ".lock")
+      for suffix in ["-wal", "-shm", "-journal"]:
+        writeFile(path & suffix, "stale " & suffix)
+      let daemon = startDaemon(trnrunOption, "--database:" & path, "--overwrite:true")
+      defer: daemon.closeDaemon()
+      let reader = daemon.openReader()
+      defer: reader.close()
+      check reader.getValue(sql"PRAGMA integrity_check") == "ok"
+      check reader.getValue(sql"PRAGMA user_version") == "2"
+      check reader.getValue(sql"SELECT count(*) FROM runs") == "0"
+      check not fileExists(path & "-journal")
+      check readFile(path & "-wal") != "stale -wal"
+      check readFile(path & "-shm") != "stale -shm"
+      check daemon.request(%*{"cmd": "shutdown"}) == %*{"ok": true}
+      check daemon.waitForExit(5_000) == 0
+
+    test "partial overwrite failure loses old data, reports the file and releases ownership":
+      let path = testDirectory / "partial-overwrite.sqlite3"
+      writeFile(path, "old data")
+      writeFile(path & "-wal", "deleted before failure")
+      createDir(path & "-shm")
+      writeFile(path & "-journal", "not reached")
+      let command = runCommand(daemonExecutable,
+        [trnrunOption, "--database:" & path, "--overwrite:true"], testDirectory)
+      check command.exitCode == 1
+      check command.output == ""
+      check command.error.contains("cannot delete " & path & "-shm")
+      check command.error.contains("Already deleted files are not restored")
+      check not fileExists(path)
+      check not fileExists(path & "-wal")
+      check dirExists(path & "-shm")
+      check readFile(path & "-journal") == "not reached"
+      check not fileExists(path & ".lock")
+      removeDir(path & "-shm")
+      let daemon = startDaemon(trnrunOption, "--database:" & path, "--overwrite:true")
+      defer: daemon.closeDaemon()
+      let reader = daemon.openReader()
+      defer: reader.close()
+      check reader.getValue(sql"SELECT count(*) FROM runs") == "0"
+      check not fileExists(path & "-journal")
+      check daemon.request(%*{"cmd": "shutdown"}) == %*{"ok": true}
+      check daemon.waitForExit(5_000) == 0
 
     test "graceful shutdown waits for running runs and cancels queued ones":
       let
@@ -229,6 +364,40 @@ proc runTests() =
       reader.waitForState("active", "FINISHED")
       check reader.columns("active", "succeeded") == @["1"]
 
+    test "cancel kills one running TRNRun and cancels one queued run, leaving the others":
+      let
+        cancelledDeck = testDirectory / "gate-cancel.dck"
+        keptDeck = testDirectory / "done-cancel.dck"
+        daemon = startDaemon(trnrunOption, "--maxConcurrent:1")
+      defer: daemon.closeDaemon()
+      writeFile(cancelledDeck, "fake TRNSYS deck")
+      writeFile(keptDeck, "fake TRNSYS deck")
+      let reader = daemon.openReader()
+      defer: reader.close()
+      for (runId, deck) in [("running", cancelledDeck), ("queued", keptDeck), ("kept", keptDeck)]:
+        check daemon.request(%*{"cmd": "add", "runId": runId, "deckFile": deck}) == %*{"ok": true}
+      reader.waitForState("running", "RUNNING")
+
+      check daemon.request(%*{"cmd": "cancel", "runId": "queued"}) == %*{"ok": true}
+      check reader.columns("queued", "state, error, started_at IS NULL") ==
+        @["FINISHED", "Not started: cancelled by the client", "1"]
+      check daemon.request(%*{"cmd": "cancel", "runId": "running"}) == %*{"ok": true}
+      reader.waitForState("running", "FINISHED")
+      check reader.columns("running", "trnrun_status, error, exit_code IS NULL, succeeded") ==
+        @["CANCELLED", "Interrupted: cancelled by the client", "1", "0"]
+      reader.waitForState("kept", "FINISHED")
+      check reader.columns("kept", "succeeded") == @["1"]
+
+      check daemon.request(%*{"cmd": "cancel", "runId": "kept"}) == %*{"ok": true}
+      check reader.columns("kept", "succeeded") == @["1"]
+      check daemon.request(%*{"cmd": "cancel", "runId": "missing"}) ==
+        %*{"ok": false, "error": "Unknown runId: missing"}
+      writeFile(cancelledDeck.changeFileExt("release"), "")
+      sleep(300)
+      check not fileExists(cancelledDeck.changeFileExt("released"))
+      check daemon.request(%*{"cmd": "shutdown"}) == %*{"ok": true}
+      check daemon.waitForExit(5_000) == 0
+
     test "EOF exits immediately, killing running TRNRun and saving it as interrupted":
       let
         deckFile = testDirectory / "gate-orphan.dck"
@@ -238,9 +407,10 @@ proc runTests() =
       let reader = daemon.openReader()
       defer: reader.close()
       check daemon.request(%*{"cmd": "add", "runId": "run", "deckFile": deckFile}) ==
-        %*{"ok": true, "state": "ACCEPTED"}
+        %*{"ok": true}
       check daemon.request(%*{"cmd": "add", "runId": "queued", "deckFile": deckFile}) ==
-        %*{"ok": true, "state": "QUEUED"}
+        %*{"ok": true}
+      check reader.columns("queued", "state") == @["QUEUED"]
       reader.waitForState("run", "RUNNING")
       daemon.inputStream.close()
       check daemon.waitForExit(5_000) == 0
@@ -259,11 +429,27 @@ proc runTests() =
         first = startDaemon(trnrunOption, "--database:" & path)
       defer: first.closeDaemon()
       discard first.request(%*{"cmd": "ready"}) # The database is open from here.
-
-      let second = runCommand(daemonExecutable, [trnrunOption, "--database:" & path], testDirectory)
-      check second.exitCode == 1
-      check second.output == ""
-      check second.error.contains("Database is in use by another trnrund")
+      let deck = testDirectory / "done-owned.dck"
+      writeFile(deck, "fake TRNSYS deck")
+      discard first.request(%*{"cmd": "add", "runId": "owned", "deckFile": deck})
+      let reader = first.openReader()
+      defer: reader.close()
+      reader.waitForState("owned", "FINISHED")
+      let before = reader.columns("owned", "*")
+      let logs = reader.getAllRows(sql"SELECT * FROM logs ORDER BY log_id")
+      let wal = readFile(path & "-wal")
+      let shm = readFile(path & "-shm")
+      for overwrite in ["false", "true"]:
+        let second = runCommand(daemonExecutable,
+          [trnrunOption, "--database:" & path, "--overwrite:" & overwrite], testDirectory)
+        check second.exitCode == 1
+        check second.output == ""
+        check second.error.contains("Database is in use by another trnrund")
+        check fileExists(path & ".lock")
+        check readFile(path & "-wal") == wal
+        check readFile(path & "-shm") == shm
+        check reader.columns("owned", "*") == before
+        check reader.getAllRows(sql"SELECT * FROM logs ORDER BY log_id") == logs
 
       check first.request(%*{"cmd": "shutdown"}) == %*{"ok": true}
       check first.waitForExit(5_000) == 0
@@ -317,5 +503,9 @@ proc runTests() =
       check daemon.waitForExit(5_000) == 1
       check daemon.outputStream.readAll() == ""
       check daemon.errorStream.readAll().contains("injected failure")
+      let reader = db_sqlite.open(path, "", "", "")
+      defer: reader.close()
+      reader.exec(sql"PRAGMA query_only = ON")
+      check reader.getValue(sql"SELECT count(*) FROM runs") == "0"
 
 runTests()

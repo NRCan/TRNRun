@@ -34,10 +34,15 @@ class Display(Protocol):
 class SimulationManager:
     """Own one TRNRun daemon and keep its simulations' handles in sync.
 
-    A background thread pulls the runs that changed every ``poll_interval``
-    seconds, applies them to their handles, shows the changes on the display,
-    then settles and stops tracking finished handles. It is the only thread
-    that changes a handle, so reading one never waits.
+    A background thread pulls the runs that changed from the daemon's database
+    every ``poll_interval`` seconds, applies them to their handles, shows the
+    changes on the display, then settles and stops tracking finished handles.
+    It is the only thread that changes a handle, so reading one never waits.
+
+    The runs are kept in a temporary database, deleted on ``shutdown()``.
+    Pass ``database`` to keep them in that SQLite file instead, which outlives
+    the manager; a manager reusing it numbers its runs after those already
+    there.
 
     This convenience layer owns polling, handles, waiting, and cleanup, not
     scheduling or application workflows. Use ``DaemonClient`` directly when
@@ -49,17 +54,18 @@ class SimulationManager:
     reading the handles, or any ``Display``, which the background thread then
     updates instead. The display is closed on ``shutdown()``.
 
-    When syncing stops, because a pull failed or the manager shut down, every
-    unfinished handle is settled with that error, so ``wait()`` and
-    ``Simulation.wait()`` raise it instead of hanging. Handles keep their last
-    reply. A failed pull also kills the daemon, so its runs never go on
-    untracked, and later submissions fail.
+    When syncing stops, because the daemon exited, a pull failed, or the
+    manager shut down, every unfinished handle is settled with that error, so
+    ``wait()`` and ``Simulation.wait()`` raise it instead of hanging. Handles
+    keep their last reply. A failed sync also kills the daemon, so its runs
+    never go on untracked, and later submissions fail.
     """
 
     def __init__(
         self,
         max_concurrent: int = DEFAULT_MAX_CONCURRENT,
         *,
+        database: str | Path | None = None,
         trnrun_path: str | Path = BUNDLED_TRNRUN_PATH,
         trnrund_path: str | Path = BUNDLED_TRNRUND_PATH,
         poll_interval: float = DEFAULT_POLL_INTERVAL,
@@ -75,12 +81,18 @@ class SimulationManager:
             self.display = ProgressDisplay()
         else:
             self.display = None if display is False else display
-        self._client: DaemonClient = DaemonClient(max_concurrent, trnrun_path=trnrun_path, trnrund_path=trnrund_path)
+        self._client: DaemonClient = DaemonClient(
+            max_concurrent,
+            database=database,
+            trnrun_path=trnrun_path,
+            trnrund_path=trnrund_path,
+        )
         # Guards the two fields below; never held while talking to the daemon.
         self._lock: Lock = Lock()
-        # Runs awaiting settlement (including their final display update), or abandoned after a failed pull.
+        # Runs awaiting settlement (including their final display update), or abandoned after a failed sync.
         self._simulations: dict[str, Simulation] = {}
-        self._next_id: int = 1
+        # After the runs a reused database holds, since a run ID can never be reused in it.
+        self._next_id: int = self._client.database.max_numeric_run_id() + 1
 
         self._poll_interval: float = poll_interval
         # Set once, by shutdown; it also marks the manager closed.
@@ -108,7 +120,7 @@ class SimulationManager:
             that is not a ``.dck`` or ``.trd`` file.
         RuntimeError
             If the manager is closed, or the daemon exited or was killed after
-            a failed pull.
+            a failed sync.
         """
         # Copy, so the caller can reuse and change `config` for later submissions.
         config = replace(config)
@@ -139,8 +151,8 @@ class SimulationManager:
         TimeoutError
             If runs are unfinished after ``timeout`` seconds.
         RuntimeError
-            If the manager is closed, or the error of a failed pull, which
-            settled the unfinished runs with it.
+            If the manager is closed, or the error of a failed sync, such as
+            the daemon exiting, which settled the unfinished runs with it.
         """
         deadline = None if timeout is None else monotonic() + timeout
         while True:
@@ -156,12 +168,12 @@ class SimulationManager:
         """Kill the daemon and its runs, stop syncing, settle unfinished handles, and close the display.
 
         Unfinished handles keep their last reply, and their ``wait()`` raises
-        that the manager is closed. Later calls do nothing.
+        that the manager is closed. A temporary database is deleted. Later
+        calls do nothing.
         """
         with self._lock:
             if self._stop.is_set():
                 return
-            # Stopped before the kill, so the poller takes its failing pull for shutdown.
             self._stop.set()
             abandoned = list(self._simulations.values())
             self._simulations.clear()
@@ -169,11 +181,11 @@ class SimulationManager:
         for simulation in abandoned:
             simulation.settle(closed)
         try:
-            # Kill before joining, so a pull blocked on the daemon fails at once.
-            self._client.kill()
-        finally:
+            # Joined before the kill closes the database, which only the poller reads.
             if current_thread() is not self._poller:
                 self._poller.join()
+            self._client.kill()
+        finally:
             if self.display is not None:
                 self.display.close()
 
@@ -198,13 +210,13 @@ class SimulationManager:
             raise RuntimeError("SimulationManager is closed")
 
     def _poll(self) -> None:
-        """Sync every poll interval until shutdown or the first failed pull."""
+        """Sync every poll interval until shutdown or the first failed sync."""
         while not self._stop.wait(self._poll_interval):
             try:
                 _ = self._sync()
             except Exception as error:
                 if self._stop.is_set():
-                    return  # Shutdown interrupted the pull.
+                    return  # Shutdown already settled the handles.
                 logger.exception("TRNRun manager stopped syncing simulations")
                 # The daemon is gone or no longer understood: kill it, so no run goes on untracked.
                 with contextlib.suppress(Exception):
@@ -217,16 +229,19 @@ class SimulationManager:
                 return
 
     def _sync(self) -> list[Simulation]:
-        """Pull once and return the handles that changed.
+        """Pull once and return the handles that changed, in submission order.
 
         Applies each reply, shows the changes on the display, then settles and
         stops tracking finished handles. A display failure is logged and never
-        stops syncing.
+        stops syncing. Raises the daemon's exit, after applying what it saved,
+        since it can no longer finish the remaining runs.
         """
         with self._lock:
             if not self._simulations:
                 return []
-        replies = self._client.pull()
+        # Checked before the pull, so a daemon found exited saved everything the pull returns.
+        exit_error = self._client.exit_error()
+        replies = self._client.database.pull()
 
         changed: list[Simulation] = []
         finished: dict[str, Simulation] = {}
@@ -239,6 +254,7 @@ class SimulationManager:
                 changed.append(simulation)
                 if simulation.is_finished:
                     finished[run_id] = simulation
+        changed.sort(key=lambda simulation: simulation.id)  # Pulled in the order they last changed.
 
         if changed and self.display is not None:
             try:
@@ -251,4 +267,6 @@ class SimulationManager:
             for run_id, simulation in finished.items():
                 simulation.settle()
                 _ = self._simulations.pop(run_id, None)
+        if exit_error is not None:
+            raise exit_error
         return changed

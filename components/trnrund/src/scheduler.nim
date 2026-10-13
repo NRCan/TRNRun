@@ -3,7 +3,8 @@
 ## The daemon runs one scheduler at a time. Every public operation runs on the
 ## owner thread. Workers only post messages, which are applied while the owner
 ## waits in `nextRequest` or `shutdown`; a finished run frees its slot for the
-## next queued run at that point. Always call shutdown before dropping the
+## next queued run at that point. To cancel a dispatched run, the owner sets a
+## flag the run's worker polls. Always call shutdown before dropping the
 ## scheduler so every worker is joined, or abandon right before the process
 ## exits. The inbox remains open because of the Nim 2.2 ORC channel-close
 ## issue.
@@ -14,13 +15,15 @@
 ## runs waiting for a worker and those a worker has, which a new daemon never
 ## resumes anyway.
 
-import std/[deques, options]
+import std/[atomics, deques, options, tables]
 import ./database
 import ./events
 import ./job
 import ./messages
 import ./validate
 import ./workerpool
+
+const CancelReason = "cancelled by the client"
 
 type
   Scheduler* = ref object
@@ -36,16 +39,32 @@ type
     isShutDown: bool
     queue: Deque[Work]
       ## Submitted runs waiting for a worker, oldest first.
-    running: int
-      ## Dispatched runs until their exit is applied; at most `maxConcurrent`.
+    dispatched: Table[string, ptr Atomic[bool]]
+      ## Cancel flag of each dispatched run until its exit is applied; at most
+      ## `maxConcurrent` runs.
+
+proc running(self: Scheduler): int =
+  ## Dispatched runs whose exit is not applied yet.
+  self.dispatched.len
 
 proc dispatch(self: Scheduler) =
   ## Hands the longest-queued runs to the pool while a worker is free.
   while not self.isShutDown and self.running < self.maxConcurrent and self.queue.len > 0:
-    let work = self.queue.popFirst()
+    var work = self.queue.popFirst()
+    work.cancel = createShared(Atomic[bool])
+    self.dispatched[work.runId] = work.cancel
     self.database.accept(work.runId)
-    inc self.running
     self.pool.submit(work)
+
+proc finishExited(self: Scheduler, message: Message) =
+  ## Saves the outcome of a worker's run, then frees its cancel flag and worker.
+  if message.cancelled:
+    self.database.cancel(message.runId, started = message.exitCode.isSome, CancelReason)
+  else:
+    self.database.finish(message.runId, message.exitCode, message.error)
+  var cancel: ptr Atomic[bool] = nil
+  if self.dispatched.pop(message.runId, cancel):
+    freeShared(cancel)
 
 proc apply(self: Scheduler, message: Message) =
   ## Applies one worker message; an exit frees a worker for the next queued run.
@@ -57,16 +76,24 @@ proc apply(self: Scheduler, message: Message) =
     if event.isSome:
       self.database.record(message.runId, event.get())
   of mkExited:
-    self.database.finish(message.runId, message.exitCode, message.error)
-    dec self.running
+    self.finishExited(message)
     self.dispatch()
   of mkRequest, mkClosed:
     discard # Only nextRequest returns client messages; elsewhere they are dropped.
 
+proc removeQueued(self: Scheduler, runId: string): bool =
+  ## Removes `runId` from the queue, keeping the others in order; whether it was there.
+  var kept = initDeque[Work]()
+  for work in self.queue:
+    if work.runId != runId:
+      kept.addLast(work)
+  result = kept.len < self.queue.len
+  self.queue = kept
+
 # Public API
 
 proc newScheduler*(
-    trnrunPath: string, maxConcurrent: int, databasePath: string
+    trnrunPath: string, maxConcurrent: int, databasePath: string, overwrite = false
 ): Scheduler =
   ## Starts a scheduler that runs the TRNRun at `trnrunPath` and saves to
   ## `databasePath`. Raises `ValueError` on bad input, `DbError` if the
@@ -75,7 +102,7 @@ proc newScheduler*(
     raise newException(ValueError, "'maxConcurrent' must be at least 1")
   let trnrunPath = validateFile(trnrunPath, "TRNRun")
   initJobGuard()
-  result = Scheduler(maxConcurrent: maxConcurrent, database: openDatabase(databasePath))
+  result = Scheduler(maxConcurrent: maxConcurrent, database: openDatabase(databasePath, overwrite))
   result.inbox.open()
   result.pool.start(trnrunPath, maxConcurrent, addr result.inbox)
 
@@ -102,6 +129,22 @@ proc add*(
   self.dispatch()
   if self.queue.len == 0: ssAccepted else: ssQueued # The new run is last, so it left the queue only if all did.
 
+proc cancel*(self: Scheduler, runId: string) =
+  ## Stops `runId` unless it already finished, which leaves it unchanged.
+  ##
+  ## A queued run finishes as CANCELLED at once. A dispatched one is flagged:
+  ## its worker kills TRNRun, or skips the launch, and the run finishes as
+  ## CANCELLED when its exit is applied. Raises `ValueError` for an unknown
+  ## runId or once shut down.
+  if self.isShutDown:
+    raise newException(ValueError, "Scheduler is shut down")
+  if runId in self.dispatched:
+    self.dispatched[runId][].store(true)
+  elif self.removeQueued(runId):
+    self.database.cancel(runId, started = false, CancelReason)
+  elif runId notin self.database:
+    raise newException(ValueError, "Unknown runId: " & runId)
+
 proc requestInbox*(self: Scheduler): ptr Channel[Message] =
   ## Inbox address for the thread that posts `mkRequest` and `mkClosed`.
   addr self.inbox
@@ -118,8 +161,8 @@ proc shutdown*(self: Scheduler) =
   ## the database.
   ##
   ## Queued runs finish as CANCELLED without starting. Idempotent, and a no-op
-  ## after `abandon`. It can wait indefinitely for TRNRun, since running work
-  ## cannot be cancelled.
+  ## after `abandon`. It can wait indefinitely for TRNRun: running work is not
+  ## cancelled, and no `cancel` can be made once shutdown starts.
   if self.isShutDown:
     return
   self.isShutDown = true
@@ -148,5 +191,5 @@ proc abandon*(self: Scheduler) =
     self.apply(message)
   self.database.interrupt("the client disconnected", Unfinished)
   self.queue.clear()
-  self.running = 0
+  self.dispatched.clear() # Not freed: workers still running TRNRun keep reading their flags.
   self.database.close()

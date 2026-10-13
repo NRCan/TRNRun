@@ -91,6 +91,7 @@ try {
 
     Write-Host "Running $RunCount copies with max concurrency $ConcurrencyLimit"
 
+    # add only acknowledges saving; lifecycle states come from the database.
     # Adding every run at once lets the daemon queue the surplus and start each
     # as a worker frees; see example_waiting.ps1 to keep that queue client-side.
 

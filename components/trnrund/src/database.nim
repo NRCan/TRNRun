@@ -220,21 +220,27 @@ proc finish*(self: Database, runId: string, exitCode: Option[int], error: string
   let message = if error.len > 0: error else: "TRNRun exited without a terminal status"
   self.finish(runId, exitCode, error, StatusEvent(status: statusError, message: message))
 
+proc cancel*(self: Database, runId: string, started: bool, reason: string) =
+  ## Finishes `runId` as stopped before TRNRun exited by itself, without an exit code.
+  ##
+  ## It is CANCELLED, unless TRNRun already reported a terminal status, and
+  ## its error gives `reason` after whether it `started`, such as
+  ## `Not started: the daemon shut down` or `Interrupted: cancelled by the client`.
+  let outcome = if started: "Interrupted" else: "Not started"
+  self.finish(runId, none(int), outcome & ": " & reason,
+    StatusEvent(status: statusCancelled, message: outcome))
+
 proc interrupt*(self: Database, reason: string, states: set[SimulationState]) =
-  ## Finishes every run in `states`, which the daemon stops tracking before TRNRun exits.
+  ## Cancels every run in `states`, which the daemon stops tracking before TRNRun exits.
   ##
   ## A queued run never started; any other may have, and its TRNRun is killed
-  ## with the daemon. Either way it is CANCELLED, unless TRNRun already
-  ## reported a terminal status, and its error gives `reason`, such as
-  ## `Not started: the daemon shut down`.
+  ## with the daemon.
   let states = toSeq(states)
   self.transaction:
     # Reads every row before finishing any, since finishing changes what the query selects.
     for row in self.execute("SELECT run_id, state FROM runs WHERE state IN (" &
         states.mapIt("?").join(", ") & ") ORDER BY revision", states.mapIt(%it)):
-      let outcome = if row[1] == $ssQueued: "Not started" else: "Interrupted"
-      self.finish(row[0], none(int), outcome & ": " & reason,
-        StatusEvent(status: statusCancelled, message: outcome))
+      self.cancel(row[0], started = row[1] != $ssQueued, reason)
 
 # Opening and closing
 
@@ -276,11 +282,28 @@ proc close*(self: Database) =
   finally:
     discard closeHandle(self.lock)
 
-proc openDatabase*(path: string): Database =
+proc deleteDatabase(path: string) =
+  ## Called under the ownership lock, before SQLite opens. Never deletes `.lock`.
+  # Main file first: a Windows sharing refusal must leave its journals intact.
+  for suffix in ["", "-wal", "-shm", "-journal"]:
+    let file = path & suffix
+    if deleteFileW(newWideCString(file)) == 0:
+      let error = osLastError()
+      if error.int32 notin [2'i32, 3'i32]: # Missing file or path is harmless.
+        raise newException(DbError, "Cannot overwrite database; cannot delete " & file &
+          ": " & osErrorMsg(error) &
+          ". Close all SQLite connections and check file/directory permissions. " &
+          "Already deleted files are not restored.")
+
+proc openDatabase*(path: string, overwrite = false): Database =
   ## Opens or creates the database at `path`, holding it until `close`; raises `DbError`.
+  ## Explicit overwrite deletes the database and its journals before recreation,
+  ## with no rollback on failure. Close all readers until startup completes.
   let path = path.absolutePath().normalizedPath()
   result = Database(path: path, lock: lockDatabase(path))
   try:
+    if overwrite:
+      deleteDatabase(path)
     result.connection = db_sqlite.open(result.path, "", "", "")
     result.execute("PRAGMA busy_timeout = 5000")
     # SQLite silently keeps its old mode where WAL is unsupported, such as on a network share.

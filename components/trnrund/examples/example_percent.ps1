@@ -107,8 +107,8 @@ try {
         "accepted, with max concurrency $ConcurrencyLimit"
     )
 
-    # Wait until each run leaves QUEUED before adding another. This limits the
-    # daemon to one queued run while the client decides what to submit next.
+    # add only acknowledges saving, not dispatch. Wait for the database state
+    # to leave QUEUED before adding another, keeping at most one queued run.
     1..$RunCount | ForEach-Object {
         $RunId = 'example-{0:D2}' -f $_
         $DeckFile = Join-Path $RunDirectory "$RunId.dck"

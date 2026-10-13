@@ -1,6 +1,6 @@
 """Example: running multiple TRNSYS simulations with SimulationManager.
 
-Install with ``pip install "trnrun[display]"`` for the built-in Rich display.
+Install with ``pip install trnrun``.
 """
 
 from __future__ import annotations
@@ -9,7 +9,7 @@ import shutil
 from pathlib import Path
 
 from trnrun import SimulationConfig
-from trnrun.convenience import Simulation, SimulationManager
+from trnrun.batch import Simulation, SimulationManager
 
 # -----------------------------------------------------------------------------
 # Configuration
@@ -22,7 +22,7 @@ DCK_FOLDER = __root__ / "runs"
 
 SIM_COUNT = 10
 MAX_CONCURRENT = 5
-POLL_INTERVAL = 1
+POLL_INTERVAL = 0.1
 
 CONFIG = SimulationConfig(trnexe_path=TRNEXE_PATH, watch_tmp=True)
 
@@ -43,6 +43,7 @@ def copy_dck(src: Path | str, dst_dir: Path | str, n: int) -> list[Path]:
         dst_files.append(dst)
     return dst_files
 
+
 # -----------------------------------------------------------------------------
 # Run
 # -----------------------------------------------------------------------------
@@ -55,14 +56,20 @@ def run_simulations(dck_files: list[Path]) -> list[Simulation]:
 
 
 # -----------------------------------------------------------------------------
-# Entry pointuv
+# Entry point
 # -----------------------------------------------------------------------------
 def main() -> None:
-    """Create, submit, and optionally clean up example decks."""
+    """Copy the master deck, run every copy, and report the failures."""
     dck_files = copy_dck(MASTER_DCK, DCK_FOLDER, n=SIM_COUNT)
     simulations = run_simulations(dck_files)
     succeeded = sum(simulation.succeeded for simulation in simulations)
     print(f"{succeeded}/{len(simulations)} succeeded")
+    for simulation in simulations:
+        if not simulation.succeeded:
+            status = simulation.info.status
+            reason = simulation.error or (status.message if status else "")
+            print(f"  [{simulation.id}] {simulation.deck_path.name}: {simulation.status} {reason}")
+
 
 if __name__ == "__main__":
     main()

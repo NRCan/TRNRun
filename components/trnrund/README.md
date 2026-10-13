@@ -37,7 +37,8 @@ build/trnrund.exe --trnrun:C:/path/to/trnrun.exe --maxConcurrent:2 --database:C:
 By default, the daemon uses `trnrun.exe` beside its executable, runs at most
 `max(CPUs - 1, 1)` simulations concurrently, and keeps its database in
 `trnrund.sqlite3`. Relative TRNRun, deck, and database paths resolve from the
-daemon's working directory; the database's directory must exist. Decks must be
+daemon's working directory; the database's directory must exist. `--overwrite`
+requires an explicit `true` or `false` value and defaults to `false`. Decks must be
 existing `.dck` or `.trd` files; extensions are case-insensitive.
 
 The client sends one JSON object per stdin line and receives one JSON reply
@@ -46,6 +47,7 @@ per stdout line, in request order:
 ```json
 {"cmd":"ready"}
 {"cmd":"add","runId":"1","deckFile":"model.dck","trnrunArgs":["--watchTmp:true"]}
+{"cmd":"cancel","runId":"1"}
 {"cmd":"shutdown"}
 ```
 
@@ -56,15 +58,32 @@ the absolute `databasePath` to read:
 {"ok":true,"databasePath":"C:\\runs\\runs.sqlite3"}
 ```
 
-`add` replies at once with the run's `state`: `QUEUED`, or `ACCEPTED` if a
-worker took the run immediately. To follow a run or wait for it to finish,
-poll the database; see below.
+A successful `add` replies with exactly `{"ok":true}` after the run is saved.
+The acknowledgement has no `state` field and does not mean the run has started.
+Rejected adds reply with `{"ok":false,"error":...}`. All lifecycle states
+(`QUEUED`, `ACCEPTED`, `RUNNING`, and `FINISHED`) remain in SQLite. To follow a
+run or wait for it to finish, poll the database; see below.
 
 `trnrunArgs` are TRNRun options, such as `--watchTmp:true`. `add` checks them
 with TRNRun's own parser and rejects the run if TRNRun would refuse one, so a
 typo fails at once instead of when the run starts. The daemon passes the deck
 and `runId` itself, so `trnrunArgs` cannot hold a deck path, `--deckFile`,
 `--runId`, `--help`, or `--version`.
+
+`cancel` stops one run and replies `{"ok":true}` once the request is recorded:
+
+- A queued run is saved as `FINISHED` and `CANCELLED`, with the error
+  `Not started: cancelled by the client`, before the reply.
+- A dispatched run has its TRNRun killed; TRNRun's own Job Object then stops
+  TrnEXE. The run becomes `FINISHED` and `CANCELLED` shortly after the reply,
+  with the error `Interrupted: cancelled by the client`, or `Not started: ...`
+  if its worker had not launched TRNRun yet. Its exit code is `NULL`, and its
+  freed slot goes to the next queued run.
+- A finished run is left unchanged, so a run that finishes just before its
+  cancel keeps its real outcome. Only an unknown `runId` is rejected.
+
+If TRNRun reported a terminal status, such as `DONE`, just before it was
+killed, that status is kept, but `succeeded` is still false.
 
 See [`src/protocol.nim`](src/protocol.nim) for request fields and defaults.
 
@@ -105,8 +124,9 @@ event:
 | `message`, `information` | text | TRNSYS text; `NULL` if none |
 
 `PRAGMA user_version` returns the schema version, currently `2`. It changes
-whenever this layout does, and a daemon refuses a database of another version,
-so a client can check it once after opening.
+whenever this layout does, and a daemon refuses a database of another version
+unless explicitly started with `--overwrite:true`, which recreates the current
+schema. A client can check the version once after opening.
 
 The timestamps are UTC ISO 8601 text with milliseconds, such as
 `2026-10-09T14:03:12.345Z`, which sort chronologically and work with SQLite
@@ -166,9 +186,22 @@ keep read transactions short. It is in WAL mode, so keep it on a local disk
 and leave its `-wal` and `-shm` files beside it; the daemon refuses to start
 where WAL is unavailable, such as on a network share.
 
-Runs stay in the database after the daemon exits, and a `runId` can never be
-reused in the same database, even by a later daemon. Use a new database, or
-unique run IDs, for each batch.
+By default (`--overwrite:false`, or no overwrite option), runs and logs stay
+in the database after the daemon exits. A `runId` remains taken across daemon
+restarts; schema checks and unfinished-run recovery still apply. Use a new
+database or unique run IDs for each batch to retain history.
+
+**`--overwrite:true` deletes and recreates the database.** Under the existing
+ownership `.lock`, it deletes the main file first, then `-wal`, `-shm`, and
+`-journal`, before SQLite opens. It never targets `.lock`. Missing files are
+okay; sharing or permission errors abort startup and release ownership. This
+also replaces corrupt, non-SQLite, or incompatible databases. **No rollback:**
+once deleted, old data is gone even if cleanup or recreation fails.
+
+Close **all** SQLite connections, including idle readers, before overwrite;
+Windows refuses deletion of an open database. Wait for successful `ready`
+before opening new readers, then discard cached revisions/log IDs. The fresh
+database uses WAL, restarts counters, and allows old run IDs to be reused.
 
 Only one daemon at a time can use a database: it holds a `.lock` file beside
 it, and a second daemon pointed at the same database exits with code `1`.
@@ -207,6 +240,7 @@ through real TRNSYS; adjust its configuration for your installation.
   while serving requests. Exit codes are `0` for normal exit, `1` for fatal
   failures, and `2` for invalid options or startup validation errors.
 
-Running simulations cannot be cancelled through the protocol. Graceful
-shutdown can therefore wait indefinitely for TRNRun. Channels intentionally
+Graceful shutdown waits for every dispatched run, and requests sent after it
+get no reply, so cancel a hanging run before sending `shutdown`; otherwise it
+can wait indefinitely for TRNRun. Channels intentionally
 remain open because of the documented Nim 2.2 ORC channel-close workaround.

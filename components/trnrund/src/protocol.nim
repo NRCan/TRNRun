@@ -9,13 +9,21 @@
 ## cmd        request fields                          reply fields
 ## ========== ======================================= ======================
 ## ready                                              databasePath
-## add        runId, deckFile, trnrunArgs?            state
+## add        runId, deckFile, trnrunArgs?
+## cancel     runId
 ## shutdown                                           see below
 ## ========== ======================================= ======================
 ##
-## `add` replies at once with the run's `state`: `ACCEPTED` if a worker took
-## it, else `QUEUED`. `trnrunArgs` are TRNRun options, rejected at once if
-## TRNRun would refuse one; see `validate`.
+## A successful `add` replies with exactly {"ok":true} after saving the run;
+## all lifecycle states are read from SQLite, never from the acknowledgement.
+## Rejected adds reply with {"ok":false,"error":...}. `trnrunArgs` are TRNRun
+## options, rejected at once if TRNRun would refuse one; see `validate`.
+##
+## `cancel` replies {"ok":true} once the cancellation is recorded. A queued
+## run is already FINISHED and CANCELLED by then; a dispatched one becomes so
+## once its TRNRun is killed. A finished run is left unchanged, so a run that
+## finishes just before its cancel arrives keeps its real outcome. Only an
+## unknown runId is rejected.
 ##
 ## Clients read simulations from the database at `databasePath`, polling it to
 ## follow or wait for a run; see `database`. A simulation is done when its
@@ -30,7 +38,7 @@
 
 import std/json
 from db_connector/db_common import DbError
-import ./[database, scheduler]
+import ./scheduler
 
 proc requireField(request: JsonNode, name: string): JsonNode =
   ## Returns `request[name]`; `ValueError` if it is missing.
@@ -38,14 +46,18 @@ proc requireField(request: JsonNode, name: string): JsonNode =
     raise newException(ValueError, "Missing field: " & name)
   request[name]
 
-proc handleAdd(scheduler: Scheduler, request: JsonNode): SimulationState =
-  ## Queues a simulation and returns its state.
+proc handleAdd(scheduler: Scheduler, request: JsonNode) =
+  ## Validates and saves a simulation before acknowledging it.
   let
     runId = request.requireField("runId").to(string)
     deckFile = request.requireField("deckFile").to(string)
     trnrunArgs =
       if "trnrunArgs" in request: request["trnrunArgs"].to(seq[string]) else: @[]
-  scheduler.add(runId, deckFile, trnrunArgs)
+  discard scheduler.add(runId, deckFile, trnrunArgs)
+
+proc handleCancel(scheduler: Scheduler, request: JsonNode) =
+  ## Records the cancellation of a simulation before acknowledging it.
+  scheduler.cancel(request.requireField("runId").to(string))
 
 proc parseRequest(line: string): JsonNode =
   ## Parses one request line, which must hold a JSON object.
@@ -67,7 +79,8 @@ proc handleRequest*(
     let cmd = request.requireField("cmd").to(string)
     case cmd
     of "ready": reply["databasePath"] = %scheduler.databasePath
-    of "add": reply["state"] = %scheduler.handleAdd(request)
+    of "add": scheduler.handleAdd(request)
+    of "cancel": scheduler.handleCancel(request)
     of "shutdown": result.shutdown = true
     else: raise newException(ValueError, "Unknown cmd: " & cmd)
   except DbError:

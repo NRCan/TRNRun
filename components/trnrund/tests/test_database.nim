@@ -1,4 +1,4 @@
-import std/[json, options, os, strutils, tempfiles, times, unittest]
+import std/[json, options, os, sequtils, strutils, tempfiles, times, unittest]
 import db_connector/db_sqlite
 
 import ../src/[database, events]
@@ -269,11 +269,22 @@ suite "run database":
   test "only one opener at a time holds a database, until it closes":
     let lockFile = path & ".lock"
     check fileExists(lockFile)
-    try:
-      discard openDatabase(path)
-      fail()
-    except DbError as error:
-      check "in use by another trnrund" in error.msg
+    db.reported("owned")
+    let before = columns("owned", "*")
+    let logs = reader.getAllRows(sql"SELECT * FROM logs")
+    let wal = readFile(path & "-wal")
+    let shm = readFile(path & "-shm")
+    for overwrite in [false, true]:
+      try:
+        discard openDatabase(path, overwrite)
+        fail()
+      except DbError as error:
+        check "in use by another trnrund" in error.msg
+      check fileExists(lockFile)
+      check readFile(path & "-wal") == wal
+      check readFile(path & "-shm") == shm
+      check columns("owned", "*") == before
+      check reader.getAllRows(sql"SELECT * FROM logs") == logs
     db.submit("still usable", "deck.dck")
     check "still usable" in db
 
@@ -332,5 +343,169 @@ suite "run database":
     db = openDatabase(path)
 
   test "cannot open a database in a missing directory":
+    for overwrite in [false, true]:
+      expect DbError:
+        discard openDatabase(directory / "missing" / "runs.sqlite3", overwrite)
+
+suite "explicit database overwrite":
+  setup:
+    let directory = createTempDir("trnrund-overwrite-", "")
+    let path = directory / "runs.sqlite3"
+    block:
+      let db = openDatabase(path)
+      db.reported("reusable")
+      db.record("reusable", logEvent("Notice", "old log"))
+      db.finished("finished")
+      db.close()
+
+  teardown:
+    removeDir(directory)
+
+  test "explicit false preserves rows, logs, IDs and unfinished-run recovery":
+    let db = openDatabase(path, overwrite = false)
+    defer: db.close()
+    let reader = db_sqlite.open(path, "", "", "")
+    defer: reader.close()
+    check "reusable" in db
+    check reader.getRow(sql"SELECT state, error FROM runs WHERE run_id = 'reusable'") ==
+      @["FINISHED", "Interrupted: its daemon stopped unexpectedly"]
+    check reader.getValue(sql"SELECT count(*) FROM logs") == "2"
     expect DbError:
-      discard openDatabase(directory / "missing" / "runs.sqlite3")
+      db.submit("reusable", "new.dck")
+
+  test "recreation clears runs, logs, old schema and version, restarting counters":
+    block:
+      let injector = db_sqlite.open(path, "", "", "")
+      defer: injector.close()
+      injector.exec(sql"ALTER TABLE runs ADD COLUMN old_column TEXT")
+      injector.exec(sql"CREATE TABLE obsolete (value TEXT)")
+      injector.exec(sql"CREATE VIEW old_view AS SELECT * FROM runs")
+      injector.exec(sql"CREATE INDEX old_index ON runs (deck_file)")
+      injector.exec(sql"""CREATE TRIGGER old_trigger BEFORE INSERT ON runs
+        BEGIN SELECT RAISE(ABORT, 'old trigger'); END""")
+      injector.exec(sql"PRAGMA user_version = 999")
+    let db = openDatabase(path, overwrite = true)
+    defer: db.close()
+    let reader = db_sqlite.open(path, "", "", "")
+    defer: reader.close()
+    check reader.getValue(sql"PRAGMA journal_mode") == "wal"
+    check reader.getValue(sql"PRAGMA user_version") == $SchemaVersion
+    check reader.getValue(sql"SELECT count(*) FROM runs") == "0"
+    check reader.getValue(sql"SELECT count(*) FROM logs") == "0"
+    check reader.getValue(sql"""SELECT count(*) FROM sqlite_master
+      WHERE name IN ('obsolete', 'old_view', 'old_index', 'old_trigger')""") == "0"
+    check not reader.getAllRows(sql"PRAGMA table_info(runs)").anyIt(it[1] == "old_column")
+    db.submit("reusable", "new.dck")
+    check reader.getValue(sql"SELECT revision FROM runs") == "1"
+    db.record("reusable", logEvent("Notice", "new log"))
+    check reader.getRow(sql"SELECT log_id, message FROM logs") == @["1", "new log"]
+    check reader.getValue(sql"SELECT revision FROM runs") == "2"
+
+  test "overwrite also creates a missing database":
+    let missing = directory / "missing.sqlite3"
+    let db = openDatabase(missing, overwrite = true)
+    defer: db.close()
+    let reader = db_sqlite.open(missing, "", "", "")
+    defer: reader.close()
+    check reader.getValue(sql"PRAGMA journal_mode") == "wal"
+    check reader.getValue(sql"PRAGMA user_version") == $SchemaVersion
+    db.submit("first", "deck.dck")
+    check reader.getValue(sql"SELECT revision FROM runs") == "1"
+
+  test "Windows open connections refuse main-file deletion before journal cleanup":
+    for mode in ["idle", "reader", "writer"]:
+      checkpoint(mode)
+      block:
+        let contender = db_sqlite.open(path, "", "", "")
+        defer: contender.close()
+        if mode != "idle":
+          contender.exec(sql(if mode == "writer": "BEGIN IMMEDIATE" else: "BEGIN"))
+        let rows = contender.getAllRows(sql"SELECT * FROM runs ORDER BY run_id")
+        let logs = contender.getAllRows(sql"SELECT * FROM logs ORDER BY log_id")
+        let main = if mode == "writer": "" else: readFile(path)
+        let wal = if mode == "writer": "" else: readFile(path & "-wal")
+        let shm = if mode == "writer": "" else: readFile(path & "-shm")
+        writeFile(path & "-journal", "untouched journal")
+        try:
+          discard openDatabase(path, overwrite = true)
+          fail()
+        except DbError as error:
+          check ("cannot delete " & path & ":") in error.msg
+          check "Close all SQLite connections" in error.msg
+        check not fileExists(path & ".lock")
+        check fileExists(path)
+        check fileExists(path & "-wal")
+        check fileExists(path & "-shm")
+        if mode != "writer":
+          check readFile(path) == main
+          check readFile(path & "-wal") == wal
+          check readFile(path & "-shm") == shm
+        check readFile(path & "-journal") == "untouched journal"
+        removeFile(path & "-journal")
+        check contender.getAllRows(sql"SELECT * FROM runs ORDER BY run_id") == rows
+        check contender.getAllRows(sql"SELECT * FROM logs ORDER BY log_id") == logs
+        if mode != "idle":
+          contender.exec(sql"ROLLBACK")
+      let db = openDatabase(path, overwrite = true)
+      db.reported("reusable")
+      db.close()
+
+  test "overwrite removes stale WAL, SHM and rollback journals before SQLite opens":
+    for mainExists in [true, false]:
+      checkpoint("main exists: " & $mainExists)
+      if not mainExists:
+        removeFile(path)
+      for suffix in ["-wal", "-shm", "-journal"]:
+        writeFile(path & suffix, "stale " & suffix)
+      block:
+        let db = openDatabase(path, overwrite = true)
+        defer: db.close()
+        let reader = db_sqlite.open(path, "", "", "")
+        defer: reader.close()
+        check reader.getValue(sql"SELECT count(*) FROM runs") == "0"
+        check reader.getValue(sql"PRAGMA integrity_check") == "ok"
+        check not fileExists(path & "-journal")
+        check readFile(path & "-wal") != "stale -wal"
+        check readFile(path & "-shm") != "stale -shm"
+        check fileExists(path & ".lock")
+        expect DbError:
+          discard openDatabase(path, overwrite = true)
+
+  test "partial deletion is not rolled back and releases ownership for retry":
+    writeFile(path & "-wal", "deleted before failure")
+    createDir(path & "-shm") # DeleteFile refuses a directory; no permissions workaround.
+    writeFile(path & "-journal", "not reached")
+    try:
+      discard openDatabase(path, overwrite = true)
+      fail()
+    except DbError as error:
+      check ("cannot delete " & path & "-shm") in error.msg
+      check "Already deleted files are not restored" in error.msg
+    check not fileExists(path)
+    check not fileExists(path & "-wal")
+    check dirExists(path & "-shm")
+    check readFile(path & "-journal") == "not reached"
+    check not fileExists(path & ".lock")
+    removeDir(path & "-shm")
+    let db = openDatabase(path, overwrite = true)
+    defer: db.close()
+    check "reusable" notin db
+    check "finished" notin db
+    check not fileExists(path & "-journal")
+
+  test "overwrite replaces non-SQLite and corrupt databases; default preserves them":
+    for contents in ["not a SQLite database", "SQLite format 3\x00" & repeat('x', 4096)]:
+      writeFile(path, contents)
+      expect DbError:
+        discard openDatabase(path)
+      check readFile(path) == contents
+      check not fileExists(path & ".lock")
+      block:
+        let db = openDatabase(path, overwrite = true)
+        defer: db.close()
+        let reader = db_sqlite.open(path, "", "", "")
+        defer: reader.close()
+        check reader.getValue(sql"PRAGMA integrity_check") == "ok"
+        check reader.getValue(sql"PRAGMA user_version") == $SchemaVersion
+        check reader.getValue(sql"PRAGMA journal_mode") == "wal"
+        check reader.getValue(sql"SELECT count(*) FROM runs") == "0"

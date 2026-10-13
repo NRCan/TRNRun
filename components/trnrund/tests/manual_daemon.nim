@@ -87,6 +87,7 @@ proc runDaemon(daemon: Process, deckFiles: openArray[string]): Table[string, Jso
   defer: db.close()
   db.exec(sql"PRAGMA query_only = ON")
   for deckFile in deckFiles:
+    # add only acknowledges saving; the database below supplies lifecycle states.
     discard daemon.request(%*{
       "cmd": "add",
       "runId": deckFile.splitFile().name,

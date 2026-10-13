@@ -31,10 +31,10 @@ sys.meta_path.insert(0, BlockRich())
     [
         """
         import trnrun
-        from trnrun import DaemonClient, SimulationConfig, SimulationReply, SimulationState, SimulationStatus
+        from trnrun import DaemonClient, RunDatabase, SimulationConfig, SimulationReply, SimulationState, SimulationStatus
 
         assert set(trnrun.__all__) == {
-            "DaemonClient", "SimulationConfig", "SimulationReply", "SimulationState", "SimulationStatus",
+            "DaemonClient", "RunDatabase", "SimulationConfig", "SimulationReply", "SimulationState", "SimulationStatus",
         }
         assert not any(name.startswith("trnrun.convenience") for name in sys.modules)
         """,
@@ -51,6 +51,8 @@ sys.meta_path.insert(0, BlockRich())
         from trnrun.convenience import SimulationManager
 
         client = Mock()
+        client.exit_error.return_value = None
+        client.database.max_numeric_run_id.return_value = 0
         factory = Mock(return_value=client)
         manager_module.DaemonClient = factory
         custom_display = Mock(spec=["update", "close"])
@@ -60,7 +62,7 @@ sys.meta_path.insert(0, BlockRich())
                 config = SimulationConfig()
 
                 simulation = manager.add("model.dck", config)
-                client.pull.return_value = {"1": SimulationReply(SimulationState.FINISHED)}
+                client.database.pull.return_value = {"1": SimulationReply(SimulationState.FINISHED)}
                 manager._sync()
                 manager.wait(timeout=0)
                 assert simulation.is_finished

@@ -1,4 +1,4 @@
-import std/[deques, importutils, json, os, strutils, tempfiles, unittest]
+import std/[deques, importutils, json, os, strutils, tables, tempfiles, unittest]
 import db_connector/db_sqlite
 
 import ../src/[database, messages, protocol, scheduler]
@@ -41,6 +41,8 @@ proc runTests() =
         (line: """{"cmd":"pull"}""", expected: "Unknown cmd: pull"),
         (line: """{"cmd":"add"}""", expected: "Missing field: runId"),
         (line: """{"cmd":"add","runId":"a"}""", expected: "Missing field: deckFile"),
+        (line: """{"cmd":"cancel"}""", expected: "Missing field: runId"),
+        (line: """{"cmd":"cancel","runId":"missing"}""", expected: "Unknown runId: missing"),
       ]
       for testCase in cases:
         checkpoint("request: " & testCase.line)
@@ -54,12 +56,20 @@ proc runTests() =
     test "add acknowledges only and preserves submission order and arguments":
       let scheduler = newScheduler(trnrun, 1, testDirectory / "order.sqlite3")
       defer: scheduler.shutdown()
-      check scheduler.call(%*{"cmd": "add", "runId": "b", "deckFile": doneDeck}) ==
-        %*{"ok": true, "state": "ACCEPTED"}
+      let (reply, shutdown) = scheduler.handleRequest(
+        $(%*{"cmd": "add", "runId": "b", "deckFile": doneDeck})
+      )
+      check reply == """{"ok":true}"""
+      check not shutdown
       check scheduler.call(%*{
         "cmd": "add", "runId": "a", "deckFile": doneDeck, "trnrunArgs": ["--pollMs:50"]
-      }) == %*{"ok": true, "state": "QUEUED"}
-      check scheduler.running == 1
+      }) == %*{"ok": true}
+      let reader = db_sqlite.open(scheduler.databasePath, "", "", "")
+      defer: reader.close()
+      reader.exec(sql"PRAGMA query_only = ON")
+      check reader.getAllRows(sql"SELECT run_id, state FROM runs ORDER BY run_id") ==
+        @[@["a", "QUEUED"], @["b", "ACCEPTED"]]
+      check scheduler.dispatched.len == 1
       check scheduler.queue.len == 1
       let queued = scheduler.queue.peekFirst()
       check (queued.runId, queued.deckFile, queued.trnrunArgs) == ("a", doneDeck, @["--pollMs:50"])
@@ -67,17 +77,31 @@ proc runTests() =
     test "invalid submissions remain ordinary error replies":
       let scheduler = newScheduler(trnrun, 1, testDirectory / "invalid.sqlite3")
       defer: scheduler.shutdown()
-      check not scheduler.call(%*{
+      check scheduler.call(%*{
         "cmd": "add", "runId": "", "deckFile": doneDeck
-      })["ok"].getBool()
+      }) == %*{"ok": false, "error": "Invalid or duplicate runId: "}
       check not scheduler.call(%*{
         "cmd": "add", "runId": "a", "deckFile": "missing.dck"
       })["ok"].getBool()
       check "a" notin scheduler.database
       discard scheduler.call(%*{"cmd": "add", "runId": "a", "deckFile": doneDeck})
-      check not scheduler.call(%*{
+      check scheduler.call(%*{
         "cmd": "add", "runId": "a", "deckFile": doneDeck
-      })["ok"].getBool()
+      }) == %*{"ok": false, "error": "Invalid or duplicate runId: a"}
+
+    test "cancel acknowledges only, after a queued run is saved as cancelled":
+      let scheduler = newScheduler(trnrun, 1, testDirectory / "cancel.sqlite3")
+      defer: scheduler.shutdown()
+      discard scheduler.call(%*{"cmd": "add", "runId": "first", "deckFile": doneDeck})
+      discard scheduler.call(%*{"cmd": "add", "runId": "queued", "deckFile": doneDeck})
+      check scheduler.handleRequest($(%*{"cmd": "cancel", "runId": "queued"})) ==
+        (reply: """{"ok":true}""", shutdown: false)
+      let reader = db_sqlite.open(scheduler.databasePath, "", "", "")
+      defer: reader.close()
+      reader.exec(sql"PRAGMA query_only = ON")
+      check reader.getRow(sql"SELECT state, trnrun_status FROM runs WHERE run_id = 'queued'") ==
+        @["FINISHED", "CANCELLED"]
+      check scheduler.queue.len == 0
 
     test "nextRequest returns client messages in order, applying worker messages meanwhile":
       let
@@ -85,7 +109,7 @@ proc runTests() =
         ready = $(%*{"cmd": "ready"})
       defer: scheduler.shutdown()
       discard scheduler.call(%*{"cmd": "add", "runId": "done", "deckFile": doneDeck})
-      while scheduler.running > 0: # Its exit is applied while waiting for requests.
+      while scheduler.dispatched.len > 0: # Its exit is applied while waiting for requests.
         scheduler.requestInbox[].send(Message(kind: mkRequest, line: ready))
         check scheduler.nextRequest().line == ready
       scheduler.requestInbox[].send(Message(kind: mkClosed))
@@ -100,6 +124,9 @@ proc runTests() =
         BEGIN SELECT RAISE(ABORT, 'injected failure'); END""")
       expect DbError:
         discard scheduler.call(%*{"cmd": "add", "runId": "run", "deckFile": doneDeck})
+      check connection.getValue(sql"SELECT count(*) FROM runs") == "0"
+      check scheduler.dispatched.len == 0
+      check scheduler.queue.len == 0
       connection.exec(sql"DROP TRIGGER fail_submission")
 
     test "acknowledges shutdown and leaves it to the caller":
@@ -109,6 +136,6 @@ proc runTests() =
       check parseJson(reply) == %*{"ok": true}
       check shutdown
       check scheduler.call(%*{"cmd": "add", "runId": "a", "deckFile": doneDeck}) ==
-        %*{"ok": true, "state": "ACCEPTED"}
+        %*{"ok": true}
 
 runTests()

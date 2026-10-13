@@ -10,103 +10,75 @@ from dataclasses import dataclass
 from pathlib import Path
 from threading import Event, Lock, RLock, Thread, Timer
 from typing import Final
-from unittest.mock import Mock
+from unittest.mock import ANY, Mock
 
 import pytest
 
 import trnrun.client as client_module
 import trnrun.convenience.display as display_module
+from tests.daemon_database import DaemonDatabase
 from trnrun.config import SimulationConfig
 from trnrun.convenience.manager import SimulationManager
 from trnrun.convenience.simulation import Simulation
-from trnrun.events import LogEvent, SimulationReply, SimulationState, SimulationStatus, StatusEvent
+from trnrun.database import RunDatabase
+from trnrun.events import LogEvent, SimulationState, SimulationStatus, StatusEvent
 
 
 class FakeDaemon:
-    """In-memory daemon process following the trnrund request protocol.
+    """Stand-in for the trnrund process, saving runs to a real database as trnrund does.
 
-    Tests change daemon-side state directly, as TRNRun output and worker
-    exits would, then update the manager to observe it. Like trnrund, each
-    `pull` returns the runs changed since they were last pulled, with only the
-    log entries not pulled before, then forgets the finished ones. Requests
-    and changes are serialized, since the manager's poller sends from its own
-    thread.
+    Tests change runs directly, as TRNRun output and worker exits would, then
+    sync the manager, which reads them from the database, never through a
+    request. Requests are serialized, since the manager's poller may kill the
+    daemon from its own thread.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, database_path: Path) -> None:
         self.lock: RLock = RLock()
-        self.runs: dict[str, dict[str, object]] = {}
-        self.logs: dict[str, list[dict[str, object]]] = {}
-        self.pulled_logs: dict[str, int] = {}
-        self.changed: set[str] = set()
+        self.database: DaemonDatabase = DaemonDatabase(database_path)
+        self.database_path: Path = database_path
         self.requests: list[dict[str, object]] = []
         self.add_error: Exception | None = None
         self.failure: Exception | None = None
-        self.shutdown: Mock = Mock()
+        self.kill: Mock = Mock()
+        self.wait: Mock = Mock()
 
     def request(self, request: dict[str, object]) -> dict[str, object]:
         """Answer one request like trnrund, raising for ``ok: false``."""
         with self.lock:
-            return self._answer(request)
-
-    def _answer(self, request: dict[str, object]) -> dict[str, object]:
-        self.requests.append(request)
-        if self.failure is not None:
-            raise self.failure
-        command = request["cmd"]
-        if command == "add":
-            run_id = str(request["runId"])
+            self.requests.append(request)
+            if self.failure is not None:
+                raise self.failure
+            command = request["cmd"]
+            if command != "add":
+                raise ValueError(f"Unknown cmd: {command}")
             if self.add_error is not None:
                 raise self.add_error
-            if run_id in self.runs:
+            run_id = str(request["runId"])
+            if run_id in self.database:
                 raise ValueError(f"Invalid or duplicate runId: {run_id}")
-            self.runs[run_id] = self._initial(run_id, request)
-            self.logs[run_id] = []
-            self.pulled_logs[run_id] = 0
-            self.changed.add(run_id)
+            self.database.submit(run_id, str(request["deckFile"]))
             return {"ok": True}
-        if command == "pull":
-            return {"ok": True, "simulations": self._pull()}
-        raise ValueError(f"Unknown cmd: {command}")
 
-    def set(self, run_id: str, **fields: object) -> None:
-        """Change daemon-side fields of a run."""
+    def exit_error(self) -> Exception | None:
+        """Return the failure a dead daemon reports, or None while it runs."""
         with self.lock:
-            self.runs[run_id].update(fields)
-            self.changed.add(run_id)
+            return self.failure
+
+    def set(self, run_id: str, **columns: object) -> None:
+        """Change saved columns of a run."""
+        self.database.update(run_id, **columns)
 
     def log(self, run_id: str, severity: str = "Notice", message: str = "message") -> None:
-        """Append one TRNRun log entry, as the daemon counts it."""
-        with self.lock:
-            self.logs[run_id].append(
-                {
-                    "severity": severity,
-                    "time": 0.0,
-                    "unitId": None,
-                    "typeId": None,
-                    "messageCode": None,
-                    "message": message,
-                    "information": None,
-                },
-            )
-            counter = {"Notice": "notices", "Warning": "warnings", "Fatal": "fatals"}[severity]
-            simulation = self.runs[run_id]
-            simulation[counter] = int(str(simulation[counter])) + 1
-            self.changed.add(run_id)
+        """Save one TRNRun log entry, as the daemon counts it."""
+        self.database.log(run_id, severity, message)
 
     def finish(self, run_id: str, status: str = "DONE", exit_code: int | None = 0, error: str = "") -> None:
         """Finish a run with the daemon's success rule."""
-        self.set(
-            run_id,
-            state="FINISHED",
-            status={"status": status, "message": ""},
-            exitCode=exit_code,
-            error=error,
-            succeeded=status == "DONE" and exit_code == 0 and not error,
-        )
+        self.database.finish(run_id, status, exit_code, error)
 
     def fail(self, failure: Exception) -> None:
-        """Make every later request raise ``failure``, as a dead daemon would."""
+        """Exit with ``failure``: every later request raises it, as a dead daemon's would."""
         with self.lock:
             self.failure = failure
 
@@ -120,36 +92,6 @@ class FakeDaemon:
         with self.lock:
             return [request["cmd"] for request in self.requests]
 
-    def _pull(self) -> list[dict[str, object]]:
-        """Return the changed runs in submission order, with unpulled logs, then forget finished ones."""
-        pulled: list[dict[str, object]] = []
-        for run_id in [run_id for run_id in self.runs if run_id in self.changed]:
-            start = self.pulled_logs[run_id]
-            pulled.append({**self.runs[run_id], "logs": self.logs[run_id][start:]})
-            self.pulled_logs[run_id] = len(self.logs[run_id])
-            if self.runs[run_id]["state"] == "FINISHED":
-                del self.runs[run_id], self.logs[run_id], self.pulled_logs[run_id]
-        self.changed.clear()
-        return pulled
-
-    def _initial(self, run_id: str, request: dict[str, object]) -> dict[str, object]:
-        return {
-            "runId": run_id,
-            "deckFile": request["deckFile"],
-            "trnrunArgs": request.get("trnrunArgs", []),
-            "state": "QUEUED",
-            "exitCode": None,
-            "error": "",
-            "setting": None,
-            "status": None,
-            "config": None,
-            "progress": None,
-            "notices": 0,
-            "warnings": 0,
-            "fatals": 0,
-            "succeeded": False,
-        }
-
 
 @dataclass
 class Harness:
@@ -159,10 +101,19 @@ class Harness:
     daemon: FakeDaemon
     daemon_factory: Mock
     inputs: tuple[Path, SimulationConfig]
+    pulls: Mock  # Wraps the manager's database pulls, counting them.
 
     def add(self) -> Simulation:
         """Submit the valid fixture deck."""
         return self.manager.add(*self.inputs)
+
+
+def watch_pulls(manager: SimulationManager) -> Mock:
+    """Count the manager's database pulls, which still read the database."""
+    database = manager._client.database
+    pulls = Mock(wraps=database.pull)
+    database.pull = pulls
+    return pulls
 
 
 @pytest.fixture
@@ -175,6 +126,7 @@ def valid_inputs(tmp_path: Path) -> tuple[Path, SimulationConfig]:
     return deck, SimulationConfig(trnexe_path=trnexe, watch_tmp=True)
 
 
+PROGRESS: Final[dict[str, object]] = {"percent": 0.5, "sim_time": 5.0, "elapsed_ms": 1.0, "eta_ms": 1.0}
 MANUAL: Final[float] = 3600.0  # A poll interval no test outlasts: only explicit `_sync()` calls run.
 POLLING: Final[float] = 0.01
 DEADLINE: Final[float] = 5.0  # Seconds a polling test waits before failing instead of hanging.
@@ -183,13 +135,14 @@ DEADLINE: Final[float] = 5.0  # Seconds a polling test waits before failing inst
 @pytest.fixture
 def make_harness(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
     valid_inputs: tuple[Path, SimulationConfig],
 ) -> Iterator[Callable[[float], Harness]]:
     """Build managers backed by fake daemons, shut down after the test."""
-    managers: list[SimulationManager] = []
+    harnesses: list[Harness] = []
 
     def create(poll_interval: float) -> Harness:
-        daemon = FakeDaemon()
+        daemon = FakeDaemon(tmp_path / f"runs-{len(harnesses)}.sqlite3")
         daemon_factory = Mock(return_value=daemon)
         monkeypatch.setattr(client_module, "DaemonProcess", daemon_factory)
         manager = SimulationManager(
@@ -199,12 +152,14 @@ def make_harness(
             poll_interval=poll_interval,
             display=False,
         )
-        managers.append(manager)
-        return Harness(manager, daemon, daemon_factory, valid_inputs)
+        harness = Harness(manager, daemon, daemon_factory, valid_inputs, watch_pulls(manager))
+        harnesses.append(harness)
+        return harness
 
     yield create
-    for manager in managers:
-        manager.shutdown()
+    for harness in harnesses:
+        harness.manager.shutdown()
+        harness.daemon.database.close()
 
 
 @pytest.fixture
@@ -228,10 +183,34 @@ def eventually(condition: Callable[[], bool]) -> None:
 
 
 def test_constructor_starts_the_configured_daemon(harness: Harness) -> None:
-    """Construction passes the daemon, runner, and concurrency, and sends nothing else."""
-    harness.daemon_factory.assert_called_once_with("mock-daemon.exe", "mock-trnrun.exe", 3)
+    """Construction passes the daemon, runner, concurrency, and a temporary database, and sends nothing else."""
+    harness.daemon_factory.assert_called_once_with("mock-daemon.exe", "mock-trnrun.exe", 3, ANY, overwrite=False)
+    assert harness.manager._client._temporary is not None
     assert harness.manager.active == []
     assert harness.daemon.requests == []
+
+
+def test_a_reused_database_numbers_runs_after_its_own(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    valid_inputs: tuple[Path, SimulationConfig],
+) -> None:
+    """A run ID is never reused in a database, so a manager continues after the runs it holds, and skips them."""
+    daemon = FakeDaemon(tmp_path / "kept.sqlite3")
+    for run_id in ("1", "5", "batch-9"):
+        daemon.database.submit(run_id)
+    factory = Mock(return_value=daemon)
+    monkeypatch.setattr(client_module, "DaemonProcess", factory)
+
+    with SimulationManager(database=daemon.database_path, poll_interval=MANUAL, display=False) as manager:
+        simulation = manager.add(*valid_inputs)
+        assert manager._sync() == [simulation]
+
+    assert factory.call_args.args[3] == daemon.database_path
+    assert simulation.id == 6
+    assert daemon.requests[0]["runId"] == "6"
+    assert daemon.database_path.is_file()
+    daemon.database.close()
 
 
 def test_startup_failure_propagates(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -292,31 +271,31 @@ def test_add_rejects_a_missing_trnsys_before_sending(harness: Harness, tmp_path:
     assert harness.manager.active == []
 
 
-def test_update_without_runs_sends_nothing(harness: Harness) -> None:
-    """An idle manager never bothers the daemon."""
+def test_update_without_runs_reads_nothing(harness: Harness) -> None:
+    """An idle manager never reads the database."""
     assert harness.manager._sync() == []
 
-    assert harness.daemon.requests == []
+    harness.pulls.assert_not_called()
 
 
 def test_update_pulls_once_for_the_changes_since_the_last(harness: Harness) -> None:
-    """Each update is one request, returning the handles that changed since the previous one."""
+    """Each update is one database pull, never a request, returning the handles that changed since the previous one."""
     first, second = harness.add(), harness.add()
-    harness.daemon.requests.clear()
     assert harness.manager._sync() == [first, second]  # Each submission is reported once, queued.
-    assert harness.daemon.requests == [{"cmd": "pull"}]
+    assert harness.pulls.call_count == 1
 
-    harness.daemon.set("1", state="RUNNING", status={"status": "RUNNING", "message": "launched"})
+    harness.daemon.set("1", state="RUNNING", trnrun_status="RUNNING", trnrun_message="launched")
     assert harness.manager._sync() == [first]
     assert harness.manager._sync() == []
 
-    assert harness.daemon.commands() == ["pull"] * 3
+    assert harness.pulls.call_count == 3
+    assert harness.daemon.commands() == ["add", "add"]
     assert (first.state, second.state) == (SimulationState.RUNNING, SimulationState.QUEUED)
     assert first.status_event == StatusEvent(SimulationStatus.RUNNING, "launched")
 
 
 def test_update_returns_finished_runs_in_submission_order(harness: Harness) -> None:
-    """Every run that finished is reported once, even when it never seemed to run."""
+    """Every run that finished is reported once, even when it never seemed to run, whatever order it finished in."""
     first, second, third = [harness.add() for _ in range(3)]
     _ = harness.manager._sync()
     harness.daemon.finish("3")
@@ -326,18 +305,17 @@ def test_update_returns_finished_runs_in_submission_order(harness: Harness) -> N
     assert harness.manager.active == [second]
 
 
-def test_reads_never_wait_on_a_stalled_daemon(harness: Harness) -> None:
-    """While a poll waits for the daemon's reply, readers never wait."""
+def test_reads_never_wait_on_a_stalled_pull(harness: Harness) -> None:
+    """While a poll waits for the database, readers never wait."""
     simulation = harness.add()
     asked, release = Event(), Event()
 
-    def stall_pull(request: dict[str, object]) -> dict[str, object]:
-        if request["cmd"] == "pull":
-            asked.set()
-            assert release.wait(DEADLINE)
-        return FakeDaemon.request(harness.daemon, request)
+    def stall_pull() -> object:
+        asked.set()
+        assert release.wait(DEADLINE)
+        return RunDatabase.pull(harness.manager._client.database)  # The class's, not the stalling one.
 
-    harness.daemon.request = stall_pull  # pyright: ignore[reportAttributeAccessIssue]
+    harness.pulls.side_effect = stall_pull
     updater = Thread(target=harness.manager._sync)
     updater.start()
     try:
@@ -373,7 +351,7 @@ def test_update_brings_only_new_logs(harness: Harness) -> None:
 
 
 def test_finished_run_arrives_with_its_final_logs_and_is_forgotten(harness: Harness) -> None:
-    """Completion arrives with the remaining logs; the daemon and the manager then forget the run."""
+    """Completion arrives with the remaining logs; the manager then forgets the run."""
     simulation = harness.add()
     harness.daemon.set("1", state="RUNNING")
     harness.daemon.log("1", "Notice", "early")
@@ -386,13 +364,12 @@ def test_finished_run_arrives_with_its_final_logs_and_is_forgotten(harness: Harn
     assert simulation.succeeded
     assert simulation.exit_code == 0
     assert [event.message for event in simulation.logs] == ["early", "late"]
-    assert harness.daemon.runs == {}
-    assert harness.daemon.commands() == ["add", "pull", "pull"]  # Nothing to clean up.
+    assert harness.daemon.commands() == ["add"]  # Nothing to clean up.
     assert harness.manager.active == []
 
-    harness.daemon.requests.clear()
+    harness.pulls.reset_mock()
     _ = harness.manager._sync()
-    assert harness.daemon.requests == []  # Nothing is left to poll.
+    harness.pulls.assert_not_called()  # Nothing is left to poll.
 
 
 def test_results_follow_the_daemon_verdict(harness: Harness) -> None:
@@ -413,7 +390,7 @@ def test_results_follow_the_daemon_verdict(harness: Harness) -> None:
 def test_background_updates_move_handles_without_waiting(polling: Harness) -> None:
     """Handles follow the daemon on their own, as a notebook cell that never waits needs."""
     simulation = polling.add()
-    polling.daemon.set("1", state="RUNNING", progress={"time": 5, "percent": 0.5, "elapsedMs": 1, "etaMs": 1})
+    polling.daemon.set("1", state="RUNNING", **PROGRESS)
     eventually(lambda: simulation.progress is not None)
 
     polling.daemon.finish("1")
@@ -424,10 +401,11 @@ def test_background_updates_move_handles_without_waiting(polling: Harness) -> No
     assert polling.manager._poller.is_alive()  # Still syncing.
 
 
-def test_idle_background_updates_send_nothing(polling: Harness) -> None:
-    """With nothing tracked, the poller never bothers the daemon."""
+def test_idle_background_updates_read_nothing(polling: Harness) -> None:
+    """With nothing tracked, the poller never reads the database nor bothers the daemon."""
     time.sleep(10 * POLLING)
 
+    polling.pulls.assert_not_called()
     assert polling.daemon.request_count() == 0
 
 
@@ -503,15 +481,10 @@ def test_constructor_rejects_nonpositive_poll_intervals(monkeypatch: pytest.Monk
     factory.assert_not_called()
 
 
-def test_daemon_failure_kills_it_settles_handles_and_raises(polling: Harness) -> None:
-    """A failed pull kills the daemon and settles the unfinished handles with its error; they keep their last reply."""
+def test_daemon_exit_kills_it_settles_handles_and_raises(polling: Harness) -> None:
+    """A daemon found exited is killed, and the unfinished handles settled with its error; they keep their last reply."""
     running = polling.add()
-    polling.daemon.set(
-        "1",
-        state="RUNNING",
-        status={"status": "RUNNING", "message": "still running"},
-        progress={"time": 5, "percent": 0.5, "elapsedMs": 1, "etaMs": 1},
-    )
+    polling.daemon.set("1", state="RUNNING", trnrun_status="RUNNING", trnrun_message="still running", **PROGRESS)
     polling.daemon.log("1", "Warning", "retained")
     eventually(lambda: running.log_count == 1)
     before = (running.info, running.logs)
@@ -519,7 +492,7 @@ def test_daemon_failure_kills_it_settles_handles_and_raises(polling: Harness) ->
     failure = RuntimeError("TRNRun daemon exited with code 1")
     polling.daemon.fail(failure)
     eventually(lambda: not polling.manager._poller.is_alive())
-    polling.daemon.shutdown.assert_called_once_with()  # Killed, so no run goes on untracked.
+    polling.daemon.kill.assert_called_once_with()  # Killed, so no run goes on untracked.
     for action in (polling.manager.wait, running.wait):
         with pytest.raises(RuntimeError) as raised:
             action()
@@ -537,10 +510,29 @@ def test_daemon_failure_kills_it_settles_handles_and_raises(polling: Harness) ->
     assert raised.value is failure  # Shutdown keeps the first error.
 
 
+def test_a_daemon_exit_still_delivers_what_it_saved(harness: Harness) -> None:
+    """Runs the daemon finished before exiting arrive finished; only the others get its error."""
+    finished, unfinished = harness.add(), harness.add()
+    harness.daemon.log("1", "Warning", "final")
+    harness.daemon.finish("1")
+    failure = RuntimeError("TRNRun daemon exited with code 1")
+    harness.daemon.fail(failure)
+
+    with pytest.raises(RuntimeError) as raised:
+        _ = harness.manager._sync()
+
+    assert raised.value is failure
+    finished.wait(0)
+    assert finished.succeeded
+    assert [event.message for event in finished.logs] == ["final"]
+    assert not unfinished.is_finished
+    assert harness.manager.active == [unfinished]
+
+
 def test_shutdown_stops_the_poller(polling: Harness) -> None:
-    """Shutdown joins the background thread, which takes its interrupted pull for shutdown, not a failure."""
+    """Shutdown joins the background thread before it kills the daemon and closes the database."""
     simulation = polling.add()
-    eventually(lambda: polling.daemon.request_count() > 1)
+    eventually(lambda: polling.pulls.call_count > 0)
 
     polling.manager.shutdown()
 
@@ -553,7 +545,7 @@ def test_shutdown_kills_the_daemon_and_preserves_handles(harness: Harness) -> No
     """Shutdown forgets active runs without synthesizing completion, and runs once."""
     finished, running = harness.add(), harness.add()
     harness.daemon.finish("1")
-    harness.daemon.set("2", state="RUNNING", status={"status": "RUNNING", "message": ""})
+    harness.daemon.set("2", state="RUNNING", trnrun_status="RUNNING", trnrun_message="")
     harness.daemon.log("2", "Notice", "retained")
     _ = harness.manager._sync()
     before = (running.info, running.logs)
@@ -561,7 +553,7 @@ def test_shutdown_kills_the_daemon_and_preserves_handles(harness: Harness) -> No
     harness.manager.shutdown()
     harness.manager.shutdown()
 
-    harness.daemon.shutdown.assert_called_once_with()
+    harness.daemon.kill.assert_called_once_with()
     assert harness.manager.active == []
     assert finished.succeeded
     assert (running.info, running.logs) == before
@@ -589,14 +581,14 @@ def test_shutdown_failure_propagates_and_leaves_the_manager_closed(harness: Harn
     """A failed daemon cleanup raises once; the manager stays closed and later calls do nothing."""
     simulation = harness.add()
     failure = TimeoutError("daemon did not exit")
-    harness.daemon.shutdown.side_effect = failure
+    harness.daemon.kill.side_effect = failure
 
     with pytest.raises(TimeoutError) as raised:
         harness.manager.shutdown()
     harness.manager.shutdown()
 
     assert raised.value is failure
-    harness.daemon.shutdown.assert_called_once_with()
+    harness.daemon.kill.assert_called_once_with()
     assert harness.manager.active == []
     assert simulation.state is SimulationState.QUEUED
     with pytest.raises(RuntimeError):
@@ -608,18 +600,19 @@ def test_context_manager_shuts_down_on_exit(harness: Harness) -> None:
     with harness.manager as entered:
         assert entered is harness.manager
 
-    harness.daemon.shutdown.assert_called_once_with()
+    harness.daemon.kill.assert_called_once_with()
 
 
 # -----------------------------------------------------------------
 # Display
 # -----------------------------------------------------------------
 @pytest.fixture
-def fake_daemon(monkeypatch: pytest.MonkeyPatch) -> FakeDaemon:
+def fake_daemon(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[FakeDaemon]:
     """Back every manager built in the test with one fake daemon."""
-    daemon = FakeDaemon()
+    daemon = FakeDaemon(tmp_path / "runs.sqlite3")
     monkeypatch.setattr(client_module, "DaemonProcess", Mock(return_value=daemon))
-    return daemon
+    yield daemon
+    daemon.database.close()
 
 
 @pytest.fixture
@@ -748,7 +741,7 @@ def test_shutdown_kills_the_daemon_then_closes_the_display(
     """The kill frees any update blocked on the daemon; both are released once."""
     order: list[str] = []
     display_factory.return_value.close.side_effect = lambda: order.append("display")
-    fake_daemon.shutdown.side_effect = lambda: order.append("daemon")
+    fake_daemon.kill.side_effect = lambda: order.append("daemon")
 
     with SimulationManager():
         pass
@@ -761,7 +754,7 @@ def test_shutdown_closes_the_display_when_the_daemon_fails_to_exit(
 ) -> None:
     """A daemon cleanup failure propagates after the display and the poller are released."""
     failure = TimeoutError("daemon did not exit")
-    fake_daemon.shutdown.side_effect = failure
+    fake_daemon.kill.side_effect = failure
     manager = SimulationManager()
 
     with pytest.raises(TimeoutError) as raised:
@@ -831,3 +824,30 @@ def test_real_daemon_runs_a_batch_with_a_display(tmp_path: Path, fake_trnrun: Pa
     assert simulations[0].exit_code == 0
     assert simulations[0].log_count > 0
     assert simulations[2].exit_code != 0
+
+
+def test_real_daemon_keeps_batches_in_a_given_database(tmp_path: Path, fake_trnrun: Path) -> None:
+    """Managers reusing one database through the bundled daemon number their runs after the earlier ones."""
+    trnexe = tmp_path / "TrnEXE64.exe"
+    deck = tmp_path / "done-a.dck"
+    for path in (trnexe, deck):
+        path.touch()
+    config = SimulationConfig(trnexe_path=trnexe)
+    database = tmp_path / "runs.sqlite3"
+
+    batches: list[list[Simulation]] = []
+    for _ in range(2):
+        with SimulationManager(
+            1,
+            database=database,
+            trnrun_path=fake_trnrun,
+            poll_interval=0.01,
+            display=False,
+        ) as manager:
+            batches.append([manager.add(deck, config) for _ in range(2)])
+            manager.wait(timeout=30)
+
+    assert [[simulation.id for simulation in batch] for batch in batches] == [[1, 2], [3, 4]]
+    assert all(simulation.succeeded for batch in batches for simulation in batch)
+    with RunDatabase(database) as reader:
+        assert list(reader.pull()) == ["1", "2", "3", "4"]
