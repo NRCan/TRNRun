@@ -31,14 +31,6 @@ const
   ReadSize = 4096
   WaitAccess = SYNCHRONIZE or PROCESS_QUERY_LIMITED_INFORMATION or PROCESS_TERMINATE
 
-proc release(process: Process) =
-  ## Kills a still-running TRNRun and closes its handles and pipes.
-  try:
-    if process.running:
-      process.kill()
-  finally:
-    process.close()
-
 proc launch*(
     runId: int, deckFile, trnrunPath: string, trnrunArgs: openArray[string]
 ): Launched =
@@ -54,7 +46,11 @@ proc launch*(
   if waitHandle == 0:
     let error = osLastError()
     try:
-      process.release()
+      try:
+        if process.running:
+          process.kill()
+      finally:
+        process.close()
     except CatchableError:
       discard
     raiseOSError(error, "Cannot wait for TRNRun")

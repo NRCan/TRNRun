@@ -115,7 +115,7 @@ when isMainModule:
     try:
       main()
       0
-    except InputError as error: # Serving answers client input; only usage errors get here.
+    except InputError as error:
       writeError(error.msg)
       2
     except CatchableError as error:
