@@ -37,7 +37,7 @@ proc runTests() =
   initLock(outputLock)
 
   suite "writer":
-    var inbox: Channel[Message]
+    var inbox = default(Channel[Message])
     inbox.open() # Never closed, as in the daemon.
 
     setup:

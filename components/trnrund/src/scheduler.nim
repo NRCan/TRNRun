@@ -135,10 +135,37 @@ proc databasePath*(scheduler: Scheduler): string =
   ## Absolute path of the database clients read.
   scheduler.database.path
 
+proc requestInbox*(scheduler: Scheduler): ptr Channel[Message] =
+  ## Inbox address for the thread that posts `mkRequest` and `mkClosed`.
+  addr scheduler.inbox
+
+proc receive*(scheduler: Scheduler): seq[Message] =
+  ## Waits for the next message, then also returns those already waiting.
+  result = @[scheduler.inbox.recv()]
+  while result.len < MaxBatch:
+    let (available, message) = scheduler.inbox.tryRecv()
+    if not available:
+      break
+    result.add(message)
+
 template atomically*(scheduler: Scheduler, body: untyped) =
   ## Applies `body` in one database transaction; readers see its changes at once.
   scheduler.database.transaction:
     body
+
+proc apply*(scheduler: Scheduler, message: Message) =
+  ## Applies one worker message; an exit frees a slot for the next queued run.
+  ## Client messages are ignored.
+  case message.kind
+  of mkOutput:
+    let event = parseEventLine(message.line)
+    if event.isSome:
+      scheduler.database.record(message.runId, event.get())
+  of mkExited:
+    scheduler.finishExited(message)
+    scheduler.dispatch()
+  of mkRequest, mkClosed:
+    discard
 
 proc add*(
     scheduler: Scheduler, deckFile: string, trnrunArgs: seq[string] = @[], label = none(string)
@@ -170,33 +197,6 @@ proc cancel*(scheduler: Scheduler, runId: int) =
     scheduler.database.cancel(runId, started = false, CancelReason)
   elif runId notin scheduler.database:
     raise newException(InputError, "Unknown runId: " & $runId)
-
-proc apply*(scheduler: Scheduler, message: Message) =
-  ## Applies one worker message; an exit frees a slot for the next queued run.
-  ## Client messages are ignored.
-  case message.kind
-  of mkOutput:
-    let event = parseEventLine(message.line)
-    if event.isSome:
-      scheduler.database.record(message.runId, event.get())
-  of mkExited:
-    scheduler.finishExited(message)
-    scheduler.dispatch()
-  of mkRequest, mkClosed:
-    discard
-
-proc requestInbox*(scheduler: Scheduler): ptr Channel[Message] =
-  ## Inbox address for the thread that posts `mkRequest` and `mkClosed`.
-  addr scheduler.inbox
-
-proc receive*(scheduler: Scheduler): seq[Message] =
-  ## Waits for the next message, then also returns those already waiting.
-  result = @[scheduler.inbox.recv()]
-  while result.len < MaxBatch:
-    let (available, message) = scheduler.inbox.tryRecv()
-    if not available:
-      break
-    result.add(message)
 
 proc requestShutdown*(scheduler: Scheduler, cancelRunning = false) =
   ## Rejects new runs and finishes queued ones as CANCELLED, without waiting.

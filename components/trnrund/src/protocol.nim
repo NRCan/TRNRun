@@ -87,6 +87,12 @@ proc optionalField[T](request: JsonNode, name: string, _: typedesc[T]): Option[T
   let node = request.getOrDefault(name)
   if node == nil or node.kind == JNull: none(T) else: some(node.parseField(name, T))
 
+proc parseRequest(line: string): JsonNode =
+  ## Parses one request line, which must hold a JSON object.
+  result = parseJson(line)
+  if result.kind != JObject:
+    raise newException(InputError, "Request must be a JSON object")
+
 proc handleReady(scheduler: Scheduler, reply: JsonNode) =
   ## Reports the database and session a client reads from.
   reply["databasePath"] = %scheduler.databasePath
@@ -109,12 +115,6 @@ proc handleCancel(scheduler: Scheduler, request: JsonNode) =
 proc handleShutdown(scheduler: Scheduler, request: JsonNode) =
   ## Starts shutting down, optionally killing running runs.
   scheduler.requestShutdown(request.optionalField("cancelRunning", bool).get(false))
-
-proc parseRequest(line: string): JsonNode =
-  ## Parses one request line, which must hold a JSON object.
-  result = parseJson(line)
-  if result.kind != JObject:
-    raise newException(InputError, "Request must be a JSON object")
 
 proc handleRequest*(scheduler: Scheduler, line: string): string =
   ## Runs one request line and returns its reply line.

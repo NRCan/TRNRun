@@ -51,14 +51,6 @@ proc runWorker(context: WorkerContext) {.thread.} =
 
 # Public API
 
-proc shutdown*(pool: var WorkerPool) =
-  ## Finishes submitted work, then stops and joins every worker. Safe to repeat.
-  for _ in pool.threads:
-    pool.work.send(Work(kind: wkStop))
-  for thread in pool.threads.mitems:
-    joinThread(thread)
-  pool.threads.setLen(0)
-
 proc start*(pool: var WorkerPool, workers: int, inbox: ptr Channel[Message]) =
   ## Starts `workers` threads that report to `inbox`.
   pool.work.open()
@@ -69,3 +61,11 @@ proc start*(pool: var WorkerPool, workers: int, inbox: ptr Channel[Message]) =
 proc submit*(pool: var WorkerPool, work: Work) =
   ## Hands `wkRead` work to the next free worker.
   pool.work.send(work)
+
+proc shutdown*(pool: var WorkerPool) =
+  ## Finishes submitted work, then stops and joins every worker. Safe to repeat.
+  for _ in pool.threads:
+    pool.work.send(Work(kind: wkStop))
+  for thread in pool.threads.mitems:
+    joinThread(thread)
+  pool.threads.setLen(0)
