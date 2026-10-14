@@ -20,6 +20,7 @@ $DaemonPath, $RunnerPath, $SourceDeck | ForEach-Object {
 }
 
 # trnrund answers each request line with one reply line, in request order.
+# This client never sends subscribe, so stdout carries replies only.
 function Send-Request([hashtable] $Request) {
     $Daemon.StandardInput.WriteLine(($Request | ConvertTo-Json -Compress))
     $Line = $Daemon.StandardOutput.ReadLine()
@@ -42,7 +43,7 @@ uri = pathlib.Path(sys.argv[1]).as_uri() + '?mode=ro'
 revision = int(sys.argv[2])
 db = sqlite3.connect(uri, uri=True)
 db.row_factory = sqlite3.Row
-rows = db.execute('''SELECT run_id, revision, state, trnrun_status, succeeded, warnings,
+rows = db.execute('''SELECT label, revision, state, trnrun_status, succeeded, warnings,
     percent, notices + warnings + fatals AS log_count
     FROM runs WHERE revision > ? ORDER BY revision''', (revision,)).fetchall()
 db.close()
@@ -66,16 +67,16 @@ function Update-Runs {
     $Changes = $Json | ConvertFrom-Json
     $script:Revision = $Changes.revision
     foreach ($Simulation in $Changes.simulations) {
-        $RunId = $Simulation.run_id
-        $LogCounts[$RunId] = $Simulation.log_count
-        $Percents[$RunId] = $Simulation.percent
-        if ($States[$RunId] -ne $Simulation.state) {
-            $States[$RunId] = $Simulation.state
-            Write-Host "${RunId}: $($Simulation.state)"
+        $Name = $Simulation.label
+        $LogCounts[$Name] = $Simulation.log_count
+        $Percents[$Name] = $Simulation.percent
+        if ($States[$Name] -ne $Simulation.state) {
+            $States[$Name] = $Simulation.state
+            Write-Host "${Name}: $($Simulation.state)"
         }
         # FINISHED is saved together with the final logs.
         if ($Simulation.state -eq 'FINISHED') {
-            $Finished[$RunId] = $Simulation
+            $Finished[$Name] = $Simulation
         }
     }
 }
@@ -83,10 +84,10 @@ function Update-Runs {
 # Prints one line with every known run's latest progress ('--' before its
 # first PROGRESS). TRNRun reports progress as a fraction from 0 to 1.
 function Show-Progress {
-    $Parts = foreach ($RunId in $States.Keys | Sort-Object) {
-        $Percent = $Percents[$RunId]
+    $Parts = foreach ($Name in $States.Keys | Sort-Object) {
+        $Percent = $Percents[$Name]
         $Text = if ($null -eq $Percent) { ' --' } else { '{0,3:N0}' -f ($Percent * 100) }
-        "${RunId} $Text%"
+        "${Name} $Text%"
     }
     Write-Host ($Parts -join ' | ')
 }
@@ -103,22 +104,23 @@ try {
     $DatabasePath = (Send-Request @{ cmd = 'ready' }).databasePath
 
     Write-Host (
-        "Submitting $RunCount copies one at a time, each once the previous is " +
-        "accepted, with max concurrency $ConcurrencyLimit"
+        "Submitting $RunCount copies one at a time, each once the previous has " +
+        "started, with max concurrency $ConcurrencyLimit"
     )
 
-    # add only acknowledges saving, not dispatch. Wait for the database state
+    # add replies with the runId the daemon assigned, not when the run starts.
+    # This example names runs by label. Wait for the database state
     # to leave QUEUED before adding another, keeping at most one queued run.
     1..$RunCount | ForEach-Object {
-        $RunId = 'example-{0:D2}' -f $_
-        $DeckFile = Join-Path $RunDirectory "$RunId.dck"
+        $Name = 'example-{0:D2}' -f $_
+        $DeckFile = Join-Path $RunDirectory "$Name.dck"
 
         # Each run needs its own deck because TRNRun writes sidecars beside it.
         Copy-Item -LiteralPath $SourceDeck -Destination $DeckFile
 
         Send-Request @{
             cmd = 'add'
-            runId = $RunId
+            label = $Name
             deckFile = $DeckFile
             trnrunArgs = @(
                 '--guiVisibility:auto'
@@ -127,7 +129,7 @@ try {
         } | Out-Null
 
         Update-Runs
-        while (-not $States.ContainsKey($RunId) -or $States[$RunId] -eq 'QUEUED') {
+        while (-not $States.ContainsKey($Name) -or $States[$Name] -eq 'QUEUED') {
             Start-Sleep -Milliseconds $PollMilliseconds
             Update-Runs
             Show-Progress
@@ -141,12 +143,12 @@ try {
     }
 
     $FailureCount = 0
-    foreach ($RunId in $Finished.Keys | Sort-Object) {
-        $Simulation = $Finished[$RunId]
+    foreach ($Name in $Finished.Keys | Sort-Object) {
+        $Simulation = $Finished[$Name]
         $Verdict = if ($Simulation.succeeded) { 'PASS' } else { 'FAIL' }
         Write-Host (
-            "$Verdict - ${RunId}: $($Simulation.trnrun_status), " +
-            "$($LogCounts[$RunId]) logs, $($Simulation.warnings) warnings"
+            "$Verdict - ${Name}: $($Simulation.trnrun_status), " +
+            "$($LogCounts[$Name]) logs, $($Simulation.warnings) warnings"
         )
         if (-not $Simulation.succeeded) {
             $FailureCount++

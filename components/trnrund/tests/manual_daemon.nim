@@ -80,44 +80,45 @@ proc request(daemon: Process, request: JsonNode): JsonNode =
 
 proc runDaemon(daemon: Process, deckFiles: openArray[string]): Table[string, JsonNode] =
   ## Reads the runs changed since the last poll from the database, without
-  ## sending commands while workers run. Finished reports include a logCount.
+  ## sending commands while workers run. Reports are keyed by label, the
+  ## deck's name, and finished ones include a logCount.
   result = initTable[string, JsonNode]()
   let ready = daemon.request(%*{"cmd": "ready"})
   let db = db_sqlite.open(ready["databasePath"].getStr(), "", "", "")
   defer: db.close()
   db.exec(sql"PRAGMA query_only = ON")
   for deckFile in deckFiles:
-    # add only acknowledges saving; the database below supplies lifecycle states.
+    # add replies with the runId the daemon assigned; the label names the run in reports.
     discard daemon.request(%*{
       "cmd": "add",
-      "runId": deckFile.splitFile().name,
       "deckFile": deckFile,
       "trnrunArgs": TrnrunArgs,
+      "label": deckFile.splitFile().name,
     })
 
   var
     states = initTable[string, string]()
-    revision = 0'i64
+    revision = 0
   let deadline = getMonoTime() + initDuration(milliseconds = TimeoutMs)
 
-  proc note(runId, state: string) =
-    if states.getOrDefault(runId) != state:
-      states[runId] = state
-      styledWriteLine(stdout, fgWhite, "  " & runId & ": " & state)
+  proc note(name, state: string) =
+    if states.getOrDefault(name) != state:
+      states[name] = state
+      styledWriteLine(stdout, fgWhite, "  " & name & ": " & state)
 
   while result.len < deckFiles.len:
     if not daemon.running:
       raise newException(IOError, "trnrund exited before all runs finished")
     if getMonoTime() >= deadline:
       raise newException(IOError, "Timed out waiting for runs in the database")
-    for row in db.getAllRows(sql"""SELECT run_id, revision, state, trnrun_status, succeeded, error,
+    for row in db.getAllRows(sql"""SELECT label, revision, state, trnrun_status, succeeded, error,
       notices + warnings + fatals, warnings, fatals
       FROM runs WHERE revision > ? ORDER BY revision""", revision):
-      let runId = row[0]
-      revision = parseBiggestInt(row[1])
-      note(runId, row[2])
+      let name = row[0]
+      revision = parseInt(row[1])
+      note(name, row[2])
       if row[2] == "FINISHED":
-        result[runId] = %*{
+        result[name] = %*{
           "status": (if row[3].len > 0: row[3] else: "NO STATUS"),
           "succeeded": row[4] == "1",
           "error": row[5],
@@ -129,15 +130,15 @@ proc runDaemon(daemon: Process, deckFiles: openArray[string]): Table[string, Jso
     if result.len < deckFiles.len:
       sleep(PollMs)
 
-proc reportRun(runId: string, collected: Table[string, JsonNode]): bool =
+proc reportRun(name: string, collected: Table[string, JsonNode]): bool =
   ## Prints one run's verdict and returns whether it succeeded.
-  if runId notin collected:
-    styledWriteLine(stdout, fgRed, "FAIL - " & runId & ": MISSING")
+  if name notin collected:
+    styledWriteLine(stdout, fgRed, "FAIL - " & name & ": MISSING")
     return false
 
   let
-    simulation = collected[runId]
-    summary = runId & ": " & simulation["status"].getStr() &
+    simulation = collected[name]
+    summary = name & ": " & simulation["status"].getStr() &
       " (" & $simulation["logCount"].getInt() & " logs, " & $simulation["warnings"].getInt() &
       " warnings, " & $simulation["fatals"].getInt() & " fatals)"
   result = simulation["succeeded"].getBool()

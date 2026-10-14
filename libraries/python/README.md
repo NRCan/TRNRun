@@ -1,254 +1,226 @@
 # TRNRun for Python
 
 A thin wrapper for the Windows `trnrund` daemon, plus a simulation manager
-with a live progress display built on Rich.
+with an optional live progress display built on Rich.
 Requires Python 3.12 or later and the native `trnrund.exe` and `trnrun.exe`.
 Real simulations also require TRNSYS.
+
+```sh
+pip install trnrun            # Daemon, Database, SimulationConfig, SimulationManager
+pip install trnrun[display]   # adds Rich, for the manager's built-in progress display
+```
 
 Just want to launch a batch and watch it? Skip to the
 [simulation manager](#simulation-manager), which needs no polling code.
 
 ```python
-import time
-
 from trnrun import Daemon, SimulationConfig
 
 config = SimulationConfig(watch_tmp=True)
 
 with Daemon("runs.sqlite3", max_concurrent=2) as daemon:
-    daemon.add("1", "model.dck", config)
+    run_id = daemon.add("model.dck", config)
 
-    while True:
-        run = daemon.database.get_run("1")
-        if run is not None and run["state"] == "FINISHED":
-            print(dict(run))
-            break
-        daemon.check()  # Raises if trnrund crashed, instead of waiting forever.
-        time.sleep(0.2)
+    finished = None
+    while finished is None:
+        changes = daemon.wait()  # Blocks until trnrund saves something; raises if it crashed.
+        finished = next((run for run in changes.runs if run.run_id == run_id and run.is_finished), None)
 
-    logs = daemon.database.get_logs("1")
+    print(finished.succeeded, finished.status)
+    logs = daemon.database.get_logs(run_id)
 ```
 
 ## API
 
 - `Daemon(database_path="trnrund.sqlite3", *, max_concurrent=None,
-  trnrun_path=None, overwrite=False, executable=...)` starts the daemon and
-  waits for its `ready` reply before opening the database.
+  trnrun_path=None, executable=..., request_timeout=60.0)` starts the daemon,
+  waits for its `ready` reply, subscribes to its change notifications, and
+  opens its database.
   - `database_path` is created if missing; its directory must exist. An
-    existing database keeps its runs, logs, and taken run IDs.
+    existing database keeps its runs and logs, and the daemon continues its
+    run numbers in a new session. For an empty history, use a new file.
   - `max_concurrent` limits simulations running at once; `None` means
     `max(CPUs - 1, 1)`.
   - `trnrun_path` is the TRNRun runner; `None` means `trnrun.exe` beside
     the daemon executable.
-  - `overwrite=True` **permanently deletes** the database's history; see
-    [Database safety](#database-safety). It must be an actual `bool`.
   - `executable` defaults to `trnrun/bin/trnrund.exe` inside the package,
     with `trnrun.exe` beside it. To use an existing build, pass
     `executable=r"C:\path\to\trnrund.exe"` and, if needed,
     `trnrun_path=r"C:\path\to\trnrun.exe"`.
+  - A request that gets no reply within `request_timeout` seconds raises
+    `TimeoutError`.
 
   Relative paths resolve from Python's current working directory.
-- `add(run_id, deck_file, trnrun_args=())` submits a run. `run_id` must be
-  new to the database, even across restarts, so a script rerun on the same
-  database needs new IDs (for example with a batch prefix or `uuid`) or
-  `overwrite=True`. It accepts a `SimulationConfig` or raw CLI arguments as
-  `trnrun_args`.
-  A relative `deck_file` resolves from Python's working directory at the time
-  of the call, even after `os.chdir()`.
-  A config is validated and converted automatically before submission.
-  Omitting it sends no overrides and keeps the native runner's defaults.
-  The method sends one JSON line to stdin and reads its reply, returning only
-  after the run is saved. Rejected requests raise `ValueError`; process and
-  protocol failures also raise exceptions; a request to a daemon that has
-  exited raises `RuntimeError` with its exit code and its stderr message,
+- `add(deck_file, trnrun_args=(), *, label=None) -> int` submits a run and
+  returns the run ID the daemon assigned. Run IDs are integers never reused
+  in a database. `trnrun_args` is a `SimulationConfig` or raw CLI arguments;
+  omitting it keeps the runner's defaults. `label` is an optional tag saved
+  with the run. A relative `deck_file` resolves from Python's working
+  directory at the time of the call. The call returns once the run is saved,
+  not when it starts. Rejected runs raise `ValueError`; a request to a daemon
+  that has exited raises `RuntimeError` with its exit code and stderr message,
   such as `trnrund exited with code 2: 'maxConcurrent' must be at least 1`.
-  The daemon writes to stderr only for startup and fatal errors, so nothing is
-  printed to the console, which also keeps notebooks and windowless GUI apps
-  free of stray output and console windows.
 - `cancel(run_id)` stops one run and returns once the daemon has recorded the
   request. A queued run is already `FINISHED` with `trnrun_status`
   `CANCELLED` on return. A running one has its TRNRun killed, along with
-  TRNSYS, and becomes `FINISHED`/`CANCELLED` shortly after; poll the
-  database as usual. Its `error` tells which: `Not started: cancelled by the
-  client` or `Interrupted: cancelled by the client`. Cancelling a finished run
-  changes nothing, so a run that finishes just before keeps its real outcome.
-  An unknown `run_id` raises `ValueError`. `shutdown()` blocks until running
-  runs finish, so cancel a hanging run before calling it.
-- `check()` raises `RuntimeError` if the daemon exited before `shutdown()` or
-  `close()`. The database cannot tell a crashed daemon from runs still in
-  progress, so call it in every loop that polls `database`.
-- `database_path` is the path returned by the daemon, not a guessed filename.
-- `database` is a read-only `TrnRunDatabase`, a `sqlite3.Connection` subclass
-  with `sqlite3.Row` results and autocommit enabled. All queries go through
-  it: use its [query helpers](#standalone-database-access), such as
-  `get_run()`, `get_changed_runs()`, and `get_new_logs()`, or normal
-  parameterized SQL on `runs` and `logs`. JSON columns remain JSON text.
-  Finish cursors promptly to keep reads short.
-- `close()` closes the database and stdin, waits for the daemon to exit, and
-  **cancels unfinished simulations**. It is safe to call more than once,
-  including after the daemon crashed.
-  Leaving a `with` block calls `close()`; wait for your runs inside the block.
-- `shutdown()` cancels queued runs, waits for running simulations to finish,
-  then closes the process pipes. The database and query helpers remain usable
-  until `close()` or context-manager exit, so you can read final results and
-  cancellations. Later requests are rejected. It can wait indefinitely if a
-  simulation hangs; shutdown alone does not release the database reader.
+  TRNSYS, and becomes `FINISHED`/`CANCELLED` shortly after. Its `error` tells
+  which: `Not started: cancelled by the client` or `Interrupted: cancelled by
+  the client`. Cancelling a finished run changes nothing. An unknown `run_id`
+  raises `ValueError`.
+- `wait(timeout=None) -> Changes` blocks until the daemon announces newly
+  saved changes, then returns them: `changes.runs`, the latest
+  `SimulationInfo` of each run that changed, and `changes.logs`, the new
+  `LogEvent`s. It returns at once if changes are already waiting, and an empty
+  `Changes` after `timeout` seconds. It starts with what this daemon changes,
+  not the database's earlier history.
+- `poll() -> Changes` returns the same without blocking, for timers such as a
+  GUI's.
+- Both raise `RuntimeError` once the daemon has exited unexpectedly **and**
+  every change it saved has been returned, so a loop over them never hangs on
+  a crashed daemon and never misses its last saves. `check()` raises the same
+  error without reading anything.
+- `shutdown(*, cancel_running=False, timeout=None)` cancels queued runs, waits
+  for running ones, and waits for the daemon to exit. With
+  `cancel_running=True`, running runs are killed instead. If they still run
+  after `timeout` seconds, the daemon is told to stop at once, which saves
+  them as interrupted. The database stays readable until `close()`.
+- `close()` closes stdin, waits for the daemon to exit, **interrupting
+  unfinished simulations**, then closes the database. It is safe to call more
+  than once, including after the daemon crashed. Leaving a `with` block calls
+  `close()`; wait for your runs inside the block.
+- `database_path` is the path returned by the daemon, `session_id` the
+  session its runs are recorded in, and `database` a [`Database`](#reading-the-database)
+  that `wait()` and `poll()` read through.
 
-Calls are synchronous and an instance is intended for one thread. There are
-no request timeouts, background polling, or result objects. A run finishes
-when `state` is `FINISHED`; check `succeeded` to distinguish success from failure.
-See the [daemon documentation](../../components/trnrund/README.md) for the
-complete database schema, incremental polling queries, and CLI options.
+Requests may be sent from any thread. `database`, `poll()`, and `wait()`
+belong to the thread that created the daemon; another thread opens its own
+`Database` and calls `daemon.wait_for_change(database.revision)` to block.
 
-## Standalone database access
+A run finishes when its `state` is `FINISHED`; check `succeeded` to
+distinguish success from failure. See the
+[daemon documentation](../../components/trnrund/README.md) for the protocol,
+the complete database schema, and CLI options.
 
-`trnrun.database` opens saved results without starting a daemon or requiring
-TRNSYS. It uses the same database class as `Daemon`.
+## Reading the database
+
+`Database` reads a trnrund database, with or without a running daemon, and
+without TRNSYS. It returns typed records.
 
 ```python
-from contextlib import closing
+from trnrun import Database, SimulationState
 
-from trnrun import TrnRunDatabase
+with Database("runs.sqlite3") as database:
+    print(database.count_runs_by_state())
 
-with closing(TrnRunDatabase("runs.sqlite3")) as connection:
-    running = connection.get_running_runs()
-    print(f"Running: {len(running)}")
+    for run in database.get_runs(state=SimulationState.FINISHED):
+        print(run.run_id, run.label, run.succeeded, run.status)
 
-    changed = connection.get_changed_runs(after_revision=0)
-    for row in changed:
-        print(row["run_id"], row["state"], row["succeeded"])
-
-    logs = connection.get_logs("1")
+    changes = database.poll()  # Everything so far; later polls return only what is new.
 ```
 
-- `TrnRunDatabase(path)` opens an existing database with SQLite URI
-  `mode=ro`, autocommit enabled, and named `sqlite3.Row` results. It does not
-  create a missing database or migrate one. Schema version must be `2`;
-  incompatible versions raise `ValueError` after closing the connection.
-  Native SQLite errors propagate.
-- `connection.get_run(run_id)` returns one current snapshot as a
-  `sqlite3.Row`, or `None` if the ID is unknown.
-- `connection.get_logs(run_id)` returns its logs ordered by `log_id`, or `[]`
-  if there are none, including for an unknown run ID.
-- `connection.get_new_logs(after_log_id, run_id=None)` returns only logs
-  with a larger `log_id`, of every run or of `run_id`, ordered by `log_id`.
-  Use it to follow logs as they arrive: start from `0` to include existing
-  logs, then advance your cursor to the last returned `log_id`.
-- `connection.count_runs_by_state()` returns a dict such as
-  `{"QUEUED": 40, "ACCEPTED": 0, "RUNNING": 2, "FINISHED": 103}`, with every
-  state present, for summaries and batch progress.
-- `connection.get_latest_revision()` returns the maximum revision, or `0`
-  for an empty database. Use it only to initialize monitoring, before seeding
-  running rows or submitting runs. Do not use it to advance the cursor each
-  poll; advance from the rows returned by `get_changed_runs()` instead.
-- `connection.get_running_runs()` returns current `RUNNING` rows, ordered by
-  revision, to seed a progress display.
-- `connection.get_changed_runs(after_revision)` returns `ACCEPTED`,
-  `RUNNING`, and `FINISHED` rows with a newer revision, ordered by revision;
-  `QUEUED` rows are skipped. These are latest snapshots, not an event
-  history; intermediate states between polls can be skipped. Advance your
-  cursor to the largest revision returned, not a separately queried database
-  maximum. An empty result is `[]`; JSON text and `NULL` values are returned
-  unchanged.
+- `Database(path, *, after_revision=0, after_log_id=0)` opens an existing
+  database read-only. It does not create or migrate one; the schema version
+  must be `3`, or it raises `ValueError` after closing. Native SQLite errors
+  propagate. A `with` block closes it; so does `close()`.
+- `poll() -> Changes` returns the runs and logs saved since the previous
+  poll, read from one consistent snapshot, and advances past them. The first
+  poll starts after `after_revision` and `after_log_id`; `seek_end()` skips
+  everything saved so far. The positions are readable as `revision` and
+  `log_id`. Runs are latest snapshots, not an event history: intermediate
+  states between polls can be skipped.
+- `get_run(run_id)` returns a `SimulationInfo`, or `None` for an unknown ID.
+- `get_logs(run_id)` returns its `LogEvent`s, oldest first.
+- `get_runs(*, session_id=None, state=None)` returns the runs of one session,
+  in one state, or both, in the order they last changed.
+- `count_runs_by_state(*, session_id=None)` returns a dict such as
+  `{QUEUED: 40, RUNNING: 2, FINISHED: 103}`, with every state present.
+- `execute(sql, parameters=())` runs a custom query and returns a
+  `sqlite3.Cursor` of `sqlite3.Row`s. Bind values with `?` parameters rather
+  than formatting them into SQL.
 
-`TrnRunDatabase` is exported from `trnrun` for direct opening, type
-annotations, and `help(TrnRunDatabase)`. Its constructor enforces read-only
-opening and schema validation. With a daemon, use `daemon.database` instead
-of opening another connection.
+Like any SQLite connection, a `Database` belongs to the thread that opened it.
 
-Use `connection.execute(sql, parameters)` for custom queries. Bind values
-with `?` parameters rather than interpolating them into SQL. Connections
-retain SQLite's default single-thread restriction; no hidden polling or
-revision cursor is added.
+### Records
 
-A SQLite connection's own `with` block does **not** close it. Use
-`contextlib.closing` as above, or call `close()` in `finally`. Standalone
-connections belong to the caller, while `daemon.close()` closes its reader.
-After shutdown, query helpers still work until that reader is closed.
+- `SimulationInfo` is one run: `run_id`, `state` (`QUEUED`, `RUNNING`,
+  `FINISHED`), `session_id`, `label`, `revision`, `deck_file`,
+  `trnrun_args`, TRNRun's latest `status` (`StatusEvent`: `status`,
+  `message`), `progress` (`ProgressEvent`: `percent` from 0 to 1, simulated
+  `time`, `elapsed_ms`, `eta_ms`), `config` (`ConfigEvent`: simulated
+  `start`, `stop`, `step`), `setting` (the settings TRNRun applied, as a
+  dict with TRNRun's camelCase keys), `notices`/`warnings`/`fatals`,
+  `succeeded`, `exit_code`, `error`, the UTC `submitted_at`/`started_at`/
+  `finished_at`, and `is_finished`. Events TRNRun has not reported yet are
+  `None`.
+- `LogEvent` is one TRNSYS log entry: `log_id`, `run_id`, `severity`
+  (`Notice`, `Warning`, `Fatal`), simulated `time`, and, when TRNSYS attaches
+  them, `unit_id`, `type_id`, `message_code`, `message`, `information`.
 
 ### Common queries
 
-The helpers cover polling; for anything else, query the `runs` and `logs`
-tables directly. The [daemon documentation](../../components/trnrund/README.md#reading-the-database)
+The helpers cover the usual questions; for anything else, query the `runs`
+and `logs` tables directly. The
+[daemon documentation](../../components/trnrund/README.md#reading-the-database)
 describes every column.
 
 ```python
 # Failed runs and why. Only FINISHED runs have a succeeded value.
-failed = connection.execute(
-    "SELECT run_id, trnrun_status, error, fatals FROM runs"
+failed = database.execute(
+    "SELECT run_id, label, trnrun_status, error, fatals FROM runs"
     " WHERE state = 'FINISHED' AND NOT succeeded ORDER BY revision",
 ).fetchall()
 
 # Wall-clock duration in seconds of each run that started and finished.
-durations = connection.execute(
+durations = database.execute(
     "SELECT run_id, (julianday(finished_at) - julianday(started_at)) * 86400 AS seconds"
     " FROM runs WHERE finished_at IS NOT NULL AND started_at IS NOT NULL",
 ).fetchall()
 
 # Fatal log entries of one run, with the TRNSYS unit and type that raised them.
-fatals = connection.execute(
+fatals = database.execute(
     "SELECT sim_time, unit_id, type_id, message FROM logs"
     " WHERE run_id = ? AND severity = 'Fatal' ORDER BY log_id",
-    ("1",),
+    (1,),
 ).fetchall()
-
-# JSON columns are text; decode them yourself.
-import json
-args = json.loads(connection.get_run("1")["trnrun_args"])
 ```
 
 ## Simulation configuration
 
-`SimulationConfig()` supplies the current native runner's defaults, with
-named, typed fields for editor autocomplete. Use `help(SimulationConfig)` for
-all options, their units, CLI mappings, and effects.
+`SimulationConfig` names and types every TRNRun option for editor
+autocomplete. Use `help(SimulationConfig)` for all options, their units, CLI
+mappings, and effects.
 
 ```python
 from trnrun import SimulationConfig
 
-config = SimulationConfig()
-config.trnexe_path = r"C:\TRNSYS18\Exe\TrnEXE64.exe"
-config.watch_tmp = True
-config.watch_timeout_ms = 3_600_000
-config.kill_on_timeout = True
-# Reuse config directly with daemon.add("1", "model.dck", config).
+config = SimulationConfig(
+    trnexe_path=r"C:\TRNSYS18\Exe\TrnEXE64.exe",
+    watch_tmp=True,
+    watch_timeout_ms=3_600_000,
+    kill_on_timeout=True,
+)
+# Reuse config directly with daemon.add("model.dck", config).
 ```
 
-The default TRNSYS path is `C:\TRNSYS18\Exe\TrnEXE64.exe`; change it for your
-installation. Creating a config does not access the executable. Passing it
-to `Daemon.add()` calls `to_cli_args()`, which checks the executable exists,
-resolves its path from Python's working directory, and returns unquoted
-argument strings without changing the config. You can still call
-`to_cli_args()` yourself if you need a raw argument list.
-Boolean fields require actual `True`/`False`, not strings or integers.
-Other option values are parsed by the daemon when submitted.
+Every field defaults to `None`, which passes nothing, so TRNRun's own default
+applies; run `trnrun.exe --help` for those defaults. `SimulationConfig()`
+therefore passes no options at all. Only TRNRun defines the defaults, so they
+cannot drift between TRNRun and this package.
 
-Common defaults:
-
-| Field | Default | Meaning |
-| ----- | ------- | ------- |
-| `gui_visibility` | `"hidden"` | No TRNSYS window |
-| `watch_log` | `True` | Read TRNSYS log entries |
-| `watch_tmp` | `False` | Progress tracking; enabling requires Type3830 |
-| `detect_timeout_ms` | `300000` | Five-minute launch-detection timeout |
-| `watch_timeout_ms` | `0` | Unlimited runtime monitoring |
-| `stall_timeout_ms` | `0` | Stall detection disabled |
-| `poll_ms` | `100` | Native runner polling interval in milliseconds |
-| `kill_on_timeout`, `kill_on_stall` | `False` | Do not kill on timeout/stall |
-| `clean_on_success`, `write_events` | `False` | No cleanup or event-file replacement |
-
-The config emits every field explicitly. Its defaults therefore need to stay
-aligned with the bundled runner. `Daemon.add()` still accepts raw CLI argument
-lists if you prefer native defaults or need an option not exposed here.
-`poll_ms` controls the runner, not the Python display's refresh interval.
+`Daemon.add()` calls `to_cli_args()`, which returns unquoted arguments for the
+fields that are set, checks that a set `trnexe_path` exists, and resolves it
+from Python's working directory. Boolean fields require actual
+`True`/`False`, not strings or integers. The daemon checks the other values
+with TRNRun's own parser when the run is added. `Daemon.add()` also accepts
+raw CLI argument lists. `poll_ms` controls the runner, not how often Python
+reads results.
 
 ## Simulation manager
 
 `trnrun.batch` is for scripts and notebooks that just want to launch
-simulations and follow them, without polling code or run IDs.
-`SimulationManager` starts the daemon, numbers the runs, keeps one
-`Simulation` handle per run up to date from a background thread, and shows
-their progress live.
+simulations and follow them, without polling code.
+`SimulationManager` starts the daemon, keeps one `Simulation` handle per run
+up to date from a background thread, and shows their progress live.
 
 ```python
 from trnrun import SimulationConfig
@@ -268,37 +240,39 @@ for simulation in simulations:
 ```
 
 - `SimulationManager(max_concurrent=None, *, database=None, trnrun_path=None,
-  executable=..., poll_interval=0.25, display=True)`. Runs are kept in a
+  executable=..., refresh_interval=0.1, display=True)`. Runs are kept in a
   temporary database, deleted on shutdown. Pass `database="runs.sqlite3"` to
-  keep them; reusing that file numbers new runs after the ones already there,
-  and never deletes them.
-- `add(deck_file, config=None)` queues a deck and returns its `Simulation`
-  right away; `config` defaults to `SimulationConfig()` and is copied, so you
-  can change it between calls.
+  keep them; a reused file gets the new runs in a new session and keeps the
+  old ones.
+- The background thread wakes when the daemon announces saved changes, and
+  updates the handles and display at most once every `refresh_interval`
+  seconds.
+- `add(deck_file, config=None, *, label=None)` queues a deck and returns its
+  `Simulation` right away; `config` defaults to `SimulationConfig()` and is
+  copied, so you can change it between calls.
 - `wait(simulation=None, *, timeout=None)` blocks until that run has
   finished, or every run when none is given. A failed run still finishes:
   check `succeeded`. If the daemon crashes or the manager is shut down
   first, it raises that error instead.
 - `cancel(simulation)` stops a queued or running run, which then finishes
   as `CANCELLED`. A finished run keeps its outcome.
-- `active` lists the unfinished runs; `database_path` is where they are kept.
-- `shutdown()`, called when leaving the `with` block, cancels unfinished runs
-  and closes the display. Handles stay readable afterwards.
+- `active` lists the unfinished runs; `database_path` is where they are kept,
+  and `session_id` the session they belong to.
+- `shutdown()`, called when leaving the `with` block, interrupts unfinished
+  runs and closes the display. Handles stay readable afterwards.
 
-A `Simulation` has `id`, `deck_path`, and `config`, then live state read from
-the database: `state` (`QUEUED`, `ACCEPTED`, `RUNNING`, `FINISHED`), TRNRun's
-`status`, `progress` (`percent` from 0 to 1, simulated `time`, `elapsed_ms`,
-`eta_ms`), `notices`/`warnings`/`fatals`, `succeeded`, `error`,
-`is_finished`, and every log entry in `logs`.
-
-Everything else is in `simulation.info`, a frozen snapshot of the run:
-`info.status.message`, `info.exit_code`, `info.submitted_at`/`started_at`/
-`finished_at` (UTC), `info.config` (TRNSYS start, stop, step), and
-`info.setting` (the settings TRNRun applied). Read `info` once when several
-fields must agree.
+A `Simulation` has `id` (the daemon's run ID), `deck_path`, and `config`,
+then live state read from the database: `state` (`QUEUED`, `RUNNING`,
+`FINISHED`), TRNRun's `status`, `progress`, `notices`/`warnings`/`fatals`,
+`succeeded`, `error`, `is_finished`, and every log entry in `logs`.
+Everything else is in `simulation.info`, a frozen
+[`SimulationInfo`](#records). Read `info` once when several fields must
+agree.
 
 The display keeps one live line per running simulation and prints each
-finished one once above them, in terminals and Jupyter notebooks alike:
+finished one once above them, in terminals and Jupyter notebooks alike. It
+needs Rich, from `pip install trnrun[display]`; without it, `display=True`
+raises an `ImportError` that says so.
 
 ```text
 [1] …\decks\model.dck | Status: DONE       | Logs: N:2 W:1 F:0  | Elapsed: 00:01:12 | ETA: 00:00:00 | [####################]  8,760 /  8,760 (100%)
@@ -324,17 +298,16 @@ def on_timer():
 
 Any object with `update(changed)` and `close()` methods can also be passed as
 `display=`; the manager calls `update` from its thread with the simulations
-that changed. Applications that need their own polling, run IDs, or database
-handling should use `Daemon` directly instead.
+that changed. Applications that need their own polling or database handling
+should use `Daemon` directly instead; see
+[`examples/example_gui.py`](examples/example_gui.py).
 
 ## Database safety
 
-By default, the daemon preserves existing runs and logs, and run IDs must be
-unique even across restarts. Keep the database on a local disk; its parent
-directory must already exist. Only one daemon may own a database at a time.
-
-**Passing `overwrite=True` permanently deletes existing database history.**
-Close all readers before doing so. The wrapper never enables overwrite itself.
+The daemon never deletes runs or logs; a reused database keeps its history.
+Keep the database on a local disk; its parent directory must already exist.
+Only one daemon may own a database at a time. A database written by an older
+trnrund (schema version 2) is refused; start a new file.
 
 ## Native executables and packaging
 

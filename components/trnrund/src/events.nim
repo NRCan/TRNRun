@@ -1,5 +1,9 @@
 ## Defines the events TRNRun reports and parses them from its JSON lines.
 ## Fields the types do not declare, such as TRNRun timestamps, are ignored.
+##
+## The types mirror TRNRun's own events. `test_events` checks `SettingEvent`
+## against the `SETTING` event TRNRun builds, so a TRNRun option change that
+## this module misses fails the tests instead of dropping settings.
 
 import std/[json, options]
 

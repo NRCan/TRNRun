@@ -1,6 +1,6 @@
 """Example: running multiple TRNSYS simulations with SimulationManager.
 
-Install with ``pip install trnrun``.
+Install with ``pip install trnrun[display]``.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ DCK_FOLDER = __root__ / "runs"
 
 SIM_COUNT = 10
 MAX_CONCURRENT = 5
-POLL_INTERVAL = 0.1
+REFRESH_INTERVAL = 0.1
 
 CONFIG = SimulationConfig(trnexe_path=TRNEXE_PATH, watch_tmp=True)
 
@@ -49,7 +49,7 @@ def copy_dck(src: Path | str, dst_dir: Path | str, n: int) -> list[Path]:
 # -----------------------------------------------------------------------------
 def run_simulations(dck_files: list[Path]) -> list[Simulation]:
     """Launch one simulation per deck, showing progress, and block until all have finished."""
-    with SimulationManager(max_concurrent=MAX_CONCURRENT, poll_interval=POLL_INTERVAL) as manager:
+    with SimulationManager(max_concurrent=MAX_CONCURRENT, refresh_interval=REFRESH_INTERVAL) as manager:
         simulations = [manager.add(dck, CONFIG) for dck in dck_files]
         manager.wait()
     return simulations

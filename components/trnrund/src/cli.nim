@@ -11,7 +11,6 @@ type
     trnrunPath*: string
     maxConcurrent*: int
     databasePath*: string
-    overwrite*: bool
 
 proc defaultCliInput*(): CliInput =
   ## Returns trnrun.exe beside trnrund, one worker per processor but one, and
@@ -33,12 +32,6 @@ proc applyOption*(input: var CliInput, key, value: string): bool =
     if value.len == 0:
       raise newException(ValueError, "'database' must not be empty")
     input.databasePath = value
-  of "overwrite":
-    case value
-    of "true": input.overwrite = true
-    of "false": input.overwrite = false
-    else:
-      raise newException(ValueError, "'overwrite' must be true or false")
   else:
     return false
 

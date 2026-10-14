@@ -1,47 +1,43 @@
 ## Defines the values exchanged between the scheduler, its workers, and the
 ## client reader.
 ##
-## The scheduler thread owns all simulation state. Workers never touch it; they
-## post `Message`s to the scheduler inbox instead, as does the thread reading
-## client requests. One shared inbox lets the scheduler block on a single
-## channel, since Nim channels cannot wait on several at once. Work flows the
-## other way through one shared worker channel. Both are flat objects: each
-## kind lists the fields it sets, and the rest keep their defaults. The one
-## value both sides share is a run's cancel flag, which the scheduler sets and
-## the worker polls.
+## The scheduler thread owns all simulation state, including every TRNRun
+## `Process`. Workers only read a run's output; they post `Message`s to the
+## scheduler inbox, as does the thread reading client requests. One shared
+## inbox lets the scheduler block on a single channel, since Nim channels
+## cannot wait on several at once. Work flows the other way through one shared
+## worker channel. Both are flat objects: each kind lists the fields it sets,
+## and the rest keep their defaults. Nothing else is shared between threads.
 
-import std/[atomics, options]
+import std/[options, winlean]
 
 type
   WorkKind* = enum
     ## Kind of `Work` sent to a worker.
-    wkRun ## runId, deckFile, trnrunArgs, cancel.
+    wkRead ## runId, output, process.
     wkStop ## No fields. Sent once per worker during shutdown.
 
   Work* = object
     ## One unit handed from the scheduler to a worker.
     kind*: WorkKind
-    runId*: string
-    deckFile*: string
-    trnrunArgs*: seq[string]
-    cancel*: ptr Atomic[bool]
-      ## Set by the scheduler to stop the run. Shared memory the scheduler
-      ## frees once it applies the run's `mkExited`, after the worker's last read.
+    runId*: int
+    output*: Handle
+      ## Read end of TRNRun's merged stdout and stderr. Owned by the
+      ## scheduler's `Process`, which it closes only after applying `mkExited`.
+    process*: Handle
+      ## A handle on TRNRun the worker owns and closes, to wait for its exit.
 
   MessageKind* = enum
     ## Kind of `Message` posted to the scheduler inbox.
-    mkLaunched ## runId. A worker started the TRNRun process.
     mkOutput ## runId, line. One line written by TRNRun.
-    mkExited ## runId, exitCode, error, cancelled. A simulation finished; its
-      ## submission slot can be released.
+    mkExited ## runId, exitCode, error. TRNRun exited and its output is drained.
     mkRequest ## line. One request line read from the client.
     mkClosed ## No fields. The client closed its input.
 
   Message* = object
     ## One notification posted to the scheduler inbox.
     kind*: MessageKind
-    runId*: string
+    runId*: int
     line*: string ## TRNRun output or client request.
-    exitCode*: Option[int] ## TRNRun exit code; none when it never launched.
-    error*: string ## Launch or capture failure; empty otherwise.
-    cancelled*: bool ## The worker stopped the run because its cancel flag was set.
+    exitCode*: Option[int] ## TRNRun exit code; none when it could not be read.
+    error*: string ## Capture failure; empty otherwise.

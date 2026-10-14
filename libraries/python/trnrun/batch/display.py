@@ -1,11 +1,11 @@
-"""Built-in progress display for ``SimulationManager`` runs.
+"""Built-in progress display for ``SimulationManager`` runs. Requires Rich.
 
 ``SimulationManager`` calls its display's ``update`` from its background
-thread after every poll that changed a run, with those runs, and ``close`` on
+thread after every sync that changed a run, with those runs, and ``close`` on
 shutdown. Any object with those two methods, a ``Display``, can replace the
-built-in ``ProgressDisplay``.
+built-in ``ProgressDisplay``. Install ``trnrun[display]`` for Rich.
 
-``ProgressDisplay`` keeps one live line per run a worker has taken, and prints
+``ProgressDisplay`` keeps one live line per running simulation, and prints
 each finished run once as a final line above them. In a terminal the live
 lines are a Rich live region; in Jupyter they are one HTML output area that
 IPython replaces in place, without widgets or clearing other cell output.
@@ -17,15 +17,14 @@ redirected output works too.
 
 from collections.abc import Sequence
 from io import StringIO
-from typing import Protocol
 
 from rich.console import Console, Group
 from rich.live import Live
 from rich.segment import Segment
 from rich.text import Text
 
-from trnrun.batch.events import SimulationState, SimulationStatus
 from trnrun.batch.simulation import Simulation
+from trnrun.records import SimulationState, SimulationStatus
 
 # -----------------------------------------------------------------
 # Constants
@@ -44,16 +43,6 @@ NOTEBOOK_FRAME = (
     '<pre style="margin:0;white-space:pre;overflow-x:auto;line-height:1.3;'
     'font-family:monospace;color:inherit;background:transparent">{code}</pre>'
 )
-
-
-class Display(Protocol):
-    """What ``SimulationManager`` drives, from its background thread."""
-
-    def update(self, changed: Sequence[Simulation]) -> None:
-        """Show the runs that changed in the latest poll, in submission order."""
-
-    def close(self) -> None:
-        """Release output resources; the manager calls it once, on shutdown."""
 
 
 # -----------------------------------------------------------------
@@ -201,8 +190,7 @@ class ProgressDisplay:
     """Show live progress of a manager's runs, as the manager reports their changes.
 
     Each ``update`` prints every run that finished, once, as a final line, and
-    redraws one live line per unfinished run a worker has taken, in the order
-    they were taken. Queued runs are never drawn, so a redraw costs at most
+    redraws one live line per running simulation, in the order they started. Queued runs are never drawn, so a redraw costs at most
     ``max_concurrent`` lines however many runs wait. It has no thread of its
     own: ``SimulationManager`` creates one by default and calls it.
 
@@ -219,7 +207,7 @@ class ProgressDisplay:
         self._output: _TerminalOutput | _NotebookOutput = (
             _NotebookOutput() if console.is_jupyter else _TerminalOutput(console)
         )
-        # Unfinished runs a worker took, by ID, in the order seen.
+        # Running simulations, by ID, in the order seen.
         self._rows: dict[int, Simulation] = {}
 
     def update(self, changed: Sequence[Simulation]) -> None:

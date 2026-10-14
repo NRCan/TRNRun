@@ -20,6 +20,7 @@ $DaemonPath, $RunnerPath, $SourceDeck | ForEach-Object {
 }
 
 # trnrund answers each request line with one reply line, in request order.
+# This client never sends subscribe, so stdout carries replies only.
 function Send-Request([hashtable] $Request) {
     $Daemon.StandardInput.WriteLine(($Request | ConvertTo-Json -Compress))
     $Line = $Daemon.StandardOutput.ReadLine()
@@ -42,7 +43,7 @@ uri = pathlib.Path(sys.argv[1]).as_uri() + '?mode=ro'
 revision = int(sys.argv[2])
 db = sqlite3.connect(uri, uri=True)
 db.row_factory = sqlite3.Row
-rows = db.execute('''SELECT run_id, revision, state, trnrun_status, succeeded, warnings,
+rows = db.execute('''SELECT label, revision, state, trnrun_status, succeeded, warnings,
     notices + warnings + fatals AS log_count
     FROM runs WHERE revision > ? ORDER BY revision''', (revision,)).fetchall()
 db.close()
@@ -65,15 +66,15 @@ function Update-Runs {
     $Changes = $Json | ConvertFrom-Json
     $script:Revision = $Changes.revision
     foreach ($Simulation in $Changes.simulations) {
-        $RunId = $Simulation.run_id
-        $LogCounts[$RunId] = $Simulation.log_count
-        if ($States[$RunId] -ne $Simulation.state) {
-            $States[$RunId] = $Simulation.state
-            Write-Host "${RunId}: $($Simulation.state)"
+        $Name = $Simulation.label
+        $LogCounts[$Name] = $Simulation.log_count
+        if ($States[$Name] -ne $Simulation.state) {
+            $States[$Name] = $Simulation.state
+            Write-Host "${Name}: $($Simulation.state)"
         }
         # FINISHED is saved together with the final logs.
         if ($Simulation.state -eq 'FINISHED') {
-            $Finished[$RunId] = $Simulation
+            $Finished[$Name] = $Simulation
         }
     }
 }
@@ -91,20 +92,21 @@ try {
 
     Write-Host "Running $RunCount copies with max concurrency $ConcurrencyLimit"
 
-    # add only acknowledges saving; lifecycle states come from the database.
+    # add replies with the runId the daemon assigned; this example names each run
+    # by its label instead. Lifecycle states come from the database.
     # Adding every run at once lets the daemon queue the surplus and start each
     # as a worker frees; see example_waiting.ps1 to keep that queue client-side.
 
     1..$RunCount | ForEach-Object {
-        $RunId = 'example-{0:D2}' -f $_
-        $DeckFile = Join-Path $RunDirectory "$RunId.dck"
+        $Name = 'example-{0:D2}' -f $_
+        $DeckFile = Join-Path $RunDirectory "$Name.dck"
 
         # Each run needs its own deck because TRNRun writes sidecars beside it.
         Copy-Item -LiteralPath $SourceDeck -Destination $DeckFile
 
         Send-Request @{
             cmd = 'add'
-            runId = $RunId
+            label = $Name
             deckFile = $DeckFile
             trnrunArgs = @(
                 '--guiVisibility:auto'
@@ -120,12 +122,12 @@ try {
     }
 
     $FailureCount = 0
-    foreach ($RunId in $Finished.Keys | Sort-Object) {
-        $Simulation = $Finished[$RunId]
+    foreach ($Name in $Finished.Keys | Sort-Object) {
+        $Simulation = $Finished[$Name]
         $Verdict = if ($Simulation.succeeded) { 'PASS' } else { 'FAIL' }
         Write-Host (
-            "$Verdict - ${RunId}: $($Simulation.trnrun_status), " +
-            "$($LogCounts[$RunId]) logs, $($Simulation.warnings) warnings"
+            "$Verdict - ${Name}: $($Simulation.trnrun_status), " +
+            "$($LogCounts[$Name]) logs, $($Simulation.warnings) warnings"
         )
         if (-not $Simulation.succeeded) {
             $FailureCount++

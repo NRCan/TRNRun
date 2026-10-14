@@ -1,9 +1,11 @@
 ## SQLite database for simulations, and the only record of their state.
 ##
-## Each change to a run updates just the columns it affects and gives the row
-## the next revision. Timestamps are UTC ISO 8601 text with milliseconds, such
-## as `2026-10-09T14:03:12.345Z`, which SQLite date functions accept and which
-## sort chronologically as text.
+## The daemon numbers runs itself: `run_id` is an `AUTOINCREMENT` key, never
+## reused in a database. Each daemon start is one session, and every run
+## records the session that added it. Each change to a run updates just the
+## columns it affects and gives the row the next revision. Timestamps are UTC
+## ISO 8601 text with milliseconds, such as `2026-10-09T14:03:12.345Z`, which
+## SQLite date functions accept and which sort chronologically as text.
 
 import std/[json, options, os, oserrors, sequtils, strutils, winlean]
 import db_connector/db_sqlite
@@ -14,26 +16,34 @@ type
   SimulationState* = enum
     ## Lifecycle of a run, independent of TRNRun `STATUS`.
     ##
-    ## `QUEUED → ACCEPTED → RUNNING → FINISHED`. A run whose TRNRun fails to
-    ## launch goes from `ACCEPTED` to `FINISHED`; one the daemon stops tracking
-    ## first, at shutdown or when it exits, is finished as interrupted from
-    ## whatever state it reached.
-    ssQueued = "QUEUED" ## Submitted, waiting for an idle worker.
-    ssAccepted = "ACCEPTED" ## A pool slot is reserved; worker pickup may be pending.
+    ## `QUEUED → RUNNING → FINISHED`. A run whose TRNRun fails to launch, or
+    ## that is cancelled while queued, goes from `QUEUED` to `FINISHED`.
+    ssQueued = "QUEUED" ## Submitted, waiting for a free slot.
     ssRunning = "RUNNING" ## The TRNRun process started.
     ssFinished = "FINISHED" ## Completed or failed; see `succeeded`.
 
-  Database* = object
+  Database* = ref object
+    ## The open database, held exclusively by this daemon until `close`.
+    ##
+    ## A `ref` so the revision counter it keeps in memory is shared by every
+    ## holder; only this daemon writes, so the counter is the database's.
     path*: string ## Absolute and normalized.
     connection: DbConn
-    lock: Handle ## Exclusive handle on the lock file.
+    lock: Handle ## Exclusive handle on the lock file; 0 once released.
+    revision: int ## Revision of the latest save.
+    sessionId: int ## This daemon's row in `sessions`.
 
 const
-  SchemaVersion* = 2 ## Bump whenever the tables or the `setting` JSON change what clients read.
+  SchemaVersion* = 3 ## Bump whenever the tables or the `setting` JSON change what clients read.
   Schema = [
+    """CREATE TABLE sessions (
+      session_id INTEGER PRIMARY KEY AUTOINCREMENT,
+      started_at TEXT NOT NULL)""",
     """CREATE TABLE runs (
       -- Identity and daemon lifecycle
-      run_id TEXT PRIMARY KEY NOT NULL,
+      run_id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id INTEGER NOT NULL,
+      label TEXT,
       revision INTEGER NOT NULL,
       state TEXT NOT NULL,
       -- Latest TRNRun status and progress
@@ -61,14 +71,16 @@ const
       stop_time REAL,
       time_step REAL,
       setting TEXT)""",
-    # Serves readers polling with `revision > ?` and each save's `max(revision)`.
+    # Serves readers polling with `revision > ?`.
     "CREATE UNIQUE INDEX runs_revision ON runs (revision)",
     # Serves `state = ?` and `state IN (...)`, such as the few RUNNING runs among many
     # QUEUED, and the queue in order, since a queued row keeps its submission revision.
     "CREATE INDEX runs_state ON runs (state, revision)",
+    # Serves the runs of one session, in the order they changed.
+    "CREATE INDEX runs_session ON runs (session_id, revision)",
     """CREATE TABLE logs (
       log_id INTEGER PRIMARY KEY,
-      run_id TEXT NOT NULL,
+      run_id INTEGER NOT NULL,
       severity TEXT NOT NULL,
       sim_time REAL NOT NULL,
       unit_id INTEGER,
@@ -82,7 +94,7 @@ const
   Now = "strftime('%Y-%m-%dT%H:%M:%fZ')" ## The current time, as every timestamp is stored.
   HasTerminalStatus = "trnrun_status IN ('DONE', 'CANCELLED', 'ERROR', 'TIMEOUT', 'STALLED')"
     ## Whether TRNRun already reported a status that ends a run.
-  Unfinished* = {ssQueued, ssAccepted, ssRunning}
+  Unfinished* = {ssQueued, ssRunning}
 
 # SQLite helpers
 
@@ -99,7 +111,7 @@ proc execute(
       case arg.kind
       of JNull: statement.bindNull(position)
       of JBool: statement.bindParam(position, ord(arg.getBool()))
-      of JInt: statement.bindParam(position, arg.getBiggestInt())
+      of JInt: statement.bindParam(position, arg.getInt())
       of JFloat: statement.bindParam(position, arg.getFloat())
       of JString: statement.bindParam(position, arg.getStr())
       of JObject, JArray: statement.bindParam(position, $arg)
@@ -112,64 +124,89 @@ proc execute(
   finally:
     finalize(statement)
 
-template transaction(self: Database, body: untyped) =
+template transaction*(self: Database, body: untyped) =
   ## Runs `body` atomically, rolling back everything it wrote if it raises.
-  self.execute("BEGIN")
+  ##
+  ## Nests: an inner transaction commits with the outermost one. Readers see
+  ## the writes of `body` only once the outermost one commits.
+  execute(self, "SAVEPOINT trnrund")
   try:
     body
-    self.execute("COMMIT")
+    execute(self, "RELEASE trnrund")
   except CatchableError:
-    discard self.connection.tryExec(sql"ROLLBACK")
+    try:
+      execute(self, "ROLLBACK TO trnrund")
+      execute(self, "RELEASE trnrund")
+    except CatchableError:
+      discard # Report the original failure, not the cleanup's.
     raise
 
 # Runs
 
-proc update(self: Database, runId, assignments: string, args: varargs[JsonNode, `%`]) =
+proc revision*(self: Database): int =
+  ## Revision of the latest save, counted in memory; a failed save can skip one.
+  self.revision
+
+proc savedRevision*(self: Database): int =
+  ## Largest revision a run holds, the one readers can reach. What clients are told.
+  self.execute("SELECT coalesce(max(revision), 0) FROM runs")[0][0].parseInt()
+
+proc sessionId*(self: Database): int =
+  ## This daemon's session, recorded on every run it adds.
+  self.sessionId
+
+proc lastLogId*(self: Database): int =
+  ## Largest `log_id`, or 0 without logs.
+  self.execute("SELECT coalesce(max(log_id), 0) FROM logs")[0][0].parseInt()
+
+proc nextRevision(self: Database): int =
+  inc self.revision
+  self.revision
+
+proc update(self: Database, runId: int, assignments: string, args: varargs[JsonNode, `%`]) =
   ## Applies `assignments` to the row of `runId` and gives it the next revision.
   ##
   ## Every right-hand side reads the row as it was before this update.
-  self.execute("UPDATE runs SET revision = (SELECT max(revision) + 1 FROM runs), " &
-    assignments & " WHERE run_id = ?", @args & %runId)
+  self.execute("UPDATE runs SET revision = ?, " & assignments & " WHERE run_id = ?",
+    @[%self.nextRevision()] & @args & %runId)
 
-proc contains*(self: Database, runId: string): bool =
+proc contains*(self: Database, runId: int): bool =
   ## Whether `runId` was ever saved, by this daemon or an earlier one.
   self.execute("SELECT 1 FROM runs WHERE run_id = ?", runId).len > 0
 
-proc submit*(self: Database, runId, deckFile: string, trnrunArgs: seq[string] = @[]) =
-  ## Saves a new run as `QUEUED`; `runId` must not be in the database yet.
-  self.execute("""INSERT INTO runs (run_id, revision, state, notices, warnings, fatals,
+proc submit*(
+    self: Database, deckFile: string, trnrunArgs: seq[string] = @[], label = none(string)
+): int =
+  ## Saves a new run as `QUEUED` in this session and returns its new `run_id`.
+  self.execute("""INSERT INTO runs (session_id, label, revision, state, notices, warnings, fatals,
       submitted_at, deck_file, trnrun_args)
-    VALUES (?, (SELECT coalesce(max(revision), 0) + 1 FROM runs), ?, 0, 0, 0, """ &
-      Now & ", ?, ?)",
-    runId, ssQueued, deckFile, trnrunArgs)
+    VALUES (?, ?, ?, ?, 0, 0, 0, """ & Now & ", ?, ?)",
+    self.sessionId, label, self.nextRevision(), ssQueued, deckFile, trnrunArgs)
+  self.execute("SELECT last_insert_rowid()")[0][0].parseInt()
 
-proc accept*(self: Database, runId: string) =
-  ## Marks `runId` handed to a worker.
-  self.update(runId, "state = ?", ssAccepted)
-
-proc start*(self: Database, runId: string) =
+proc start*(self: Database, runId: int) =
   ## Marks `runId` running once its TRNRun process started.
   self.update(runId, "state = ?, started_at = " & Now, ssRunning)
 
-proc recordSetting(self: Database, runId: string, setting: SettingEvent) =
+proc recordSetting(self: Database, runId: int, setting: SettingEvent) =
   ## Replaces the settings of `runId`.
   self.update(runId, "setting = ?", setting)
 
-proc recordStatus(self: Database, runId: string, status: StatusEvent) =
+proc recordStatus(self: Database, runId: int, status: StatusEvent) =
   ## Replaces the latest TRNRun status of `runId`.
   self.update(runId, "trnrun_status = ?, trnrun_message = ?", status.status, status.message)
 
-proc recordConfig(self: Database, runId: string, config: ConfigEvent) =
+proc recordConfig(self: Database, runId: int, config: ConfigEvent) =
   ## Replaces the simulation parameters of `runId`.
   self.update(runId, "start_time = ?, stop_time = ?, time_step = ?",
     config.start, config.stop, config.step)
 
-proc recordProgress(self: Database, runId: string, progress: ProgressEvent) =
+proc recordProgress(self: Database, runId: int, progress: ProgressEvent) =
   ## Replaces the progress of `runId`.
   self.update(runId, "percent = ?, sim_time = ?, elapsed_ms = ?, eta_ms = ?",
     progress.percent, progress.time, progress.elapsedMs, progress.etaMs)
 
-proc recordLog(self: Database, runId: string, log: LogEvent) =
+proc recordLog(self: Database, runId: int, log: LogEvent) =
   ## Appends a log entry to `runId` and counts it by severity, atomically.
   let counter =
     case log.severity
@@ -184,7 +221,7 @@ proc recordLog(self: Database, runId: string, log: LogEvent) =
       runId, log.severity, log.time,
       log.unitId, log.typeId, log.messageCode, log.message, log.information)
 
-proc record*(self: Database, runId: string, event: SimulationEvent) =
+proc record*(self: Database, runId: int, event: SimulationEvent) =
   ## Saves one TRNRun event of `runId`.
   ##
   ## `SETTING`, `STATUS`, `CONFIG` and `PROGRESS` replace the previous value;
@@ -197,7 +234,7 @@ proc record*(self: Database, runId: string, event: SimulationEvent) =
   of eventLog: self.recordLog(runId, event.logData)
 
 proc finish(
-    self: Database, runId: string, exitCode: Option[int], error: string, fallback: StatusEvent
+    self: Database, runId: int, exitCode: Option[int], error: string, fallback: StatusEvent
 ) =
   ## Marks `runId` finished, with `fallback` as its status unless TRNRun
   ## already reported a terminal one.
@@ -211,7 +248,7 @@ proc finish(
     ssFinished, exitCode, error, fallback.status, fallback.message,
     exitCode == some(0) and error.len == 0)
 
-proc finish*(self: Database, runId: string, exitCode: Option[int], error: string) =
+proc finish*(self: Database, runId: int, exitCode: Option[int], error: string) =
   ## Marks `runId` finished once TRNRun exited or failed to launch.
   ##
   ## Guarantees a terminal status: when TRNRun did not report one, a
@@ -220,7 +257,7 @@ proc finish*(self: Database, runId: string, exitCode: Option[int], error: string
   let message = if error.len > 0: error else: "TRNRun exited without a terminal status"
   self.finish(runId, exitCode, error, StatusEvent(status: statusError, message: message))
 
-proc cancel*(self: Database, runId: string, started: bool, reason: string) =
+proc cancel*(self: Database, runId: int, started: bool, reason: string) =
   ## Finishes `runId` as stopped before TRNRun exited by itself, without an exit code.
   ##
   ## It is CANCELLED, unless TRNRun already reported a terminal status, and
@@ -233,14 +270,14 @@ proc cancel*(self: Database, runId: string, started: bool, reason: string) =
 proc interrupt*(self: Database, reason: string, states: set[SimulationState]) =
   ## Cancels every run in `states`, which the daemon stops tracking before TRNRun exits.
   ##
-  ## A queued run never started; any other may have, and its TRNRun is killed
+  ## A queued run never started; a running one did, and its TRNRun is killed
   ## with the daemon.
   let states = toSeq(states)
   self.transaction:
     # Reads every row before finishing any, since finishing changes what the query selects.
     for row in self.execute("SELECT run_id, state FROM runs WHERE state IN (" &
         states.mapIt("?").join(", ") & ") ORDER BY revision", states.mapIt(%it)):
-      self.cancel(row[0], started = row[1] != $ssQueued, reason)
+      self.cancel(row[0].parseInt(), started = row[1] != $ssQueued, reason)
 
 # Opening and closing
 
@@ -272,38 +309,28 @@ proc migrate(self: Database) =
       self.execute("PRAGMA user_version = " & $SchemaVersion)
   elif version != SchemaVersion:
     raise newException(DbError, "Database " & self.path & " has schema version " &
-      $version & "; this trnrund needs " & $SchemaVersion)
+      $version & "; this trnrund needs " & $SchemaVersion & ". Use a new database file.")
 
 proc close*(self: Database) =
-  ## Closes the database, then releases it to other daemons.
+  ## Closes the database, then releases it to other daemons. Idempotent.
   try:
     if self.connection != nil:
-      self.connection.close()
+      let connection = self.connection
+      self.connection = nil
+      connection.close()
   finally:
-    discard closeHandle(self.lock)
+    if self.lock != 0:
+      discard closeHandle(self.lock)
+      self.lock = 0
 
-proc deleteDatabase(path: string) =
-  ## Called under the ownership lock, before SQLite opens. Never deletes `.lock`.
-  # Main file first: a Windows sharing refusal must leave its journals intact.
-  for suffix in ["", "-wal", "-shm", "-journal"]:
-    let file = path & suffix
-    if deleteFileW(newWideCString(file)) == 0:
-      let error = osLastError()
-      if error.int32 notin [2'i32, 3'i32]: # Missing file or path is harmless.
-        raise newException(DbError, "Cannot overwrite database; cannot delete " & file &
-          ": " & osErrorMsg(error) &
-          ". Close all SQLite connections and check file/directory permissions. " &
-          "Already deleted files are not restored.")
-
-proc openDatabase*(path: string, overwrite = false): Database =
-  ## Opens or creates the database at `path`, holding it until `close`; raises `DbError`.
-  ## Explicit overwrite deletes the database and its journals before recreation,
-  ## with no rollback on failure. Close all readers until startup completes.
+proc openDatabase*(path: string): Database =
+  ## Opens or creates the database at `path` and starts a new session in it,
+  ## holding the database until `close`; raises `DbError`.
+  ##
+  ## Runs an earlier daemon left unfinished are finished as interrupted first.
   let path = path.absolutePath().normalizedPath()
   result = Database(path: path, lock: lockDatabase(path))
   try:
-    if overwrite:
-      deleteDatabase(path)
     result.connection = db_sqlite.open(result.path, "", "", "")
     result.execute("PRAGMA busy_timeout = 5000")
     # SQLite silently keeps its old mode where WAL is unsupported, such as on a network share.
@@ -311,8 +338,11 @@ proc openDatabase*(path: string, overwrite = false): Database =
       raise newException(DbError, "Cannot use WAL mode; keep the database on a local disk: " & path)
     result.execute("PRAGMA synchronous = NORMAL")
     result.migrate()
+    result.revision = result.execute("SELECT coalesce(max(revision), 0) FROM runs")[0][0].parseInt()
     # Runs an earlier daemon left unfinished; this one only runs its own.
     result.interrupt("its daemon stopped unexpectedly", Unfinished)
+    result.execute("INSERT INTO sessions (started_at) VALUES (" & Now & ")")
+    result.sessionId = result.execute("SELECT last_insert_rowid()")[0][0].parseInt()
   except CatchableError:
     result.close()
     raise

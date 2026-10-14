@@ -1,19 +1,19 @@
-"""Typed views of what trnrund saves: one row per run, one row per log entry.
+"""Typed views of what trnrund saves: one record per run, one per log entry.
 
 The daemon flattens the latest TRNRun event of each kind into its run's row.
 ``parse_run`` groups those columns back into the events they came from, and
-``parse_log`` reads one ``logs`` row; both take the ``sqlite3.Row`` objects
-that ``TrnRunDatabase`` returns.
+``parse_log`` reads one ``logs`` row. ``Database`` returns these records, and
+``trnrun.batch`` keeps them on its handles.
 """
 
 # pyright: reportAny=false
 
 import json
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
-from typing import Any
+from pathlib import Path
 
 
 # -----------------------------------------------------------------
@@ -90,33 +90,6 @@ class ConfigEvent:
 
 
 @dataclass(frozen=True)
-class SettingEvent:
-    """The runner settings TRNRun applied to the run.
-
-    Field names are the ``SimulationConfig`` ones, converted from TRNRun's
-    camelCase.
-    """
-
-    trnexe_path: str
-    gui_visibility: str
-    wait_for_gui: bool
-    wait_for_lst: bool
-    wait_for_tmp: bool
-    detect_timeout_ms: int
-    extra_delay_ms: int
-    watch_log: bool
-    watch_tmp: bool
-    watch_timeout_ms: int
-    stall_timeout_ms: int
-    poll_ms: int
-    clean_on_success: bool
-    kill_on_timeout: bool
-    kill_on_stall: bool
-    severity: str
-    write_events: bool
-
-
-@dataclass(frozen=True)
 class LogEvent:
     """One severity-tagged TRNSYS log entry.
 
@@ -125,6 +98,10 @@ class LogEvent:
 
     Attributes
     ----------
+    log_id : int
+        Position of the entry among every run's logs; grows with each entry.
+    run_id : int
+        Run the entry belongs to.
     severity : str
         Severity tag: ``"Notice"``, ``"Warning"`` or ``"Fatal"``.
     time : float
@@ -141,6 +118,8 @@ class LogEvent:
         Additional detail attached to the message.
     """
 
+    log_id: int
+    run_id: int
     severity: str
     time: float
     unit_id: int | None = None
@@ -156,28 +135,43 @@ class LogEvent:
 class SimulationState(StrEnum):
     """Daemon-owned lifecycle, independent of the runner-reported status.
 
-    ``QUEUED → ACCEPTED → RUNNING → FINISHED``. A run that never starts, such
-    as one cancelled while queued, goes straight to ``FINISHED``.
+    ``QUEUED → RUNNING → FINISHED``. A run that never starts, such as one
+    cancelled while queued or whose TRNRun cannot launch, goes straight to
+    ``FINISHED``.
     """
 
     QUEUED = "QUEUED"
-    ACCEPTED = "ACCEPTED"
     RUNNING = "RUNNING"
     FINISHED = "FINISHED"
 
 
 @dataclass(frozen=True)
 class SimulationInfo:
-    """A simulation's state at one moment: its row in the daemon's database.
+    """A run's state at one moment: its row in the daemon's database.
 
-    Log entries are kept separately, by ``Simulation.logs``.
+    Log entries are kept separately; see ``Database.get_logs``.
 
     Attributes
     ----------
+    run_id : int
+        Number the daemon assigned the run; never reused in its database.
     state : SimulationState
         Daemon lifecycle state.
-    status, progress, config, setting
+    session_id : int
+        The daemon start that added the run.
+    label : str or None
+        Tag the run was added with.
+    revision : int
+        Revision of the run's latest save.
+    deck_file : Path or None
+        Absolute deck path.
+    trnrun_args : list of str
+        TRNRun options the run was added with.
+    status, progress, config
         Latest event of each kind, or None before TRNRun reports one.
+    setting : dict or None
+        Settings TRNRun reported applying, keyed by TRNRun's camelCase names,
+        or None before it reports them.
     notices, warnings, fatals : int
         Number of log entries saved so far, by severity.
     succeeded : bool
@@ -193,11 +187,17 @@ class SimulationInfo:
         never started.
     """
 
+    run_id: int
     state: SimulationState
+    session_id: int = 0
+    label: str | None = None
+    revision: int = 0
+    deck_file: Path | None = None
+    trnrun_args: list[str] = field(default_factory=list[str])
     status: StatusEvent | None = None
     progress: ProgressEvent | None = None
     config: ConfigEvent | None = None
-    setting: SettingEvent | None = None
+    setting: dict[str, object] | None = None
     notices: int = 0
     warnings: int = 0
     fatals: int = 0
@@ -208,6 +208,33 @@ class SimulationInfo:
     started_at: datetime | None = None
     finished_at: datetime | None = None
 
+    @property
+    def is_finished(self) -> bool:
+        """Return whether the daemon finished the run; its logs are then complete."""
+        return self.state is SimulationState.FINISHED
+
+
+@dataclass(frozen=True)
+class Changes:
+    """What one ``Database.poll()`` read: the runs that changed and the new logs.
+
+    Attributes
+    ----------
+    runs : list of SimulationInfo
+        Latest snapshot of each run saved since the previous poll, in the
+        order they last changed. Intermediate states between polls are not
+        kept.
+    logs : list of LogEvent
+        Log entries saved since the previous poll, oldest first.
+    """
+
+    runs: list[SimulationInfo] = field(default_factory=list[SimulationInfo])
+    logs: list[LogEvent] = field(default_factory=list[LogEvent])
+
+    def __bool__(self) -> bool:
+        """Return whether anything changed."""
+        return bool(self.runs or self.logs)
+
 
 # -----------------------------------------------------------------
 # Row Parsers
@@ -217,29 +244,6 @@ def _timestamp(value: str | None) -> datetime | None:
     return None if value is None else datetime.fromisoformat(value)
 
 
-def parse_setting(data: Any) -> SettingEvent:
-    """Parse a decoded ``setting`` column; extra keys such as ``timestamp`` are ignored."""
-    return SettingEvent(
-        trnexe_path=data["trnexePath"],
-        gui_visibility=data["guiVisibility"],
-        wait_for_gui=data["waitForGui"],
-        wait_for_lst=data["waitForLst"],
-        wait_for_tmp=data["waitForTmp"],
-        detect_timeout_ms=data["detectTimeoutMs"],
-        extra_delay_ms=data["extraDelayMs"],
-        watch_log=data["watchLog"],
-        watch_tmp=data["watchTmp"],
-        watch_timeout_ms=data["watchTimeoutMs"],
-        stall_timeout_ms=data["stallTimeoutMs"],
-        poll_ms=data["pollMs"],
-        clean_on_success=data["cleanOnSuccess"],
-        kill_on_timeout=data["killOnTimeout"],
-        kill_on_stall=data["killOnStall"],
-        severity=data["severity"],
-        write_events=data["writeEvents"],
-    )
-
-
 def parse_run(row: sqlite3.Row) -> SimulationInfo:
     """Parse a ``runs`` row; an event TRNRun has not reported yet becomes None."""
     status = row["trnrun_status"]
@@ -247,11 +251,17 @@ def parse_run(row: sqlite3.Row) -> SimulationInfo:
     stop = row["stop_time"]
     setting = row["setting"]
     return SimulationInfo(
+        run_id=row["run_id"],
         state=SimulationState(row["state"]),
+        session_id=row["session_id"],
+        label=row["label"],
+        revision=row["revision"],
+        deck_file=Path(row["deck_file"]),
+        trnrun_args=json.loads(row["trnrun_args"]),
         status=None if status is None else StatusEvent(SimulationStatus(status), row["trnrun_message"] or ""),
         progress=None if percent is None else ProgressEvent(row["sim_time"], percent, row["elapsed_ms"], row["eta_ms"]),
         config=None if stop is None else ConfigEvent(row["start_time"], stop, row["time_step"]),
-        setting=None if setting is None else parse_setting(json.loads(setting)),
+        setting=None if setting is None else json.loads(setting),
         notices=row["notices"],
         warnings=row["warnings"],
         fatals=row["fatals"],
@@ -267,6 +277,8 @@ def parse_run(row: sqlite3.Row) -> SimulationInfo:
 def parse_log(row: sqlite3.Row) -> LogEvent:
     """Parse a ``logs`` row."""
     return LogEvent(
+        log_id=row["log_id"],
+        run_id=row["run_id"],
         severity=row["severity"],
         time=row["sim_time"],
         unit_id=row["unit_id"],

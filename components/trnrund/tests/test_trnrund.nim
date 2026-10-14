@@ -4,10 +4,16 @@ import db_connector/db_sqlite
 import ./fake_trnrun
 
 
-type CommandResult = object
-  output: string
-  error: string
-  exitCode: int
+type
+  CommandResult = object
+    output: string
+    error: string
+    exitCode: int
+
+  Daemon = ref object
+    ## A running trnrund and the notifications read while waiting for replies.
+    process: Process
+    events: seq[JsonNode]
 
 proc runCommand(
     executable: string, arguments: openArray[string], workingDirectory: string
@@ -22,44 +28,68 @@ proc runCommand(
   result.error = process.errorStream.readAll()
   result.exitCode = process.waitForExit(10_000)
 
-proc request(daemon: Process, line: string): JsonNode =
-  daemon.inputStream.writeLine(line)
-  daemon.inputStream.flush()
-  var reply = ""
-  if not daemon.outputStream.readLine(reply):
-    raise newException(IOError, "trnrund closed its output")
-  parseJson(reply)
+proc send(daemon: Daemon, line: string) =
+  daemon.process.inputStream.writeLine(line)
+  daemon.process.inputStream.flush()
 
-proc request(daemon: Process, request: JsonNode): JsonNode =
+proc readMessage(daemon: Daemon): JsonNode =
+  ## The next stdout line, a reply or a notification.
+  var line = ""
+  if not daemon.process.outputStream.readLine(line):
+    raise newException(IOError, "trnrund closed its output")
+  parseJson(line)
+
+proc request(daemon: Daemon, line: string): JsonNode =
+  ## Sends one request and returns its reply, keeping notifications read meanwhile.
+  daemon.send(line)
+  result = daemon.readMessage()
+  while "event" in result:
+    daemon.events.add(result)
+    result = daemon.readMessage()
+
+proc request(daemon: Daemon, request: JsonNode): JsonNode =
   daemon.request($request)
 
-proc openReader(daemon: Process): DbConn =
+proc add(daemon: Daemon, deckFile: string): int =
+  ## Adds a run and returns its runId.
+  let reply = daemon.request(%*{"cmd": "add", "deckFile": deckFile})
+  doAssert reply["ok"].getBool(), $reply
+  reply["runId"].getInt()
+
+proc readRemaining(daemon: Daemon): seq[JsonNode] =
+  ## Every line until stdout ends.
+  result = @[]
+  var line = ""
+  while daemon.process.outputStream.readLine(line):
+    result.add(parseJson(line))
+
+proc openReader(daemon: Daemon): DbConn =
   ## Opens the database `ready` reports, never writing through it.
   let path = daemon.request(%*{"cmd": "ready"})["databasePath"].getStr()
   result = db_sqlite.open(path, "", "", "")
   result.exec(sql"PRAGMA query_only = ON")
 
-proc columns(db: DbConn, runId, expressions: string): Row =
+proc columns(db: DbConn, runId: int, expressions: string): Row =
   ## `expressions` on the saved row of `runId`.
   db.getRow(sql("SELECT " & expressions & " FROM runs WHERE run_id = ?"), runId)
 
-proc waitFor(db: DbConn, runId, condition: string) =
+proc waitFor(db: DbConn, runId: int, condition: string) =
   ## Polls the database alone until `condition` holds: the daemon must save while stdin is idle.
   let deadline = getMonoTime() + initDuration(seconds = 5)
   while getMonoTime() < deadline:
     if db.columns(runId, condition) == @["1"]:
       return
     sleep(10)
-  raise newException(IOError, "Timed out waiting for " & runId & " in the database")
+  raise newException(IOError, "Timed out waiting for run " & $runId & " in the database")
 
-proc waitForState(db: DbConn, runId, state: string) =
+proc waitForState(db: DbConn, runId: int, state: string) =
   db.waitFor(runId, "state = '" & state & "'")
 
-proc closeDaemon(daemon: Process) =
-  if daemon.running:
-    daemon.terminate()
-    discard daemon.waitForExit(5_000)
-  daemon.close()
+proc closeDaemon(daemon: Daemon) =
+  if daemon.process.running:
+    daemon.process.terminate()
+    discard daemon.process.waitForExit(5_000)
+  daemon.process.close()
 
 proc runTests() =
   const TestVersion = "daemon-test-version"
@@ -92,13 +122,20 @@ proc runTests() =
 
   let trnrunOption = "--trnrun:" & getAppFilename()
   var launchNumber = 0
-  proc startDaemon(arguments: varargs[string]): Process =
+  proc startDaemon(arguments: varargs[string]): Daemon =
     ## Starts the daemon on a fresh database unless `arguments` name one.
     inc launchNumber
     var arguments = @arguments
     if not arguments.anyIt(it.startsWith("--database:")):
       arguments.add("--database:" & (testDirectory / ($launchNumber & ".sqlite3")))
-    startProcess(daemonExecutable, workingDir = testDirectory, args = arguments, options = {})
+    Daemon(
+      process: startProcess(daemonExecutable, workingDir = testDirectory, args = arguments, options = {}),
+      events: @[],
+    )
+
+  proc deck(name: string): string =
+    result = testDirectory / name
+    writeFile(result, "fake TRNSYS deck")
 
   suite "daemon CLI":
     test "prints help and version without a TRNRun executable":
@@ -108,14 +145,10 @@ proc runTests() =
         check command.output.contains("Usage:")
         check command.output.contains("--maxConcurrent:N")
         check command.output.contains("--database:PATH")
-        check command.output.contains("--overwrite:true/false")
-        check command.output.contains("including idle connections")
-        check command.output.contains("No rollback")
-        check command.output.contains("deletes the database and its journals")
-        check command.output.contains("Commands: ready, add, cancel, shutdown.")
-        check command.output.contains("exactly {\"ok\":true}")
-        check command.output.contains("with no state field")
+        check command.output.contains("Commands: ready, subscribe, add, cancel, shutdown.")
+        check command.output.contains("cancelRunning")
         check command.output.contains("Exit codes: 0 ok")
+        check not command.output.contains("overwrite")
       for option in ["-v", "--version"]:
         let command = runCommand(daemonExecutable, [option], testDirectory)
         check command.exitCode == 0
@@ -126,12 +159,11 @@ proc runTests() =
         (arguments: @["--doesNotExist"], expected: "Unknown option: --doesNotExist"),
         (arguments: @["-x"], expected: "Unknown option: -x"),
         (arguments: @["extra"], expected: "Unexpected argument: extra"),
+        (arguments: @["--overwrite:true"], expected: "Unknown option: --overwrite"),
         (arguments: @["--maxConcurrent:many"], expected: "many"),
         (arguments: @[trnrunOption, "--maxConcurrent:0"],
           expected: "'maxConcurrent' must be at least 1"),
         (arguments: @["--database:"], expected: "'database' must not be empty"),
-        (arguments: @["--overwrite"], expected: "'overwrite' must be true or false"),
-        (arguments: @["--overwrite:yes"], expected: "'overwrite' must be true or false"),
         (arguments: @["--trnrun:missing.exe"], expected: "TRNRun not found:"),
         (arguments: newSeq[string](), expected: "TRNRun not found:"),
       ]
@@ -142,283 +174,212 @@ proc runTests() =
         check command.output == ""
         check command.error.contains(testCase.expected)
 
-    test "serves requests in order and saves runs for readers without being asked":
+    test "serves requests in order, numbers runs, and saves them for readers without being asked":
       let
-        deckFile = testDirectory / "done.dck"
+        deckFile = deck("done.dck")
         path = testDirectory / "my runs.sqlite3"
         daemon = startDaemon(trnrunOption, "--maxConcurrent:2", "--database:" & path)
       defer: daemon.closeDaemon()
-      writeFile(deckFile, "fake TRNSYS deck")
-      check daemon.request(%*{"cmd": "ready"}) == %*{"ok": true, "databasePath": path}
+      check daemon.request(%*{"id": "r1", "cmd": "ready"}) == %*{
+        "id": "r1", "ok": true, "databasePath": path, "sessionId": 1, "revision": 0, "logId": 0
+      }
       let reader = daemon.openReader()
       defer: reader.close()
-      check daemon.request(%*{"cmd": "add", "runId": "run", "deckFile": deckFile}) ==
-        %*{"ok": true}
+      check daemon.request(%*{"id": 2, "cmd": "add", "deckFile": deckFile, "label": "first"}) ==
+        %*{"id": 2, "ok": true, "runId": 1}
 
-      reader.waitForState("run", "FINISHED")
-      check reader.columns("run", "deck_file, succeeded, trnrun_status, percent, notices, warnings") ==
-        @[deckFile, "1", "DONE", "1.0", "2", "1"]
-      let finished = reader.columns("run", "*")
+      reader.waitForState(1, "FINISHED")
+      check reader.columns(1, "deck_file, label, session_id, succeeded, trnrun_status, " &
+        "percent, notices, warnings") == @[deckFile, "first", "1", "1", "DONE", "1.0", "2", "1"]
+      let finished = reader.columns(1, "*")
       var messages: seq[string] = @[]
-      for row in reader.rows(sql"SELECT message FROM logs WHERE run_id = 'run' ORDER BY log_id"):
+      for row in reader.rows(sql"SELECT message FROM logs WHERE run_id = 1 ORDER BY log_id"):
         messages.add(row[0])
       check messages == @["first", "second", "third"]
       check reader.getValue(sql"""SELECT submitted_at <= started_at AND
-        started_at <= finished_at FROM runs WHERE run_id = 'run'""") == "1"
+        started_at <= finished_at FROM runs WHERE run_id = 1""") == "1"
 
       check not daemon.request("garbage")["ok"].getBool()
       check daemon.request(%*{"cmd": "pull"}) == %*{"ok": false, "error": "Unknown cmd: pull"}
-      check daemon.request(%*{"cmd": "add", "runId": "run", "deckFile": deckFile}) ==
-        %*{"ok": false, "error": "Invalid or duplicate runId: run"}
+      check daemon.add(deckFile) == 2
       check daemon.request(%*{"cmd": "shutdown"}) == %*{"ok": true}
-      check daemon.waitForExit(5_000) == 0
-      check reader.columns("run", "*") == finished
+      check daemon.readRemaining().len == 0 # Never subscribed: replies only.
+      check daemon.process.waitForExit(5_000) == 0
+      check reader.columns(1, "*") == finished
+      check daemon.events.len == 0
 
-    test "saves progress while both TRNRun and the client are idle":
+    test "a subscriber is notified of every saved batch, until stdout ends after the last one":
       let
-        deckFile = testDirectory / "progressgate-idle.dck"
+        deckFile = deck("progressgate-notified.dck")
         daemon = startDaemon(trnrunOption, "--maxConcurrent:1")
       defer: daemon.closeDaemon()
-      writeFile(deckFile, "fake TRNSYS deck")
       let reader = daemon.openReader()
       defer: reader.close()
-      check daemon.request(%*{"cmd": "add", "runId": "run", "deckFile": deckFile}) ==
-        %*{"ok": true}
-      reader.waitFor("run", "sim_time = 7.5 AND percent = 0.75 AND elapsed_ms = 300 AND eta_ms = 100")
-      check reader.columns("run", "state") == @["RUNNING"]
-      check not fileExists(deckFile.changeFileExt("released"))
+      check daemon.request(%*{"cmd": "subscribe"}) == %*{"ok": true, "revision": 0}
+      let runId = daemon.add(deckFile)
+
+      # Notifications arrive while both TRNRun and the client are idle.
+      var revision = 0
+      while reader.columns(runId, "percent = 0.75")[0] != "1":
+        let message = if daemon.events.len > 0: daemon.events.pop() else: daemon.readMessage()
+        check message["event"].getStr() == "changed"
+        check message["revision"].getInt() > revision
+        revision = message["revision"].getInt()
+        check $revision <= reader.getValue(sql"SELECT max(revision) FROM runs")
+      daemon.events = @[]
+      check reader.columns(runId, "state") == @["RUNNING"]
+
       writeFile(deckFile.changeFileExt("release"), "")
-      reader.waitForState("run", "FINISHED")
-      check reader.columns("run", "succeeded") == @["1"]
-      check daemon.request(%*{"cmd": "shutdown"}) == %*{"ok": true}
-      check daemon.waitForExit(5_000) == 0
+      check daemon.request(%*{"id": 9, "cmd": "shutdown"}) == %*{"id": 9, "ok": true}
+      let remaining = daemon.events & daemon.readRemaining()
+      check remaining.len > 0
+      check remaining.allIt(it["event"].getStr() == "changed")
+      check daemon.process.waitForExit(5_000) == 0
+      check $remaining[^1]["revision"].getInt() ==
+        reader.getValue(sql"SELECT max(revision) FROM runs")
+      check reader.columns(runId, "state, succeeded") == @["FINISHED", "1"]
 
-    test "default and explicit false preserve history; explicit true recreates it and permits ID reuse":
+    test "a reused database keeps its history; each daemon starts a session and continues the numbers":
       let
-        deckFile = testDirectory / "done-restart.dck"
+        deckFile = deck("done-restart.dck")
         databaseOption = "--database:" & (testDirectory / "restart.sqlite3")
-      writeFile(deckFile, "fake TRNSYS deck")
-      var finished: Row = @[]
-      for launch in 1 .. 3:
+      for launch in 1 .. 2:
         checkpoint("launch " & $launch)
-        if launch == 3:
-          # No readers remain when replacing an incompatible old database.
-          let injector = db_sqlite.open(testDirectory / "restart.sqlite3", "", "", "")
-          injector.exec(sql"PRAGMA user_version = 999")
-          injector.exec(sql"CREATE TABLE obsolete (value TEXT)")
-          injector.close()
-        block:
-          let daemon =
-            if launch == 1: startDaemon(trnrunOption, databaseOption)
-            elif launch == 2: startDaemon(trnrunOption, databaseOption, "--overwrite:false")
-            else: startDaemon(trnrunOption, databaseOption, "--overwrite:true")
-          defer: daemon.closeDaemon()
-          let reader = daemon.openReader()
-          defer: reader.close()
-          if launch == 3:
-            check reader.getValue(sql"SELECT count(*) FROM runs") == "0"
-            check reader.getValue(sql"SELECT count(*) FROM logs") == "0"
-            check reader.getValue(sql"PRAGMA user_version") == "2"
-            check reader.getValue(sql"PRAGMA journal_mode") == "wal"
-            check reader.getValue(sql"SELECT count(*) FROM sqlite_master WHERE name = 'obsolete'") == "0"
-          let reply = daemon.request(%*{"cmd": "add", "runId": "historic", "deckFile": deckFile})
-          if launch != 2:
-            check reply == %*{"ok": true}
-            reader.waitForState("historic", "FINISHED")
-            finished = reader.columns("historic", "*")
-            check reader.getValue(sql"SELECT min(log_id) FROM logs") == "1"
-            check reader.getValue(sql"SELECT max(log_id) FROM logs") == "3"
-          else:
-            check reply == %*{"ok": false, "error": "Invalid or duplicate runId: historic"}
-            check reader.columns("historic", "*") == finished
-            check reader.getValue(sql"SELECT count(*) FROM logs") == "3"
-          check daemon.request(%*{"cmd": "shutdown"}) == %*{"ok": true}
-          check daemon.waitForExit(5_000) == 0
-
-    test "Windows open connections refuse overwrite before journals are deleted and release ownership":
-      let
-        path = testDirectory / "busy-overwrite.sqlite3"
-        databaseOption = "--database:" & path
-        deck = testDirectory / "done-overwrite.dck"
-      writeFile(deck, "fake TRNSYS deck")
-      block:
-        let daemon = startDaemon(trnrunOption, databaseOption, "--overwrite:true")
+        let daemon = startDaemon(trnrunOption, databaseOption)
         defer: daemon.closeDaemon()
+        let ready = daemon.request(%*{"cmd": "ready"})
+        check ready["sessionId"].getInt() == launch
+        # A done run's saves: submission, launch, seven events, and its finish.
+        check ready["revision"].getInt() == (if launch == 1: 0 else: 10)
+        check ready["logId"].getInt() == (if launch == 1: 0 else: 3)
         let reader = daemon.openReader()
         defer: reader.close()
-        discard daemon.request(%*{"cmd": "add", "runId": "kept", "deckFile": deck})
-        reader.waitForState("kept", "FINISHED")
+        let runId = daemon.add(deckFile)
+        check runId == launch
+        reader.waitForState(runId, "FINISHED")
+        check reader.columns(runId, "session_id") == @[$launch]
         check daemon.request(%*{"cmd": "shutdown"}) == %*{"ok": true}
-        check daemon.waitForExit(5_000) == 0
-      for mode in ["idle", "reader", "writer"]:
-        checkpoint(mode)
-        block:
-          let blocker = db_sqlite.open(path, "", "", "")
-          defer: blocker.close()
-          if mode != "idle":
-            blocker.exec(sql(if mode == "writer": "BEGIN IMMEDIATE" else: "BEGIN"))
-          let rows = blocker.getAllRows(sql"SELECT * FROM runs")
-          let logs = blocker.getAllRows(sql"SELECT * FROM logs ORDER BY log_id")
-          let main = if mode == "writer": "" else: readFile(path)
-          let wal = if mode == "writer": "" else: readFile(path & "-wal")
-          let shm = if mode == "writer": "" else: readFile(path & "-shm")
-          writeFile(path & "-journal", "untouched journal")
-          let command = runCommand(daemonExecutable,
-            [trnrunOption, databaseOption, "--overwrite:true"], testDirectory)
-          check command.exitCode == 1
-          check command.output == ""
-          check command.error.contains("cannot delete " & path & ":")
-          check command.error.contains("Close all SQLite connections")
-          check not fileExists(path & ".lock")
-          check fileExists(path)
-          check fileExists(path & "-wal")
-          check fileExists(path & "-shm")
-          if mode != "writer":
-            check readFile(path) == main
-            check readFile(path & "-wal") == wal
-            check readFile(path & "-shm") == shm
-          check readFile(path & "-journal") == "untouched journal"
-          removeFile(path & "-journal")
-          check blocker.getAllRows(sql"SELECT * FROM runs") == rows
-          check blocker.getAllRows(sql"SELECT * FROM logs ORDER BY log_id") == logs
-          if mode != "idle":
-            blocker.exec(sql"ROLLBACK")
-      let daemon = startDaemon(trnrunOption, databaseOption, "--overwrite:true")
-      defer: daemon.closeDaemon()
-      let reader = daemon.openReader()
-      defer: reader.close()
-      check reader.getValue(sql"SELECT count(*) FROM runs") == "0"
-      check reader.getValue(sql"SELECT count(*) FROM logs") == "0"
-      check reader.getValue(sql"PRAGMA journal_mode") == "wal"
-      check daemon.request(%*{"cmd": "shutdown"}) == %*{"ok": true}
-      check daemon.waitForExit(5_000) == 0
+        check daemon.process.waitForExit(5_000) == 0
 
-    test "overwrite replaces a non-SQLite file and stale journals before ready":
-      let path = testDirectory / "invalid-overwrite.sqlite3"
-      let contents = "not a SQLite database"
-      writeFile(path, contents)
-      let command = runCommand(daemonExecutable,
-        [trnrunOption, "--database:" & path, "--overwrite:false"], testDirectory)
-      check command.exitCode == 1
-      check command.error.contains("not a database")
-      check readFile(path) == contents
-      check not fileExists(path & ".lock")
-      for suffix in ["-wal", "-shm", "-journal"]:
-        writeFile(path & suffix, "stale " & suffix)
-      let daemon = startDaemon(trnrunOption, "--database:" & path, "--overwrite:true")
-      defer: daemon.closeDaemon()
-      let reader = daemon.openReader()
-      defer: reader.close()
-      check reader.getValue(sql"PRAGMA integrity_check") == "ok"
-      check reader.getValue(sql"PRAGMA user_version") == "2"
-      check reader.getValue(sql"SELECT count(*) FROM runs") == "0"
-      check not fileExists(path & "-journal")
-      check readFile(path & "-wal") != "stale -wal"
-      check readFile(path & "-shm") != "stale -shm"
-      check daemon.request(%*{"cmd": "shutdown"}) == %*{"ok": true}
-      check daemon.waitForExit(5_000) == 0
-
-    test "partial overwrite failure loses old data, reports the file and releases ownership":
-      let path = testDirectory / "partial-overwrite.sqlite3"
-      writeFile(path, "old data")
-      writeFile(path & "-wal", "deleted before failure")
-      createDir(path & "-shm")
-      writeFile(path & "-journal", "not reached")
-      let command = runCommand(daemonExecutable,
-        [trnrunOption, "--database:" & path, "--overwrite:true"], testDirectory)
+    test "refuses a database of another schema version with exit code 1":
+      let path = testDirectory / "old-schema.sqlite3"
+      block:
+        let old = db_sqlite.open(path, "", "", "")
+        defer: old.close()
+        old.exec(sql"CREATE TABLE runs (run_id TEXT PRIMARY KEY)")
+        old.exec(sql"PRAGMA user_version = 2")
+      let command = runCommand(daemonExecutable, [trnrunOption, "--database:" & path], testDirectory)
       check command.exitCode == 1
       check command.output == ""
-      check command.error.contains("cannot delete " & path & "-shm")
-      check command.error.contains("Already deleted files are not restored")
-      check not fileExists(path)
-      check not fileExists(path & "-wal")
-      check dirExists(path & "-shm")
-      check readFile(path & "-journal") == "not reached"
+      check command.error.contains("schema version 2")
+      check command.error.contains("Use a new database file")
       check not fileExists(path & ".lock")
-      removeDir(path & "-shm")
-      let daemon = startDaemon(trnrunOption, "--database:" & path, "--overwrite:true")
-      defer: daemon.closeDaemon()
-      let reader = daemon.openReader()
-      defer: reader.close()
-      check reader.getValue(sql"SELECT count(*) FROM runs") == "0"
-      check not fileExists(path & "-journal")
-      check daemon.request(%*{"cmd": "shutdown"}) == %*{"ok": true}
-      check daemon.waitForExit(5_000) == 0
 
     test "graceful shutdown waits for running runs and cancels queued ones":
       let
-        deckFile = testDirectory / "gate-shutdown.dck"
+        deckFile = deck("gate-shutdown.dck")
         daemon = startDaemon(trnrunOption, "--maxConcurrent:1")
       defer: daemon.closeDaemon()
-      writeFile(deckFile, "fake TRNSYS deck")
       let reader = daemon.openReader()
       defer: reader.close()
-      discard daemon.request(%*{"cmd": "add", "runId": "active", "deckFile": deckFile})
-      reader.waitForState("active", "RUNNING")
-      discard daemon.request(%*{"cmd": "add", "runId": "queued", "deckFile": deckFile})
+      let active = daemon.add(deckFile)
+      let queued = daemon.add(deckFile)
+      check reader.columns(active, "state") == @["RUNNING"]
       check daemon.request(%*{"cmd": "shutdown"}) == %*{"ok": true}
-      reader.waitForState("queued", "FINISHED")
-      check reader.columns("queued", "trnrun_status, succeeded") == @["CANCELLED", "0"]
+      reader.waitForState(queued, "FINISHED")
+      check reader.columns(queued, "trnrun_status, error, succeeded") ==
+        @["CANCELLED", "Not started: the daemon shut down", "0"]
+      check daemon.request(%*{"cmd": "add", "deckFile": deckFile}) ==
+        %*{"ok": false, "error": "The daemon is shutting down"}
+      check daemon.request(%*{"cmd": "ready"})["ok"].getBool()
       writeFile(deckFile.changeFileExt("release"), "")
-      check daemon.waitForExit(5_000) == 0
-      reader.waitForState("active", "FINISHED")
-      check reader.columns("active", "succeeded") == @["1"]
+      check daemon.process.waitForExit(5_000) == 0
+      check reader.columns(active, "state, succeeded") == @["FINISHED", "1"]
+
+    test "shutdown with cancelRunning kills running TRNRun and exits":
+      let
+        deckFile = deck("gate-cancel-running.dck")
+        daemon = startDaemon(trnrunOption, "--maxConcurrent:2")
+      defer: daemon.closeDaemon()
+      let reader = daemon.openReader()
+      defer: reader.close()
+      let first = daemon.add(deckFile)
+      let second = daemon.add(deckFile)
+      check daemon.request(%*{"cmd": "shutdown"}) == %*{"ok": true}
+      check daemon.request(%*{"cmd": "cancel", "runId": first}) == %*{"ok": true}
+      reader.waitForState(first, "FINISHED")
+      check daemon.request(%*{"cmd": "shutdown", "cancelRunning": true}) == %*{"ok": true}
+      check daemon.process.waitForExit(5_000) == 0
+      check reader.columns(first, "error") == @["Interrupted: cancelled by the client"]
+      check reader.columns(second, "trnrun_status, error, exit_code IS NULL") ==
+        @["CANCELLED", "Interrupted: the daemon shut down", "1"]
+      check not fileExists(deckFile.changeFileExt("released"))
+
+    test "closing stdin during a graceful shutdown exits at once":
+      let
+        deckFile = deck("gate-impatient.dck")
+        daemon = startDaemon(trnrunOption, "--maxConcurrent:1")
+      defer: daemon.closeDaemon()
+      let reader = daemon.openReader()
+      defer: reader.close()
+      let runId = daemon.add(deckFile)
+      check daemon.request(%*{"cmd": "shutdown"}) == %*{"ok": true}
+      daemon.process.inputStream.close()
+      check daemon.process.waitForExit(5_000) == 0
+      check reader.columns(runId, "state, error") ==
+        @["FINISHED", "Interrupted: the client disconnected"]
 
     test "cancel kills one running TRNRun and cancels one queued run, leaving the others":
       let
-        cancelledDeck = testDirectory / "gate-cancel.dck"
-        keptDeck = testDirectory / "done-cancel.dck"
+        cancelledDeck = deck("gate-cancel.dck")
+        keptDeck = deck("done-cancel.dck")
         daemon = startDaemon(trnrunOption, "--maxConcurrent:1")
       defer: daemon.closeDaemon()
-      writeFile(cancelledDeck, "fake TRNSYS deck")
-      writeFile(keptDeck, "fake TRNSYS deck")
       let reader = daemon.openReader()
       defer: reader.close()
-      for (runId, deck) in [("running", cancelledDeck), ("queued", keptDeck), ("kept", keptDeck)]:
-        check daemon.request(%*{"cmd": "add", "runId": runId, "deckFile": deck}) == %*{"ok": true}
-      reader.waitForState("running", "RUNNING")
+      let
+        running = daemon.add(cancelledDeck)
+        queued = daemon.add(keptDeck)
+        kept = daemon.add(keptDeck)
+      check reader.columns(running, "state") == @["RUNNING"]
 
-      check daemon.request(%*{"cmd": "cancel", "runId": "queued"}) == %*{"ok": true}
-      check reader.columns("queued", "state, error, started_at IS NULL") ==
+      check daemon.request(%*{"cmd": "cancel", "runId": queued}) == %*{"ok": true}
+      check reader.columns(queued, "state, error, started_at IS NULL") ==
         @["FINISHED", "Not started: cancelled by the client", "1"]
-      check daemon.request(%*{"cmd": "cancel", "runId": "running"}) == %*{"ok": true}
-      reader.waitForState("running", "FINISHED")
-      check reader.columns("running", "trnrun_status, error, exit_code IS NULL, succeeded") ==
+      check daemon.request(%*{"cmd": "cancel", "runId": running}) == %*{"ok": true}
+      reader.waitForState(running, "FINISHED")
+      check reader.columns(running, "trnrun_status, error, exit_code IS NULL, succeeded") ==
         @["CANCELLED", "Interrupted: cancelled by the client", "1", "0"]
-      reader.waitForState("kept", "FINISHED")
-      check reader.columns("kept", "succeeded") == @["1"]
+      reader.waitForState(kept, "FINISHED")
+      check reader.columns(kept, "succeeded") == @["1"]
 
-      check daemon.request(%*{"cmd": "cancel", "runId": "kept"}) == %*{"ok": true}
-      check reader.columns("kept", "succeeded") == @["1"]
-      check daemon.request(%*{"cmd": "cancel", "runId": "missing"}) ==
-        %*{"ok": false, "error": "Unknown runId: missing"}
+      check daemon.request(%*{"cmd": "cancel", "runId": kept}) == %*{"ok": true}
+      check reader.columns(kept, "succeeded") == @["1"]
+      check daemon.request(%*{"cmd": "cancel", "runId": 99}) ==
+        %*{"ok": false, "error": "Unknown runId: 99"}
       writeFile(cancelledDeck.changeFileExt("release"), "")
       sleep(300)
       check not fileExists(cancelledDeck.changeFileExt("released"))
       check daemon.request(%*{"cmd": "shutdown"}) == %*{"ok": true}
-      check daemon.waitForExit(5_000) == 0
+      check daemon.process.waitForExit(5_000) == 0
 
     test "EOF exits immediately, killing running TRNRun and saving it as interrupted":
       let
-        deckFile = testDirectory / "gate-orphan.dck"
+        deckFile = deck("gate-orphan.dck")
         daemon = startDaemon(trnrunOption, "--maxConcurrent:1")
       defer: daemon.closeDaemon()
-      writeFile(deckFile, "fake TRNSYS deck")
       let reader = daemon.openReader()
       defer: reader.close()
-      check daemon.request(%*{"cmd": "add", "runId": "run", "deckFile": deckFile}) ==
-        %*{"ok": true}
-      check daemon.request(%*{"cmd": "add", "runId": "queued", "deckFile": deckFile}) ==
-        %*{"ok": true}
-      check reader.columns("queued", "state") == @["QUEUED"]
-      reader.waitForState("run", "RUNNING")
-      daemon.inputStream.close()
-      check daemon.waitForExit(5_000) == 0
-      reader.waitForState("run", "FINISHED")
-      check reader.columns("run", "exit_code IS NULL, error") ==
-        @["1", "Interrupted: the client disconnected"]
-      reader.waitForState("queued", "FINISHED")
-      check reader.columns("queued", "error") == @["Not started: the client disconnected"]
+      let run = daemon.add(deckFile)
+      let queued = daemon.add(deckFile)
+      check reader.columns(queued, "state") == @["QUEUED"]
+      daemon.process.inputStream.close()
+      check daemon.readRemaining().len == 0 # stdout ends with the daemon.
+      check daemon.process.waitForExit(5_000) == 0
+      check reader.columns(run, "state, exit_code IS NULL, error") ==
+        @["FINISHED", "1", "Interrupted: the client disconnected"]
+      check reader.columns(queued, "state, error") ==
+        @["FINISHED", "Not started: the client disconnected"]
       writeFile(deckFile.changeFileExt("release"), "")
       sleep(300)
       check not fileExists(deckFile.changeFileExt("released"))
@@ -428,81 +389,64 @@ proc runTests() =
         path = testDirectory / "shared.sqlite3"
         first = startDaemon(trnrunOption, "--database:" & path)
       defer: first.closeDaemon()
-      discard first.request(%*{"cmd": "ready"}) # The database is open from here.
-      let deck = testDirectory / "done-owned.dck"
-      writeFile(deck, "fake TRNSYS deck")
-      discard first.request(%*{"cmd": "add", "runId": "owned", "deckFile": deck})
-      let reader = first.openReader()
+      let reader = first.openReader() # The database is open from here.
       defer: reader.close()
-      reader.waitForState("owned", "FINISHED")
-      let before = reader.columns("owned", "*")
-      let logs = reader.getAllRows(sql"SELECT * FROM logs ORDER BY log_id")
-      let wal = readFile(path & "-wal")
-      let shm = readFile(path & "-shm")
-      for overwrite in ["false", "true"]:
-        let second = runCommand(daemonExecutable,
-          [trnrunOption, "--database:" & path, "--overwrite:" & overwrite], testDirectory)
-        check second.exitCode == 1
-        check second.output == ""
-        check second.error.contains("Database is in use by another trnrund")
-        check fileExists(path & ".lock")
-        check readFile(path & "-wal") == wal
-        check readFile(path & "-shm") == shm
-        check reader.columns("owned", "*") == before
-        check reader.getAllRows(sql"SELECT * FROM logs ORDER BY log_id") == logs
+      let owned = first.add(deck("done-owned.dck"))
+      reader.waitForState(owned, "FINISHED")
+      let before = reader.columns(owned, "*")
+      let second = runCommand(daemonExecutable, [trnrunOption, "--database:" & path], testDirectory)
+      check second.exitCode == 1
+      check second.output == ""
+      check second.error.contains("Database is in use by another trnrund")
+      check fileExists(path & ".lock")
+      check reader.columns(owned, "*") == before
 
       check first.request(%*{"cmd": "shutdown"}) == %*{"ok": true}
-      check first.waitForExit(5_000) == 0
+      check first.process.waitForExit(5_000) == 0
       let third = startDaemon(trnrunOption, "--database:" & path)
       defer: third.closeDaemon()
       check third.request(%*{"cmd": "ready"})["ok"].getBool()
 
     test "the next daemon finishes a killed one's runs as interrupted, without running them":
       let
-        deckFile = testDirectory / "gate-killed.dck"
-        queuedDeck = testDirectory / "done-killed.dck"
+        deckFile = deck("gate-killed.dck")
+        queuedDeck = deck("done-killed.dck")
         databaseOption = "--database:" & (testDirectory / "killed.sqlite3")
         killed = startDaemon(trnrunOption, "--maxConcurrent:1", databaseOption)
       defer: killed.closeDaemon()
-      writeFile(deckFile, "fake TRNSYS deck")
-      writeFile(queuedDeck, "fake TRNSYS deck")
       let reader = killed.openReader()
       defer: reader.close()
-      discard killed.request(%*{"cmd": "add", "runId": "run", "deckFile": deckFile})
-      discard killed.request(%*{"cmd": "add", "runId": "queued", "deckFile": queuedDeck})
-      reader.waitForState("run", "RUNNING")
-      killed.kill() # No chance to save anything: the run stays RUNNING.
-      discard killed.waitForExit(5_000)
-      check reader.columns("run", "state, finished_at IS NULL") == @["RUNNING", "1"]
-      check reader.columns("queued", "state") == @["QUEUED"]
+      let run = killed.add(deckFile)
+      let queued = killed.add(queuedDeck)
+      killed.process.kill() # No chance to save anything: the run stays RUNNING.
+      discard killed.process.waitForExit(5_000)
+      check reader.columns(run, "state, finished_at IS NULL") == @["RUNNING", "1"]
+      check reader.columns(queued, "state") == @["QUEUED"]
 
       let next = startDaemon(trnrunOption, databaseOption)
       defer: next.closeDaemon()
-      discard next.request(%*{"cmd": "ready"})
-      reader.waitForState("run", "FINISHED")
-      check reader.columns("run", "trnrun_status, error") ==
-        @["CANCELLED", "Interrupted: its daemon stopped unexpectedly"]
-      check reader.columns("queued", "state, error, started_at IS NULL") ==
+      check next.request(%*{"cmd": "ready"})["sessionId"].getInt() == 2
+      check reader.columns(run, "state, trnrun_status, error") ==
+        @["FINISHED", "CANCELLED", "Interrupted: its daemon stopped unexpectedly"]
+      check reader.columns(queued, "state, error, started_at IS NULL") ==
         @["FINISHED", "Not started: its daemon stopped unexpectedly", "1"]
       check next.request(%*{"cmd": "shutdown"}) == %*{"ok": true}
-      check next.waitForExit(5_000) == 0
+      check next.process.waitForExit(5_000) == 0
 
     test "database failures are fatal rather than error replies":
       let
-        deckFile = testDirectory / "done-fatal.dck"
+        deckFile = deck("done-fatal.dck")
         daemon = startDaemon(trnrunOption)
       defer: daemon.closeDaemon()
-      writeFile(deckFile, "fake TRNSYS deck")
       let path = daemon.request(%*{"cmd": "ready"})["databasePath"].getStr()
       let injector = db_sqlite.open(path, "", "", "")
       injector.exec(sql"""CREATE TRIGGER fail_submission BEFORE INSERT ON runs
         BEGIN SELECT RAISE(ABORT, 'injected failure'); END""")
       injector.close()
-      daemon.inputStream.writeLine($(%*{"cmd": "add", "runId": "run", "deckFile": deckFile}))
-      daemon.inputStream.flush()
-      check daemon.waitForExit(5_000) == 1
-      check daemon.outputStream.readAll() == ""
-      check daemon.errorStream.readAll().contains("injected failure")
+      daemon.send($(%*{"cmd": "add", "deckFile": deckFile}))
+      check daemon.process.waitForExit(5_000) == 1
+      check daemon.process.outputStream.readAll() == ""
+      check daemon.process.errorStream.readAll().contains("injected failure")
       let reader = db_sqlite.open(path, "", "", "")
       defer: reader.close()
       reader.exec(sql"PRAGMA query_only = ON")

@@ -37,6 +37,7 @@ proc runFakeTrnrun(deckFile: string): int =
   ##
   ## `done` prints `DoneLines`; `failed` reports `ERROR` and exits 1; `args`
   ## echoes its arguments; `streams` writes to stdout, then stderr, and exits 3;
+  ## `partial` ends its output without a line break;
   ## `gate` waits for the deck's `.release` file, writes `.released`, then acts
   ## like `done`. `progressgate` emits only a progress burst, writes `.progress`
   ## as an emission marker, then waits silently like `gate` before `DoneLines`.
@@ -56,6 +57,9 @@ proc runFakeTrnrun(deckFile: string): int =
     printLine("to stdout")
     printLine("to stderr", stderr)
     result = 3
+  of "partial":
+    stdout.write("complete\r\n\nlast")
+    stdout.flushFile()
   of "progressgate":
     for line in ProgressGateLines:
       printLine(line)

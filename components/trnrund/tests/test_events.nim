@@ -1,6 +1,8 @@
 import std/[json, options, unittest]
 
 import ../src/events
+from ../../trnrun/src/events as trnrunEvents import nil
+from ../../trnrun/src/settings as trnrunSettings import nil
 
 
 proc parseLine(line: string): SimulationEvent =
@@ -19,7 +21,9 @@ suite "TRNRun event parsing":
     )
     let settingNode = %setting
     settingNode["kind"] = %"SETTING"
-    check parseSimulationEvent(settingNode).settingData == setting
+    let parsedSetting = parseSimulationEvent(settingNode)
+    check parsedSetting.kind == eventSetting
+    check parsedSetting.settingData == setting
 
     let status = parseLine("""{"kind":"STATUS","status":"DONE","message":"ok"}""")
     check status.kind == eventStatus
@@ -89,7 +93,19 @@ suite "TRNRun event parsing":
     for line in [
       """{"status":"DONE","message":""}""",
       """{"kind":"CONFIG","start":0,"stop":10}""",
+      """{"kind":"SETTING","guiVisibility":"hidden","pollMs":100}""",
     ]:
       checkpoint("line: " & line)
       expect KeyError:
         discard parseLine(line)
+
+  test "SettingEvent holds exactly the SETTING event TRNRun builds":
+    # Fails when TRNRun adds, renames, or retypes an option this module does not mirror.
+    let sent = trnrunEvents.toJson(trnrunSettings.settingEvent(
+      trnrunSettings.DefaultRunnerSettings, r"C:\TRNSYS18\Exe\TrnEXE64.exe"))
+    let parsed = parseSimulationEvent(sent)
+    check parsed.kind == eventSetting
+    let expected = sent.copy()
+    expected.delete("kind")
+    expected.delete("timestamp")
+    check %parsed.settingData == expected

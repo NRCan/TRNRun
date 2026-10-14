@@ -8,29 +8,30 @@ complete log history. To wait for a run, use ``SimulationManager.wait()``.
 
 from pathlib import Path
 
-from trnrun.batch.events import LogEvent, ProgressEvent, SimulationInfo, SimulationState, SimulationStatus
 from trnrun.config import SimulationConfig
+from trnrun.records import LogEvent, ProgressEvent, SimulationInfo, SimulationState, SimulationStatus
 
 
 class Simulation:
     """One submitted simulation, kept up to date by its ``SimulationManager``.
 
-    ``id``, ``deck_path``, and ``config`` are what was submitted. ``info`` is
-    the run's latest state from the daemon's database, and the properties
+    ``id``, ``deck_path``, and ``config`` are what was submitted; ``id`` is
+    the run ID trnrund assigned, the ``run_id`` of its database row. ``info``
+    is the run's latest state from the daemon's database, and the properties
     below are shortcuts to its everyday fields; the rest, such as the exit
-    code, timestamps, status message, and TRNRun's config and settings, are
-    read from ``info``. Separate reads may reflect different updates, so read
-    ``info`` once when several fields must agree. ``logs`` holds every log
-    entry received.
+    code, timestamps, status message, label, and TRNRun's config and
+    settings, are read from ``info``. Separate reads may reflect different
+    updates, so read ``info`` once when several fields must agree. ``logs``
+    holds every log entry received.
     """
 
-    def __init__(self, deck_path: str | Path, config: SimulationConfig, sim_id: int) -> None:
+    def __init__(self, run_id: int, deck_path: str | Path, config: SimulationConfig) -> None:
         """Initialize a queued simulation with an empty log history."""
-        self.id: int = sim_id
+        self.id: int = run_id
         self.deck_path: Path = Path(deck_path)
         self.config: SimulationConfig = config
 
-        self._info: SimulationInfo = SimulationInfo(SimulationState.QUEUED)
+        self._info: SimulationInfo = SimulationInfo(run_id, SimulationState.QUEUED, deck_file=self.deck_path)
         self._logs: list[LogEvent] = []
 
     def apply(self, info: SimulationInfo | None, logs: list[LogEvent]) -> None:
@@ -105,4 +106,4 @@ class Simulation:
     @property
     def is_finished(self) -> bool:
         """Return whether the daemon finished the run; its logs are then complete."""
-        return self._info.state is SimulationState.FINISHED
+        return self._info.is_finished
