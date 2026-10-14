@@ -34,8 +34,8 @@ with Daemon("runs.sqlite3", max_concurrent=2) as daemon:
 
 - `Daemon(database_path="trnrund.sqlite3", *, max_concurrent=None,
   trnrun_path=None, executable=..., request_timeout=60.0)` starts the daemon,
-  waits for its `ready` reply, subscribes to its change notifications, and
-  opens its database.
+  waits for its `ready` reply, and opens its database. Its change
+  notifications are read from then on.
   - `database_path` is created if missing; its directory must exist. An
     existing database keeps its runs and logs, and the daemon continues its
     run numbers in a new session. For an empty history, use a new file.

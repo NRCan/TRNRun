@@ -1,7 +1,9 @@
-import std/[json, options, os, strutils, tempfiles, times, unittest]
+import std/[importutils, json, options, os, strutils, tempfiles, times, unittest]
 import db_connector/db_sqlite
 
 import ../src/[database, events]
+
+privateAccess(Database) # Reads the revision counter.
 
 const TimestampFormat = "yyyy-MM-dd'T'HH:mm:ss'.'fff'Z'"
 
@@ -14,7 +16,7 @@ proc statusEvent(status: string, message = ""): SimulationEvent =
 proc logEvent(severity: string, message = ""): SimulationEvent =
   event($(%*{"kind": "LOG", "severity": severity, "time": 0, "message": message}))
 
-const Setting = SettingEvent(guiVisibility: "hidden", severity: Warning, pollMs: 50)
+const Setting = SettingEvent(guiVisibility: "hidden", severity: lsWarning, pollMs: 50)
 
 proc settingEvent(setting: SettingEvent): SimulationEvent =
   ## The SETTING event TRNRun sends for `setting`.

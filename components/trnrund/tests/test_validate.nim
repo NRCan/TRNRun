@@ -7,12 +7,12 @@ proc createDeck(directory, name: string): string =
   result = directory / name
   writeFile(result, "fake TRNSYS deck")
 
-proc raisesValueError(validation: proc(), expected: string): bool =
-  ## Whether `validation` raises a `ValueError` whose message holds `expected`.
+proc raisesInputError(validation: proc(), expected: string): bool =
+  ## Whether `validation` raises an `InputError` whose message holds `expected`.
   result = false
   try:
     validation()
-  except ValueError as error:
+  except InputError as error:
     result = error.msg.contains(expected)
 
 proc runTests() =
@@ -42,15 +42,15 @@ proc runTests() =
 
       check validateDeck("relative.dck") == deckFile.absolutePath().normalizedPath()
 
-    test "rejects missing and unsupported deck files with ValueError":
+    test "rejects missing and unsupported deck files with InputError":
       let
         missingDeck = testDirectory / "missing.dck"
         unsupportedDeck = createDeck(testDirectory, "unsupported.txt")
 
-      check raisesValueError(
+      check raisesInputError(
         proc() = discard validateDeck(missingDeck), "Deck file not found:"
       )
-      check raisesValueError(
+      check raisesInputError(
         proc() = discard validateDeck(unsupportedDeck), "Expected .dck or .trd"
       )
 
@@ -59,7 +59,7 @@ proc runTests() =
         getAppFilename().absolutePath().normalizedPath()
 
       let missingTrnrun = testDirectory / "missing-trnrun.exe"
-      check raisesValueError(
+      check raisesInputError(
         proc() = discard validateFile(missingTrnrun, "TRNRun"), "TRNRun not found:"
       )
 
@@ -87,6 +87,6 @@ proc runTests() =
       for testCase in cases:
         checkpoint($testCase.args)
         let args = testCase.args
-        check raisesValueError(proc() = validateTrnrunArgs(args), testCase.expected)
+        check raisesInputError(proc() = validateTrnrunArgs(args), testCase.expected)
 
 runTests()

@@ -145,8 +145,8 @@ proc runTests() =
         check command.output.contains("Usage:")
         check command.output.contains("--maxConcurrent:N")
         check command.output.contains("--database:PATH")
-        check command.output.contains("Commands: ready, subscribe, add, cancel, shutdown.")
-        check command.output.contains("cancelRunning")
+        check command.output.contains("Commands: ready, add, cancel, shutdown.")
+        check command.output.contains("README.md")
         check command.output.contains("Exit codes: 0 ok")
         check not command.output.contains("overwrite")
       for option in ["-v", "--version"]:
@@ -203,19 +203,17 @@ proc runTests() =
       check daemon.request(%*{"cmd": "pull"}) == %*{"ok": false, "error": "Unknown cmd: pull"}
       check daemon.add(deckFile) == 2
       check daemon.request(%*{"cmd": "shutdown"}) == %*{"ok": true}
-      check daemon.readRemaining().len == 0 # Never subscribed: replies only.
+      check daemon.readRemaining().allIt("event" in it) # Every reply was read.
       check daemon.process.waitForExit(5_000) == 0
       check reader.columns(1, "*") == finished
-      check daemon.events.len == 0
 
-    test "a subscriber is notified of every saved batch, until stdout ends after the last one":
+    test "every client is notified of saved changes, until stdout ends after the last one":
       let
         deckFile = deck("progressgate-notified.dck")
         daemon = startDaemon(trnrunOption, "--maxConcurrent:1")
       defer: daemon.closeDaemon()
       let reader = daemon.openReader()
       defer: reader.close()
-      check daemon.request(%*{"cmd": "subscribe"}) == %*{"ok": true, "revision": 0}
       let runId = daemon.add(deckFile)
 
       # Notifications arrive while both TRNRun and the client are idle.
@@ -374,7 +372,7 @@ proc runTests() =
       let queued = daemon.add(deckFile)
       check reader.columns(queued, "state") == @["QUEUED"]
       daemon.process.inputStream.close()
-      check daemon.readRemaining().len == 0 # stdout ends with the daemon.
+      check daemon.readRemaining().allIt("event" in it) # stdout ends with the daemon.
       check daemon.process.waitForExit(5_000) == 0
       check reader.columns(run, "state, exit_code IS NULL, error") ==
         @["FINISHED", "1", "Interrupted: the client disconnected"]
@@ -383,6 +381,26 @@ proc runTests() =
       writeFile(deckFile.changeFileExt("release"), "")
       sleep(300)
       check not fileExists(deckFile.changeFileExt("released"))
+
+    test "a client that stops reading stdout holds up neither saving nor the exit on EOF":
+      let
+        doneDeck = deck("done-unread.dck")
+        gateDeck = deck("gate-unread.dck")
+        daemon = startDaemon(trnrunOption, "--maxConcurrent:2")
+      defer: daemon.closeDaemon()
+      let reader = daemon.openReader()
+      defer: reader.close()
+      let gated = daemon.add(gateDeck)
+      for _ in 1 .. 200: # Unread replies, far more than the pipe holds.
+        daemon.send($(%*{"cmd": "ready"}))
+      daemon.send($(%*{"cmd": "add", "deckFile": doneDeck}))
+      reader.waitFor(gated + 1, "state = 'FINISHED' AND succeeded")
+      let started = getMonoTime()
+      daemon.process.inputStream.close()
+      check daemon.process.waitForExit(5_000) == 0
+      check getMonoTime() - started < initDuration(seconds = 3)
+      check reader.columns(gated, "state, error") ==
+        @["FINISHED", "Interrupted: the client disconnected"]
 
     test "a second daemon cannot use a database another one holds":
       let

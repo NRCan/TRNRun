@@ -20,15 +20,17 @@ $DaemonPath, $RunnerPath, $SourceDeck | ForEach-Object {
 }
 
 # trnrund answers each request line with one reply line, in request order.
-# This client never sends subscribe, so stdout carries replies only.
+# Its stdout also carries change notifications, which have no "ok"; this
+# client polls the database instead, so it skips them.
 function Send-Request([hashtable] $Request) {
     $Daemon.StandardInput.WriteLine(($Request | ConvertTo-Json -Compress))
-    $Line = $Daemon.StandardOutput.ReadLine()
-    if ($null -eq $Line) {
-        throw 'trnrund closed its output'
-    }
-
-    $Reply = $Line | ConvertFrom-Json
+    do {
+        $Line = $Daemon.StandardOutput.ReadLine()
+        if ($null -eq $Line) {
+            throw 'trnrund closed its output'
+        }
+        $Reply = $Line | ConvertFrom-Json
+    } while ($null -eq $Reply.ok)
     if (-not $Reply.ok) {
         throw "$($Request.cmd) failed: $($Reply.error)"
     }
@@ -135,6 +137,8 @@ try {
     }
 
     Send-Request @{ cmd = 'shutdown' } | Out-Null
+    # Reading stdout to its end lets trnrund exit without waiting for the client.
+    $Daemon.StandardOutput.ReadToEnd() | Out-Null
     $Daemon.WaitForExit()
     if ($Daemon.ExitCode) {
         throw "trnrund failed with exit code $($Daemon.ExitCode)"

@@ -40,6 +40,14 @@ proc waitFor(scheduler: Scheduler, runId: int, state: SimulationState) =
   while scheduler.stateOf(runId) < state:
     scheduler.step()
 
+proc shutdown(scheduler: Scheduler, cancelRunning = false) =
+  ## Shuts down as a client would, applying worker messages until nothing
+  ## runs, then closes. Idempotent, and a no-op after `abandon`.
+  scheduler.requestShutdown(cancelRunning)
+  while not scheduler.isDone:
+    scheduler.step()
+  scheduler.close()
+
 proc runTests() =
   let testDirectory = getTempDir() / "trnrund_scheduler_tests"
   if dirExists(testDirectory):
@@ -55,9 +63,9 @@ proc runTests() =
 
   suite "scheduler":
     test "rejects an invalid worker count or TRNRun path":
-      expect ValueError:
+      expect InputError:
         discard newScheduler(trnrun, 0, testDirectory / "unused.sqlite3")
-      expect ValueError:
+      expect InputError:
         discard newScheduler(testDirectory / "missing-trnrun.exe", 1, testDirectory / "unused.sqlite3")
 
     test "numbers runs and rejects invalid submissions without saving them":
@@ -75,7 +83,7 @@ proc runTests() =
       ]
       for testCase in cases:
         checkpoint("case: " & $testCase)
-        expect ValueError:
+        expect InputError:
           discard scheduler.add(testCase.deckFile, testCase.trnrunArgs)
       check 3 notin scheduler.database
       check scheduler.columns(2, "label") == @["second"]
@@ -262,8 +270,20 @@ proc runTests() =
       scheduler.cancel(done)
       check scheduler.columns(done, "*") == finished
 
-      expect ValueError:
+      expect InputError:
         scheduler.cancel(99)
+
+    test "cancel keeps the real outcome of a run that exited before its exit is applied":
+      let scheduler = newScheduler(trnrun, 1, testDirectory / "cancel-exited.sqlite3")
+      defer: scheduler.shutdown()
+
+      let done = scheduler.add(doneDeck)
+      while scheduler.running[done].process.running:
+        sleep(10)
+      scheduler.cancel(done)
+      scheduler.waitFor(done, ssFinished)
+      check scheduler.columns(done, "trnrun_status, exit_code, error IS NULL, succeeded") ==
+        @["DONE", "0", "1", "1"]
 
     test "rejects a database in a missing directory":
       expect DbError:
@@ -285,7 +305,7 @@ proc runTests() =
         "state, trnrun_status, trnrun_message, exit_code IS NULL, error") ==
         @["FINISHED", "CANCELLED", "Not started", "1", "Not started: the daemon shut down"]
 
-      expect ValueError:
+      expect InputError:
         discard scheduler.add(doneDeck)
       expect ValueError:
         scheduler.cancel(running)
@@ -302,7 +322,7 @@ proc runTests() =
       let second = scheduler.add(secondDeck)
       scheduler.requestShutdown()
       check not scheduler.isDone
-      expect ValueError:
+      expect InputError:
         discard scheduler.add(doneDeck)
 
       scheduler.cancel(first)
@@ -328,7 +348,7 @@ proc runTests() =
       let queued = scheduler.add(doneDeck)
       scheduler.abandon()
       check scheduler.running.len == 0
-      expect ValueError:
+      expect InputError:
         discard scheduler.add(doneDeck)
       scheduler.abandon()
       scheduler.shutdown()

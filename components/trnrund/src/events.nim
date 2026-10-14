@@ -9,23 +9,22 @@ import std/[json, options]
 
 type
   SimStatus* = enum
-    ## Lifecycle states reported for a simulation.
-    statusPending = "PENDING"
-    statusLaunching = "LAUNCHING"
-    statusRunning = "RUNNING"
-    statusDone = "DONE"
-    statusCancelled = "CANCELLED"
-    statusError = "ERROR"
-    statusTimeout = "TIMEOUT"
-    statusStalled = "STALLED"
+    stPending = "PENDING"
+    stLaunching = "LAUNCHING"
+    stRunning = "RUNNING"
+    stDone = "DONE"
+    stCancelled = "CANCELLED"
+    stError = "ERROR"
+    stTimeout = "TIMEOUT"
+    stStalled = "STALLED"
 
   LogSeverity* = enum
-    ## Severity of a TRNSYS log entry. Values are part of the wire protocol.
-    Notice = "Notice"
-    Warning = "Warning"
-    Fatal = "Fatal"
+    ## Values are part of the wire protocol.
+    lsNotice = "Notice"
+    lsWarning = "Warning"
+    lsFatal = "Fatal"
 
-  SettingEvent* = object ## TRNRun settings applied to a simulation.
+  SettingEvent* = object
     trnexePath*: string
     guiVisibility*: string
     waitForGui*: bool
@@ -44,22 +43,22 @@ type
     severity*: LogSeverity
     writeEvents*: bool
 
-  StatusEvent* = object ## A simulation lifecycle transition with outcome details.
+  StatusEvent* = object
     status*: SimStatus
     message*: string
 
-  ConfigEvent* = object ## Fixed parameters for a simulation run.
+  ConfigEvent* = object
     start*: float
     stop*: float
     step*: float
 
-  ProgressEvent* = object ## Current simulation progress and wall-clock timing.
+  ProgressEvent* = object
     time*: float
     percent*: float
     elapsedMs*: float
     etaMs*: float
 
-  LogEvent* = object ## A severity-tagged message parsed from the TRNSYS log.
+  LogEvent* = object
     severity*: LogSeverity
     time*: float
     unitId*: Option[int]
@@ -69,28 +68,28 @@ type
     information*: Option[string]
 
   SimulationEventKind* = enum
-    ## Discriminant of a `SimulationEvent`; values are JSON `kind` tags.
-    eventSetting = "SETTING"
-    eventStatus = "STATUS"
-    eventConfig = "CONFIG"
-    eventProgress = "PROGRESS"
-    eventLog = "LOG"
+    ## Values are JSON `kind` tags.
+    ekSetting = "SETTING"
+    ekStatus = "STATUS"
+    ekConfig = "CONFIG"
+    ekProgress = "PROGRESS"
+    ekLog = "LOG"
 
-  SimulationEvent* = object ## A closed union of events produced during one simulation.
+  SimulationEvent* = object
     case kind*: SimulationEventKind
-    of eventSetting:
-      settingData*: SettingEvent
-    of eventStatus:
-      statusData*: StatusEvent
-    of eventConfig:
-      configData*: ConfigEvent
-    of eventProgress:
-      progressData*: ProgressEvent
-    of eventLog:
-      logData*: LogEvent
+    of ekSetting:
+      setting*: SettingEvent
+    of ekStatus:
+      status*: StatusEvent
+    of ekConfig:
+      config*: ConfigEvent
+    of ekProgress:
+      progress*: ProgressEvent
+    of ekLog:
+      log*: LogEvent
 
-proc parseSimulationEvent*(node: JsonNode): SimulationEvent =
-  ## Parses one TRNRun event line into a `SimulationEvent`.
+proc parseSimulationEvent(node: JsonNode): SimulationEvent =
+  ## Parses one TRNRun event.
   ##
   ## Raises `ValueError` when `node` is not a known event or has a wrong field
   ## type, and `KeyError` when it misses a required field.
@@ -98,16 +97,16 @@ proc parseSimulationEvent*(node: JsonNode): SimulationEvent =
     raise newException(ValueError, "Event must be a JSON object")
 
   case node["kind"].to(SimulationEventKind)
-  of eventSetting:
-    SimulationEvent(kind: eventSetting, settingData: node.to(SettingEvent))
-  of eventStatus:
-    SimulationEvent(kind: eventStatus, statusData: node.to(StatusEvent))
-  of eventConfig:
-    SimulationEvent(kind: eventConfig, configData: node.to(ConfigEvent))
-  of eventProgress:
-    SimulationEvent(kind: eventProgress, progressData: node.to(ProgressEvent))
-  of eventLog:
-    SimulationEvent(kind: eventLog, logData: node.to(LogEvent))
+  of ekSetting:
+    SimulationEvent(kind: ekSetting, setting: node.to(SettingEvent))
+  of ekStatus:
+    SimulationEvent(kind: ekStatus, status: node.to(StatusEvent))
+  of ekConfig:
+    SimulationEvent(kind: ekConfig, config: node.to(ConfigEvent))
+  of ekProgress:
+    SimulationEvent(kind: ekProgress, progress: node.to(ProgressEvent))
+  of ekLog:
+    SimulationEvent(kind: ekLog, log: node.to(LogEvent))
 
 proc parseEventLine*(line: string): Option[SimulationEvent] =
   ## Parses one line of TRNRun output; none if it is not a valid event.

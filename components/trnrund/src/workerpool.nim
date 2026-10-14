@@ -8,17 +8,15 @@
 ## channels that transported moved strings, so start a pool only once.
 
 import ./messages
+import ./threadstart
 import ./trnrun
 
 type
   WorkerContext = object
-    ## What each worker thread receives at start.
     work: ptr Channel[Work]
     inbox: ptr Channel[Message]
 
   WorkerPool* = object
-    ## Fixed set of worker threads fed from one shared work channel.
-    ##
     ## Owned by the scheduler thread. Its address must stay stable while
     ## workers run, since each holds a `ptr Channel[Work]` into it.
     work: Channel[Work]
@@ -33,6 +31,7 @@ proc readRun(context: WorkerContext, work: Work) =
     runId = work.runId
 
   proc onOutput(line: string) {.gcsafe, raises: [].} =
+    ## Posts one output line of this run.
     inbox[].send(Message(kind: mkOutput, runId: runId, line: line))
 
   let outcome = captureOutput(work.output, work.process, onOutput)
@@ -63,13 +62,9 @@ proc shutdown*(pool: var WorkerPool) =
 proc start*(pool: var WorkerPool, workers: int, inbox: ptr Channel[Message]) =
   ## Starts `workers` threads that report to `inbox`.
   pool.work.open()
-
-  {.push warning[ProveInit]: off, warning[Uninit]: off.}
   pool.threads = newSeq[Thread[WorkerContext]](workers)
-  for index in 0 ..< workers:
-    let context = WorkerContext(work: addr pool.work, inbox: inbox)
-    createThread(pool.threads[index], runWorker, context)
-  {.pop.}
+  for thread in pool.threads.mitems:
+    thread.startThread(runWorker, WorkerContext(work: addr pool.work, inbox: inbox))
 
 proc submit*(pool: var WorkerPool, work: Work) =
   ## Hands `wkRead` work to the next free worker.

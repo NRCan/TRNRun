@@ -2,16 +2,15 @@
 ##
 ## Every request gets exactly one reply carrying `ok`, in request order. A
 ## request may carry an `id`, any JSON value, which its reply repeats. A
-## rejected request gets `error` instead of the command's result. Database
-## failures are not replies: they raise and end the daemon, since
-## acknowledging a run that was not saved would lose it.
+## rejected request gets `error` instead of the command's result. Daemon
+## faults, such as database failures, are not replies: they raise and end the
+## daemon, since acknowledging a run that was not saved would lose it.
 ##
 ## ========== ======================================= =============================
 ## cmd        request fields                          reply fields
 ## ========== ======================================= =============================
 ## ready                                              databasePath, sessionId,
 ##                                                    revision, logId
-## subscribe                                          revision
 ## add        deckFile, trnrunArgs?, label?           runId
 ## cancel     runId
 ## shutdown   cancelRunning?
@@ -23,11 +22,12 @@
 ## starts from them. `trnrunArgs` are TRNRun options, rejected at once if
 ## TRNRun would refuse one; see `validate`.
 ##
-## After `subscribe`, the daemon also writes `{"event":"changed","revision":N}`
-## after each batch of changes it saves, so a client can block on stdout
-## instead of polling the database. Replies have `ok` and notifications
-## `event`. A subscribed client must keep reading stdout: the daemon waits for
-## room in the pipe. Its stdout ends only after its final changes are saved.
+## After each batch of changes it saves, the daemon also writes
+## `{"event":"changed","revision":N}`, so a client can block on stdout instead
+## of polling the database. Replies have `ok` and notifications `event`;
+## clients skip lines they do not need. Notifications never hold the daemon
+## up: a separate thread writes stdout and merges the notifications a client
+## has not read yet into one, see `writer`.
 ##
 ## `cancel` replies once the cancellation is recorded. A queued run is already
 ## FINISHED and CANCELLED by then; a running one becomes so once its TRNRun is
@@ -37,40 +37,55 @@
 ## starting them, and, with `cancelRunning`, kills running ones. The daemon
 ## exits once nothing runs. Meanwhile `cancel` and `shutdown` are still
 ## served, and `add` is rejected. Closing stdin exits at once, saving every
-## unfinished run as interrupted.
+## unfinished run as interrupted. Stdout ends only after the final changes are
+## saved. However the daemon exits, a client that does not read gets at most
+## `ExitGraceMs` to take what is left to write.
 
-import std/[json, options]
-from db_connector/db_common import DbError
+import std/[json, options, sequtils]
 import ./database
 import ./messages
 import ./scheduler
+import ./writer
 
-type
-  Client* = object
-    ## What the daemon knows about its one client.
-    subscribed*: bool
-    notified*: int ## Revision of the latest notification sent.
+export WriteLines
 
-  Output* = proc(lines: seq[string]): bool {.closure.}
-    ## Writes reply and notification lines; false once the client is gone.
+const ExitGraceMs = 1_000
+  ## How long a daemon about to exit still writes to a client that may not be reading.
 
-proc requireField(request: JsonNode, name: string): JsonNode =
-  ## Returns `request[name]`; `ValueError` if it is missing.
-  if name notin request:
-    raise newException(ValueError, "Missing field: " & name)
-  request[name]
-
-proc getString(node: JsonNode, name: string): string =
-  ## The string in `node`; `ValueError` if it holds another kind.
+proc parseField(node: JsonNode, name: string, _: typedesc[string]): string =
+  ## The string in field `name`; `InputError` if it holds another kind.
   if node.kind != JString:
-    raise newException(ValueError, "'" & name & "' must be a string")
+    raise newException(InputError, "'" & name & "' must be a string")
   node.getStr()
 
-proc optionalField(request: JsonNode, name: string): JsonNode =
-  ## `request[name]`, or nil when it is missing or null.
-  result = request.getOrDefault(name)
-  if result != nil and result.kind == JNull:
-    result = nil
+proc parseField(node: JsonNode, name: string, _: typedesc[int]): int =
+  ## The integer in field `name`; `InputError` if it holds another kind.
+  if node.kind != JInt:
+    raise newException(InputError, "'" & name & "' must be an integer")
+  node.getInt()
+
+proc parseField(node: JsonNode, name: string, _: typedesc[bool]): bool =
+  ## The boolean in field `name`; `InputError` if it holds another kind.
+  if node.kind != JBool:
+    raise newException(InputError, "'" & name & "' must be true or false")
+  node.getBool()
+
+proc parseField(node: JsonNode, name: string, _: typedesc[seq[string]]): seq[string] =
+  ## The strings in array field `name`; `InputError` if it holds anything else.
+  if node.kind != JArray or node.elems.anyIt(it.kind != JString):
+    raise newException(InputError, "'" & name & "' must be an array of strings")
+  node.elems.mapIt(it.getStr())
+
+proc field[T](request: JsonNode, name: string, _: typedesc[T]): T =
+  ## `request[name]` as a `T`; `InputError` if it is missing or of another type.
+  if name notin request:
+    raise newException(InputError, "Missing field: " & name)
+  request[name].parseField(name, T)
+
+proc optionalField[T](request: JsonNode, name: string, _: typedesc[T]): Option[T] =
+  ## `request[name]` as a `T`, or none when it is missing or null.
+  let node = request.getOrDefault(name)
+  if node == nil or node.kind == JNull: none(T) else: some(node.parseField(name, T))
 
 proc handleReady(scheduler: Scheduler, reply: JsonNode) =
   ## Reports the database and session a client reads from.
@@ -79,46 +94,34 @@ proc handleReady(scheduler: Scheduler, reply: JsonNode) =
   reply["revision"] = %scheduler.database.savedRevision
   reply["logId"] = %scheduler.database.lastLogId
 
-proc handleSubscribe(scheduler: Scheduler, client: var Client, reply: JsonNode) =
-  ## Starts change notifications from the latest saved revision.
-  client.subscribed = true
-  client.notified = scheduler.database.savedRevision
-  reply["revision"] = %client.notified
-
 proc handleAdd(scheduler: Scheduler, request, reply: JsonNode) =
   ## Validates and saves a simulation, replying with its new runId.
   let
-    deckFile = request.requireField("deckFile").getString("deckFile")
-    args = request.optionalField("trnrunArgs")
-    trnrunArgs = if args == nil: newSeq[string]() else: args.to(seq[string])
-    labelNode = request.optionalField("label")
-    label = if labelNode == nil: none(string) else: some(labelNode.getString("label"))
+    deckFile = request.field("deckFile", string)
+    trnrunArgs = request.optionalField("trnrunArgs", seq[string]).get(@[])
+    label = request.optionalField("label", string)
   reply["runId"] = %scheduler.add(deckFile, trnrunArgs, label)
 
 proc handleCancel(scheduler: Scheduler, request: JsonNode) =
   ## Records the cancellation of a simulation before acknowledging it.
-  let runId = request.requireField("runId")
-  if runId.kind != JInt:
-    raise newException(ValueError, "'runId' must be an integer")
-  scheduler.cancel(runId.getInt())
+  scheduler.cancel(request.field("runId", int))
 
 proc handleShutdown(scheduler: Scheduler, request: JsonNode) =
   ## Starts shutting down, optionally killing running runs.
-  let cancelRunning = request.optionalField("cancelRunning")
-  if cancelRunning != nil and cancelRunning.kind != JBool:
-    raise newException(ValueError, "'cancelRunning' must be true or false")
-  scheduler.requestShutdown(cancelRunning != nil and cancelRunning.getBool())
+  scheduler.requestShutdown(request.optionalField("cancelRunning", bool).get(false))
 
 proc parseRequest(line: string): JsonNode =
   ## Parses one request line, which must hold a JSON object.
   result = parseJson(line)
   if result.kind != JObject:
-    raise newException(ValueError, "Request must be a JSON object")
+    raise newException(InputError, "Request must be a JSON object")
 
-proc handleRequest*(scheduler: Scheduler, client: var Client, line: string): string =
+proc handleRequest*(scheduler: Scheduler, line: string): string =
   ## Runs one request line and returns its reply line.
   ##
-  ## Any failure but a `DbError` becomes an `ok: false` reply.
+  ## A request that is not valid JSON or that the scheduler rejects becomes an
+  ## `ok: false` reply. Anything else, such as a `DbError`, is a daemon fault
+  ## and raises.
   var
     id: JsonNode = nil
     fields = newJObject()
@@ -126,19 +129,16 @@ proc handleRequest*(scheduler: Scheduler, client: var Client, line: string): str
   try:
     let request = parseRequest(line)
     id = request.getOrDefault("id")
-    let cmd = request.requireField("cmd").getString("cmd")
+    let cmd = request.field("cmd", string)
     case cmd
     of "ready": scheduler.handleReady(fields)
-    of "subscribe": scheduler.handleSubscribe(client, fields)
     of "add": scheduler.handleAdd(request, fields)
     of "cancel": scheduler.handleCancel(request)
     of "shutdown": scheduler.handleShutdown(request)
-    else: raise newException(ValueError, "Unknown cmd: " & cmd)
-  except DbError:
-    raise
-  except CatchableError as error:
+    else: raise newException(InputError, "Unknown cmd: " & cmd)
+  except InputError, JsonParsingError:
     ok = false
-    fields = %*{"error": error.msg}
+    fields = %*{"error": getCurrentExceptionMsg()}
   let reply = newJObject()
   if id != nil:
     reply["id"] = id
@@ -147,36 +147,30 @@ proc handleRequest*(scheduler: Scheduler, client: var Client, line: string): str
     reply[key] = value
   $reply
 
-proc notifyChanges(scheduler: Scheduler, client: var Client, lines: var seq[string]) =
-  ## Adds a notification if a subscribed client has not seen the latest
-  ## saved revision.
-  if client.subscribed:
-    let revision = scheduler.database.savedRevision
-    if revision > client.notified:
-      client.notified = revision
-      lines.add($(%*{"event": "changed", "revision": revision}))
-
-proc serve*(scheduler: Scheduler, output: Output) =
+proc serve*(scheduler: Scheduler, write: WriteLines) =
   ## Serves the client until a shutdown completes or the client leaves, then
   ## closes or abandons the scheduler.
   ##
-  ## Each batch of messages is applied in one transaction, then its replies
-  ## are written, followed by one notification for a subscribed client.
-  var client = Client()
+  ## Each batch of messages is applied in one transaction. Its replies and the
+  ## revision it saved then go to the writer thread, which writes them with
+  ## `write` without holding up the next batch. A failed write ends serving
+  ## like a closed input. Returns once everything sent is written, or after
+  ## `ExitGraceMs` if the client is not reading.
+  var writer = Writer()
+  writer.start(write, scheduler.requestInbox, scheduler.database.savedRevision)
+  defer: writer.stop(ExitGraceMs)
   while true:
     let messages = scheduler.receive()
     var
-      lines: seq[string] = @[]
+      replies: seq[string] = @[]
       closed = false
     scheduler.atomically:
       for message in messages:
         case message.kind
-        of mkRequest: lines.add(scheduler.handleRequest(client, message.line))
+        of mkRequest: replies.add(scheduler.handleRequest(message.line))
         of mkClosed: closed = true
         of mkOutput, mkExited: scheduler.apply(message)
-    scheduler.notifyChanges(client, lines)
-    if lines.len > 0 and not output(lines):
-      closed = true
+    writer.send(replies, scheduler.database.savedRevision)
 
     if closed:
       scheduler.abandon()

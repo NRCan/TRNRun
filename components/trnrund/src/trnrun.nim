@@ -15,16 +15,14 @@
 import std/[options, oserrors, osproc, strutils, winlean]
 
 type
-  OutputCallback* = proc(line: string) {.gcsafe, raises: [].} ## Gets one TRNRun line.
+  OutputCallback* = proc(line: string) {.gcsafe, raises: [].}
 
   Launched* = object
-    ## A started TRNRun.
     process*: Process ## Owned by the launching thread; close it after the capture ends.
     output*: Handle ## Read end of the merged output; closed with `process`.
     waitHandle*: Handle ## For `captureOutput`, which closes it.
 
   CaptureResult* = tuple
-    ## Outcome of one `captureOutput` call.
     exitCode: Option[int] ## None when it could not be read.
     error: string ## Capture failure; empty otherwise.
 
@@ -33,8 +31,8 @@ const
   ReadSize = 4096
   WaitAccess = SYNCHRONIZE or PROCESS_QUERY_LIMITED_INFORMATION or PROCESS_TERMINATE
 
-proc release*(process: Process) =
-  ## Kills a still-running TRNRun process and closes its handles and pipes.
+proc release(process: Process) =
+  ## Kills a still-running TRNRun and closes its handles and pipes.
   try:
     if process.running:
       process.kill()
@@ -76,7 +74,7 @@ proc forwardLines(pending: var string, onOutput: OutputCallback) =
     onOutput(pending[start ..< stop])
     start = newline + 1
   if start > 0:
-    pending = pending[start .. ^1]
+    pending.delete(0 ..< start)
 
 proc captureOutput*(output, process: Handle, onOutput: OutputCallback): CaptureResult =
   ## Forwards every output line until the pipe ends, then waits for TRNRun to

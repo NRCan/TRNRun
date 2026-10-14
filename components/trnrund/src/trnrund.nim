@@ -6,15 +6,13 @@
 ## database, see `database`. When the client closes stdin, the daemon saves its
 ## unfinished runs as interrupted and exits at once, and the job object kills
 ## any TRNRun process still going.
-##
-## Option parsing itself lives in `cli`; this module owns executable metadata,
-## drives the parser, and connects the protocol to stdin and stdout.
 
 import std/[parseopt, winlean]
 import ./cli
 import ./messages
 import ./protocol
 import ./scheduler
+import ./threadstart
 
 const NimblePkgVersion {.strdefine.} = "unknown"
 const HelpText = """trnrund - run TRNSYS simulations for one client
@@ -30,25 +28,11 @@ Options:
   --database:PATH    SQLite database clients read (default: trnrund.sqlite3)
 
 Read one JSON request per stdin line and write one JSON reply per stdout line,
-in request order. A request may carry an "id", which its reply repeats:
+in request order, among {"event":"changed","revision":N} notifications:
   {"id":1,"cmd":"add","deckFile":"model.dck"}  ->  {"id":1,"ok":true,"runId":7}
-Rejected requests reply {"ok":false,"error":...}; database failures are fatal,
-with no reply.
-
-Commands: ready, subscribe, add, cancel, shutdown.
-ready returns the databasePath holding every run's state and logs, this
-daemon's sessionId, and the current revision and logId.
-add takes deckFile, optional trnrunArgs and label, and returns the runId the
-daemon assigned.
-subscribe makes the daemon also write {"event":"changed","revision":N} after
-each batch of saved changes; a subscribed client must keep reading stdout.
-{"cmd":"cancel","runId":7} stops a queued or running simulation, killing its
-TRNRun; it then finishes as CANCELLED. Finished runs are left unchanged.
-{"cmd":"shutdown","cancelRunning":false} cancels queued runs, waits for running
-ones (or kills them with cancelRunning true), then exits.
-Closing stdin exits at once, killing running simulations and saving them as
-FINISHED, interrupted. One daemon at a time may use a database. Keep it on a
-local disk. Startup failures are written to stderr.
+Commands: ready, add, cancel, shutdown. ready reports the database holding
+every run's state and logs. Closing stdin exits at once, saving unfinished runs
+as interrupted. See README.md for the protocol and the database layout.
 
 Exit codes: 0 ok  1 fatal  2 usage error"""
 
@@ -67,15 +51,19 @@ proc readRequests(inbox: ptr Channel[Message]) {.thread.} =
     discard # A broken pipe means the client is gone, like a closed one.
   inbox[].send(Message(kind: mkClosed))
 
-proc writeLines(lines: seq[string]): bool =
+proc writeLines(lines: seq[string]): bool {.nimcall, gcsafe, raises: [].} =
   ## Writes reply and notification lines to the client; false once it is gone.
-  try:
-    for line in lines:
-      stdout.writeLine(line)
-    stdout.flushFile()
-    true
-  except IOError:
-    false
+  ## Runs on the writer thread, the only one writing stdout. Calls WriteFile
+  ## directly, bypassing the C runtime's buffer, so a write cancelled at exit
+  ## leaves nothing for the exit to flush and block on.
+  var
+    text = ""
+    written = 0'i32
+  for line in lines:
+    text.add(line)
+    text.add('\n')
+  writeFile(getStdHandle(STD_OUTPUT_HANDLE), addr text[0], int32(text.len), addr written, nil) != 0 and
+    written == int32(text.len)
 
 proc keepStdHandlesPrivate() =
   ## Stops TRNRun children from inheriting the client's pipes, so stdout ends
@@ -86,20 +74,14 @@ proc keepStdHandlesPrivate() =
       discard setHandleInformation(handle, HANDLE_FLAG_INHERIT, 0)
 
 proc main() =
-  ## Collects user input from the command line and serves client requests.
-  ##
-  ## Failures raise: `ValueError` for usage errors, mapped to exit code 2 at
-  ## the top level, and anything else to 1.
-  var input = defaultCliInput()
-
-  var parser = initOptParser()
-  while true:
-    parser.next()
-    case parser.kind
-    of cmdEnd:
-      break
+  ## Parses the command line, then serves the client until it leaves or shuts down.
+  var
+    input = defaultCliInput()
+    parser = initOptParser()
+  for kind, key, value in parser.getopt():
+    case kind
     of cmdShortOption, cmdLongOption:
-      case parser.key
+      case key
       of "help", "h":
         echo HelpText
         return
@@ -107,20 +89,18 @@ proc main() =
         echo NimblePkgVersion
         return
       else:
-        if not input.applyOption(parser.key, parser.val):
-          let dashes = if parser.kind == cmdShortOption: "-" else: "--"
-          raise newException(ValueError, "Unknown option: " & dashes & parser.key)
+        if not input.applyOption(key, value):
+          let dashes = if kind == cmdShortOption: "-" else: "--"
+          raise newException(InputError, "Unknown option: " & dashes & key)
     of cmdArgument:
-      raise newException(ValueError, "Unexpected argument: " & parser.key)
+      raise newException(InputError, "Unexpected argument: " & key)
+    of cmdEnd:
+      discard
 
   keepStdHandlesPrivate()
   daemonScheduler = newScheduler(input.trnrunPath, input.maxConcurrent, input.databasePath)
-  let scheduler = daemonScheduler
-  {.push warning[ProveInit]: off, warning[Uninit]: off.}
-  createThread(reader, readRequests, scheduler.requestInbox)
-  {.pop.}
-
-  scheduler.serve(writeLines)
+  reader.startThread(readRequests, daemonScheduler.requestInbox)
+  daemonScheduler.serve(writeLines)
 
 proc writeError(message: string) =
   ## Reports a fatal diagnostic for humans. Clients must not parse stderr.
@@ -135,9 +115,9 @@ when isMainModule:
     try:
       main()
       0
-    except ValueError as error:
+    except InputError as error: # Serving answers client input; only usage errors get here.
       writeError(error.msg)
-      if daemonScheduler == nil: 2 else: 1 # Once serving, a ValueError is a bug, not a usage error.
+      2
     except CatchableError as error:
       writeError(error.msg)
       1

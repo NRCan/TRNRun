@@ -6,36 +6,38 @@
 ## scheduler inbox, as does the thread reading client requests. One shared
 ## inbox lets the scheduler block on a single channel, since Nim channels
 ## cannot wait on several at once. Work flows the other way through one shared
-## worker channel. Both are flat objects: each kind lists the fields it sets,
-## and the rest keep their defaults. Nothing else is shared between threads.
+## worker channel. `Message` is a flat object, since several kinds share
+## fields: each kind lists the fields it sets, and the rest keep their
+## defaults. Nothing else is shared between threads
+## but the replies handed to the stdout writer, see `writer`, which posts
+## `mkClosed` here too.
 
 import std/[options, winlean]
 
 type
   WorkKind* = enum
-    ## Kind of `Work` sent to a worker.
-    wkRead ## runId, output, process.
-    wkStop ## No fields. Sent once per worker during shutdown.
+    wkRead ## Capture the output and exit of one run.
+    wkStop ## Sent once per worker during shutdown.
 
   Work* = object
-    ## One unit handed from the scheduler to a worker.
-    kind*: WorkKind
-    runId*: int
-    output*: Handle
-      ## Read end of TRNRun's merged stdout and stderr. Owned by the
-      ## scheduler's `Process`, which it closes only after applying `mkExited`.
-    process*: Handle
-      ## A handle on TRNRun the worker owns and closes, to wait for its exit.
+    case kind*: WorkKind
+    of wkRead:
+      runId*: int
+      output*: Handle
+        ## Read end of TRNRun's merged stdout and stderr. Owned by the
+        ## scheduler's `Process`, which it closes only after applying `mkExited`.
+      process*: Handle
+        ## A handle on TRNRun the worker owns and closes, to wait for its exit.
+    of wkStop:
+      discard
 
   MessageKind* = enum
-    ## Kind of `Message` posted to the scheduler inbox.
     mkOutput ## runId, line. One line written by TRNRun.
     mkExited ## runId, exitCode, error. TRNRun exited and its output is drained.
     mkRequest ## line. One request line read from the client.
     mkClosed ## No fields. The client closed its input.
 
   Message* = object
-    ## One notification posted to the scheduler inbox.
     kind*: MessageKind
     runId*: int
     line*: string ## TRNRun output or client request.

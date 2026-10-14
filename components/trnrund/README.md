@@ -3,9 +3,9 @@
 `trnrund` is a Windows daemon that runs TRNRun simulations for one client. It
 launches at most `maxConcurrent` simulations at a time and saves their state as
 it changes. Clients submit runs over stdin/stdout and read their progress,
-results, and logs from a SQLite database the daemon keeps up to date. A client
-can also subscribe to a short notification after each batch of saved changes,
-instead of polling the database on a timer.
+results, and logs from a SQLite database the daemon keeps up to date. The
+daemon also writes a short notification after each batch of saved changes, so
+a client can wait for one instead of polling the database on a timer.
 
 ## Build and test
 
@@ -45,15 +45,15 @@ existing `.dck` or `.trd` files; extensions are case-insensitive.
 ## Protocol
 
 The client sends one JSON object per stdin line. The daemon answers each one
-with exactly one reply line on stdout, in request order. A request may carry an
+with exactly one reply line on stdout, in request order, among notification
+lines (see [Notifications](#notifications)). A request may carry an
 `id`, any JSON value, which its reply repeats first:
 
 ```json
 {"id":1,"cmd":"ready"}
-{"id":2,"cmd":"subscribe"}
-{"id":3,"cmd":"add","deckFile":"model.dck","trnrunArgs":["--watchTmp:true"],"label":"case A"}
-{"id":4,"cmd":"cancel","runId":7}
-{"id":5,"cmd":"shutdown","cancelRunning":false}
+{"id":2,"cmd":"add","deckFile":"model.dck","trnrunArgs":["--watchTmp:true"],"label":"case A"}
+{"id":3,"cmd":"cancel","runId":7}
+{"id":4,"cmd":"shutdown","cancelRunning":false}
 ```
 
 Every reply contains `ok`. A rejected request replies
@@ -64,7 +64,6 @@ save.
 | `cmd` | Request fields | Reply fields |
 | ----- | -------------- | ------------ |
 | `ready` | | `databasePath`, `sessionId`, `revision`, `logId` |
-| `subscribe` | | `revision` |
 | `add` | `deckFile`, `trnrunArgs`?, `label`? | `runId` |
 | `cancel` | `runId` | |
 | `shutdown` | `cancelRunning`? | |
@@ -95,10 +94,9 @@ reused within a database. The reply does not mean the run has started; read
 - `label` is an optional text tag saved with the run, for the client's own use.
   It does not need to be unique.
 
-### `subscribe`
+### Notifications
 
-After `subscribe`, the daemon also writes a notification after each batch of
-changes it saves:
+After each batch of changes it saves, the daemon also writes a notification:
 
 ```json
 {"event":"changed","revision":131}
@@ -107,12 +105,15 @@ changes it saves:
 Replies have `ok`; notifications have `event`. A notification means everything
 up to `revision` is readable in the database, so a client can block reading
 stdout and query the database when one arrives, instead of polling on a timer.
-Several changes are announced together, so revisions can skip. The reply to
-`subscribe` holds the revision current at that point.
+Several changes are announced together, so revisions can skip. Notifications
+start after the `revision` that `ready` returns. A client that only wants
+replies skips every line without `ok`.
 
-**A subscribed client must keep reading stdout.** The daemon waits for room in
-the pipe before it continues, so a client that stops reading stalls it. A client
-that never subscribes only ever receives replies.
+A client that does not read stdout never holds the daemon up: a separate thread
+writes it, and notifications the client has not read yet merge into one, which
+announces the latest revision. Replies are never dropped, and each write puts the
+waiting replies before that one notification. The exceptions are the ends
+described under [Shutdown and failures](#shutdown-and-failures).
 
 ### `cancel`
 
@@ -219,8 +220,8 @@ SELECT * FROM logs WHERE log_id > ? ORDER BY log_id;
 ```
 
 Start from 0 to read the whole history, or from the `revision` and `logId`
-that `ready` returns to read only what this daemon changes. A subscribed client
-runs these queries when a notification arrives.
+that `ready` returns to read only what this daemon changes. A client that waits
+for notifications runs these queries when one arrives.
 
 Both are indexed, so polling stays fast however many runs the database holds.
 So are `state = ?` and `state IN (...)`, which find the few running runs among
@@ -264,7 +265,7 @@ Readers do not need the lock.
 whole batch at once; [`examples/example_waiting.ps1`](examples/example_waiting.ps1)
 waits for each run to leave `QUEUED` before submitting the next, and
 [`examples/example_percent.ps1`](examples/example_percent.ps1) also prints
-progress. They name runs with `label`, do not subscribe, and poll the database
+progress. They name runs with `label`, skip notifications, and poll the database
 through Python's standard `sqlite3` module, so they need `python` on `PATH`.
 Real simulations need TRNSYS.
 
@@ -281,7 +282,9 @@ through real TRNSYS; adjust its configuration for your installation.
   `Not started: the client disconnected` or `Interrupted: the client
   disconnected`. The same happens if stdout can no longer be written.
 - stdout ends only after the daemon's final changes are saved, so a client
-  that reads end of file there can read the database for the outcome. TRNRun
+  that reads end of file there can read the database for the outcome. However
+  the daemon exits, a client still reading stdout gets everything left to
+  write; one that is not reading holds the exit up for at most a second. TRNRun
   children do not inherit the daemon's stdin, stdout, or stderr.
 - A kill-on-close Windows Job Object terminates remaining TRNRun descendants
   when the daemon exits.

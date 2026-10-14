@@ -31,10 +31,10 @@ suite "CLI options":
       check not input.applyOption(key, "value")
       check input == defaultCliInput()
 
-  test "raises ValueError for invalid known option values":
+  test "raises InputError for invalid known option values":
     var input = defaultCliInput()
 
-    expect ValueError:
+    expect InputError:
       discard input.applyOption("maxConcurrent", "many")
-    expect ValueError:
+    expect InputError:
       discard input.applyOption("database", "")

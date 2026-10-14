@@ -11,7 +11,6 @@ import std/[oserrors, winlean]
 # Win32 API
 type
   JOBOBJECT_BASIC_LIMIT_INFORMATION = object
-    ## Mirrors the Win32 struct of the same name.
     perProcessUserTimeLimit: int64
     perJobUserTimeLimit: int64
     limitFlags: uint32
@@ -23,7 +22,6 @@ type
     schedulingClass: uint32
 
   IO_COUNTERS = object
-    ## Mirrors the Win32 struct of the same name.
     readOperationCount: uint64
     writeOperationCount: uint64
     otherOperationCount: uint64
@@ -32,7 +30,6 @@ type
     otherTransferCount: uint64
 
   JOBOBJECT_EXTENDED_LIMIT_INFORMATION = object
-    ## Mirrors the Win32 struct of the same name.
     basicLimitInformation: JOBOBJECT_BASIC_LIMIT_INFORMATION
     ioInfo: IO_COUNTERS
     processMemoryLimit: uint

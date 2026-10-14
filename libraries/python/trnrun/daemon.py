@@ -55,7 +55,7 @@ class Daemon:
         executable: str | Path = DEFAULT_EXECUTABLE,
         request_timeout: float = DEFAULT_REQUEST_TIMEOUT,
     ) -> None:
-        """Start the daemon, wait for ready, subscribe to its changes, then open its database.
+        """Start the daemon, wait for ready, then open its database.
 
         The database is created if missing, but its directory must exist; an
         existing one keeps its runs and logs, and the daemon continues its run
@@ -79,7 +79,6 @@ class Daemon:
             self.session_id: int = _field(ready, "sessionId", int)
             self.start_revision: int = _field(ready, "revision", int)
             self.start_log_id: int = _field(ready, "logId", int)
-            _ = self._process.request({"cmd": "subscribe"})
             self.database: Database = Database(
                 self.database_path,
                 after_revision=self.start_revision,

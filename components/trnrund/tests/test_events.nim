@@ -6,7 +6,7 @@ from ../../trnrun/src/settings as trnrunSettings import nil
 
 
 proc parseLine(line: string): SimulationEvent =
-  parseSimulationEvent(parseJson(line))
+  parseEventLine(line).get()
 
 
 suite "TRNRun event parsing":
@@ -17,36 +17,36 @@ suite "TRNRun event parsing":
       waitForGui: true,
       detectTimeoutMs: 300000,
       pollMs: 100,
-      severity: Warning,
+      severity: lsWarning,
     )
     let settingNode = %setting
     settingNode["kind"] = %"SETTING"
-    let parsedSetting = parseSimulationEvent(settingNode)
-    check parsedSetting.kind == eventSetting
-    check parsedSetting.settingData == setting
+    let parsedSetting = parseLine($settingNode)
+    check parsedSetting.kind == ekSetting
+    check parsedSetting.setting == setting
 
     let status = parseLine("""{"kind":"STATUS","status":"DONE","message":"ok"}""")
-    check status.kind == eventStatus
-    check status.statusData == StatusEvent(status: statusDone, message: "ok")
+    check status.kind == ekStatus
+    check status.status == StatusEvent(status: stDone, message: "ok")
 
     let config = parseLine("""{"kind":"CONFIG","start":0,"stop":8760,"step":0.25}""")
-    check config.kind == eventConfig
-    check config.configData == ConfigEvent(start: 0, stop: 8760, step: 0.25)
+    check config.kind == ekConfig
+    check config.config == ConfigEvent(start: 0, stop: 8760, step: 0.25)
 
     let progress = parseLine(
       """{"kind":"PROGRESS","time":10,"percent":0.5,"elapsedMs":20,"etaMs":20}"""
     )
-    check progress.kind == eventProgress
-    check progress.progressData ==
+    check progress.kind == ekProgress
+    check progress.progress ==
       ProgressEvent(time: 10, percent: 0.5, elapsedMs: 20, etaMs: 20)
 
     let log = parseLine(
       """{"kind":"LOG","severity":"Fatal","time":1.5,"unitId":3,"typeId":56,""" &
       """"messageCode":100,"message":"Bad input","information":"Check unit 3"}"""
     )
-    check log.kind == eventLog
-    check log.logData == LogEvent(
-      severity: Fatal,
+    check log.kind == ekLog
+    check log.log == LogEvent(
+      severity: lsFatal,
       time: 1.5,
       unitId: some(3),
       typeId: some(56),
@@ -60,52 +60,35 @@ suite "TRNRun event parsing":
       """{"kind":"STATUS","timestamp":"2026-06-19T19:37:13","runId":"run",""" &
       """"status":"RUNNING","message":""}"""
     )
-    check status.statusData == StatusEvent(status: statusRunning, message: "")
+    check status.status == StatusEvent(status: stRunning, message: "")
 
   test "leaves absent optional LOG fields empty":
     let log = parseLine("""{"kind":"LOG","severity":"Notice","time":0}""")
-    check log.logData == LogEvent(severity: Notice, time: 0)
+    check log.log == LogEvent(severity: lsNotice, time: 0)
 
-  test "raises ValueError for lines that are not known events":
-    for line in [
-      """[1]""",
-      """{"kind":"BOGUS"}""",
-      """{"kind":"STATUS","status":"BOGUS","message":""}""",
-      """{"kind":"STATUS","status":5,"message":""}""",
-    ]:
-      checkpoint("line: " & line)
-      expect ValueError:
-        discard parseLine(line)
-
-  test "parseEventLine returns none for lines that are not valid events":
-    check parseEventLine("""{"kind":"STATUS","status":"DONE","message":""}""").isSome
+  test "returns none for lines that are not known events or miss a required field":
     for line in [
       "TRNRun says hello",
       "[1]",
       """{"kind":"BOGUS"}""",
+      """{"kind":"STATUS","status":"BOGUS","message":""}""",
+      """{"kind":"STATUS","status":5,"message":""}""",
       """{"kind":"STATUS","status":"DONE"}""",
       """{"kind":"LOG","severity":"Debug","time":0}""",
-    ]:
-      checkpoint("line: " & line)
-      check parseEventLine(line).isNone
-
-  test "raises KeyError for events missing a required field":
-    for line in [
       """{"status":"DONE","message":""}""",
       """{"kind":"CONFIG","start":0,"stop":10}""",
       """{"kind":"SETTING","guiVisibility":"hidden","pollMs":100}""",
     ]:
       checkpoint("line: " & line)
-      expect KeyError:
-        discard parseLine(line)
+      check parseEventLine(line).isNone
 
   test "SettingEvent holds exactly the SETTING event TRNRun builds":
     # Fails when TRNRun adds, renames, or retypes an option this module does not mirror.
     let sent = trnrunEvents.toJson(trnrunSettings.settingEvent(
       trnrunSettings.DefaultRunnerSettings, r"C:\TRNSYS18\Exe\TrnEXE64.exe"))
-    let parsed = parseSimulationEvent(sent)
-    check parsed.kind == eventSetting
+    let parsed = parseLine($sent)
+    check parsed.kind == ekSetting
     let expected = sent.copy()
     expected.delete("kind")
     expected.delete("timestamp")
-    check %parsed.settingData == expected
+    check %parsed.setting == expected
