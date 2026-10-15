@@ -12,11 +12,10 @@ from types import TracebackType
 from typing import Final, Protocol, Self
 
 from trnrun.batch.simulation import Simulation
-from trnrun.config import SimulationConfig
-from trnrun.daemon import Daemon
+from trnrun.daemon import DEFAULT_TRNRUN, DEFAULT_TRNRUND, Daemon
 from trnrun.database import Database
-from trnrun.process import DEFAULT_EXECUTABLE
-from trnrun.records import LogEvent
+from trnrun.events import LogEvent
+from trnrun.settings import SimulationSettings
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +55,7 @@ class SimulationManager:
     gathering the changes saved meanwhile.
 
     The runs are kept in a temporary database, deleted on ``shutdown()``.
-    Pass ``database`` to keep them in that SQLite file instead, which outlives
+    Pass ``database_path`` to keep them in that SQLite file instead, which outlives
     the manager; its directory must exist. A manager reusing it adds its runs
     in a new session and never deletes the existing ones.
 
@@ -79,18 +78,18 @@ class SimulationManager:
 
     def __init__(
         self,
-        max_concurrent: int | None = None,
+        database_path: str | Path | None = None,
         *,
-        database: str | Path | None = None,
-        trnrun_path: str | Path | None = None,
-        executable: str | Path = DEFAULT_EXECUTABLE,
+        max_concurrent: int | None = None,
+        trnrund_path: str | Path = DEFAULT_TRNRUND,
+        trnrun_path: str | Path = DEFAULT_TRNRUN,
         refresh_interval: float = DEFAULT_REFRESH_INTERVAL,
         display: bool | Display = True,
     ) -> None:
         """Start the daemon and the background thread syncing its runs.
 
         max_concurrent defaults to one less than the CPU count, at least 1.
-        trnrun_path and executable are passed to ``Daemon``. Startup failures
+        trnrund_path and trnrun_path are passed to ``Daemon``. Startup failures
         raise as they do there.
         """
         if refresh_interval < 0:
@@ -105,13 +104,18 @@ class SimulationManager:
         if self.display is not None:
             _ = self._resources.callback(self.display.close)
         try:
-            if database is None:
+            if database_path is None:
                 temporary = self._resources.enter_context(
                     TemporaryDirectory(prefix="trnrun-", ignore_cleanup_errors=True),
                 )
-                database = Path(temporary) / "runs.sqlite3"
+                database_path = Path(temporary) / "runs.sqlite3"
             self._daemon: Daemon = self._resources.enter_context(
-                Daemon(database, max_concurrent=max_concurrent, trnrun_path=trnrun_path, executable=executable),
+                Daemon(
+                    database_path,
+                    max_concurrent=max_concurrent,
+                    trnrund_path=trnrund_path,
+                    trnrun_path=trnrun_path,
+                ),
             )
         except BaseException:
             self._resources.close()
@@ -152,14 +156,14 @@ class SimulationManager:
     def add(
         self,
         deck_file: str | Path,
-        config: SimulationConfig | None = None,
+        settings: SimulationSettings | None = None,
         *,
         label: str | None = None,
     ) -> Simulation:
         """Queue a deck and return its handle, kept in sync from now on.
 
-        The run starts once a slot is free. ``config`` defaults to
-        ``SimulationConfig()``, which keeps TRNRun's defaults; it is copied,
+        The run starts once a slot is free. ``settings`` defaults to
+        ``SimulationSettings()``, which keeps TRNRun's defaults; it is copied,
         so it can be changed and reused for later submissions. ``label`` is
         saved with the run in the database. A relative ``deck_file`` resolves
         from the current working directory.
@@ -174,14 +178,14 @@ class SimulationManager:
         RuntimeError
             If the manager is closed, or the error that stopped syncing.
         """
-        config = SimulationConfig() if config is None else replace(config)
-        trnrun_args = config.to_cli_args()
+        settings = SimulationSettings() if settings is None else replace(settings)
+        trnrun_args = settings.to_cli_args()
         deck_path = Path(deck_file).absolute()
 
         with self._lock:
             self._check()
             run_id = self._daemon.add(deck_path, trnrun_args, label=label)
-            simulation = Simulation(run_id, deck_path, config)
+            simulation = Simulation(run_id, deck_path, settings)
             self._simulations[run_id] = simulation
         return simulation
 

@@ -1,16 +1,8 @@
-from .config import SimulationConfig
 from .daemon import Daemon
 from .database import Database
-from .records import (
-    Changes,
-    ConfigEvent,
-    LogEvent,
-    ProgressEvent,
-    SimulationInfo,
-    SimulationState,
-    SimulationStatus,
-    StatusEvent,
-)
+from .events import ConfigEvent, LogEvent, ProgressEvent, SettingEvent, SimulationStatus, StatusEvent
+from .runs import Changes, SimulationInfo, SimulationState
+from .settings import SimulationSettings
 
 __version__ = "0.7.0"
 __all__ = [
@@ -20,8 +12,9 @@ __all__ = [
     "Database",
     "LogEvent",
     "ProgressEvent",
-    "SimulationConfig",
+    "SettingEvent",
     "SimulationInfo",
+    "SimulationSettings",
     "SimulationState",
     "SimulationStatus",
     "StatusEvent",

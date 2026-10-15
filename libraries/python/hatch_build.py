@@ -33,8 +33,8 @@ class CustomBuildHook(BuildHookInterface):
 
             if executable_version != package_version:
                 raise ValueError(
-                    f"{executable.name} version ",
-                    f"{executable_version!r} does not match package ",
+                    f"{executable.name} version "
+                    f"{executable_version!r} does not match package "
                     f"version {package_version!r}",
                 )
 

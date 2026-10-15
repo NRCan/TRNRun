@@ -1,132 +1,22 @@
-"""Typed views of what trnrund saves: one record per run, one per log entry.
+"""Typed views of what trnrund saves: one record per run, and its database rows parsed.
 
 The daemon flattens the latest TRNRun event of each kind into its run's row.
-``parse_run`` groups those columns back into the events they came from, and
-``parse_log`` reads one ``logs`` row. ``Database`` returns these records, and
-``trnrun.batch`` keeps them on its handles.
+``parse_run`` groups those columns back into the ``events`` they came from,
+and ``parse_log`` reads one ``logs`` row as a ``LogEvent``. ``Database``
+returns these records, and ``trnrun.batch`` keeps them on its handles.
 """
 
 # pyright: reportAny=false
 
 import json
+import re
 import sqlite3
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
 
-
-# -----------------------------------------------------------------
-# Events
-# -----------------------------------------------------------------
-class SimulationStatus(StrEnum):
-    """Runner-reported simulation status."""
-
-    PENDING = "PENDING"
-    LAUNCHING = "LAUNCHING"
-    RUNNING = "RUNNING"
-    DONE = "DONE"
-    CANCELLED = "CANCELLED"
-    ERROR = "ERROR"
-    TIMEOUT = "TIMEOUT"
-    STALLED = "STALLED"
-
-
-@dataclass(frozen=True)
-class StatusEvent:
-    """The run's latest TRNRun status.
-
-    Attributes
-    ----------
-    status : SimulationStatus
-        State reported by TRNRun.
-    message : str
-        Optional outcome or failure detail reported by TRNRun.
-    """
-
-    status: SimulationStatus
-    message: str = ""
-
-
-@dataclass(frozen=True)
-class ProgressEvent:
-    """The run's latest completion and timing.
-
-    Attributes
-    ----------
-    time : float
-        Current simulation time, in simulated hours.
-    percent : float
-        Completion of the run as a fraction from 0 to 1.
-    elapsed_ms : float
-        Wall-clock milliseconds elapsed since the run started.
-    eta_ms : float
-        Estimated wall-clock milliseconds remaining.
-    """
-
-    time: float
-    percent: float
-    elapsed_ms: float
-    eta_ms: float
-
-
-@dataclass(frozen=True)
-class ConfigEvent:
-    """The simulation's time bounds and step, in simulated hours.
-
-    Attributes
-    ----------
-    start : float
-        Simulation start time.
-    stop : float
-        Simulation stop time.
-    step : float
-        Simulation time step.
-    """
-
-    start: float
-    stop: float
-    step: float
-
-
-@dataclass(frozen=True)
-class LogEvent:
-    """One severity-tagged TRNSYS log entry.
-
-    Only ``severity`` and ``time`` are guaranteed; the remaining fields
-    depend on what TRNSYS attaches to the message.
-
-    Attributes
-    ----------
-    log_id : int
-        Position of the entry among every run's logs; grows with each entry.
-    run_id : int
-        Run the entry belongs to.
-    severity : str
-        Severity tag: ``"Notice"``, ``"Warning"`` or ``"Fatal"``.
-    time : float
-        Simulation time at which the message was produced.
-    unit_id : int or None
-        Unit that emitted the message.
-    type_id : int or None
-        Type of the unit that emitted the message.
-    message_code : int or None
-        Numeric code identifying the message.
-    message : str or None
-        Human-readable message text.
-    information : str or None
-        Additional detail attached to the message.
-    """
-
-    log_id: int
-    run_id: int
-    severity: str
-    time: float
-    unit_id: int | None = None
-    type_id: int | None = None
-    message_code: int | None = None
-    message: str | None = None
-    information: str | None = None
+from .events import ConfigEvent, LogEvent, ProgressEvent, SettingEvent, SimulationStatus, StatusEvent
 
 
 # -----------------------------------------------------------------
@@ -167,11 +57,8 @@ class SimulationInfo:
         Absolute deck path.
     trnrun_args : list of str
         TRNRun options the run was added with.
-    status, progress, config
+    status, progress, config, setting
         Latest event of each kind, or None before TRNRun reports one.
-    setting : dict or None
-        Settings TRNRun reported applying, keyed by TRNRun's camelCase names,
-        or None before it reports them.
     notices, warnings, fatals : int
         Number of log entries saved so far, by severity.
     succeeded : bool
@@ -197,7 +84,7 @@ class SimulationInfo:
     status: StatusEvent | None = None
     progress: ProgressEvent | None = None
     config: ConfigEvent | None = None
-    setting: dict[str, object] | None = None
+    setting: SettingEvent | None = None
     notices: int = 0
     warnings: int = 0
     fatals: int = 0
@@ -239,9 +126,21 @@ class Changes:
 # -----------------------------------------------------------------
 # Row Parsers
 # -----------------------------------------------------------------
-def _timestamp(value: str | None) -> datetime | None:
+def _parse_timestamp(value: str | None) -> datetime | None:
     """Parse a saved UTC timestamp, such as ``2026-10-09T14:03:12.345Z``."""
     return None if value is None else datetime.fromisoformat(value)
+
+
+# TRNRun's camelCase ``SETTING`` keys, to the ``SettingEvent`` fields they fill; built once, since every row has them.
+_SETTING_FIELDS = {
+    re.sub(r"_(\w)", lambda match: match[1].upper(), setting_field.name): setting_field.name
+    for setting_field in fields(SettingEvent)
+}
+
+
+def _parse_setting(text: str) -> SettingEvent:
+    """Parse the saved ``SETTING`` JSON; KeyError or TypeError if its keys are not ``SettingEvent``'s fields."""
+    return SettingEvent(**{_SETTING_FIELDS[key]: value for key, value in json.loads(text).items()})
 
 
 def parse_run(row: sqlite3.Row) -> SimulationInfo:
@@ -261,16 +160,16 @@ def parse_run(row: sqlite3.Row) -> SimulationInfo:
         status=None if status is None else StatusEvent(SimulationStatus(status), row["trnrun_message"] or ""),
         progress=None if percent is None else ProgressEvent(row["sim_time"], percent, row["elapsed_ms"], row["eta_ms"]),
         config=None if stop is None else ConfigEvent(row["start_time"], stop, row["time_step"]),
-        setting=None if setting is None else json.loads(setting),
+        setting=None if setting is None else _parse_setting(setting),
         notices=row["notices"],
         warnings=row["warnings"],
         fatals=row["fatals"],
         succeeded=bool(row["succeeded"]),
         exit_code=row["exit_code"],
         error=row["error"] or "",
-        submitted_at=_timestamp(row["submitted_at"]),
-        started_at=_timestamp(row["started_at"]),
-        finished_at=_timestamp(row["finished_at"]),
+        submitted_at=_parse_timestamp(row["submitted_at"]),
+        started_at=_parse_timestamp(row["started_at"]),
+        finished_at=_parse_timestamp(row["finished_at"]),
     )
 
 

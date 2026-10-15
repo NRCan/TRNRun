@@ -1,4 +1,4 @@
-"""Configuration for launching a TRNRun process."""
+"""Settings for launching the trnrund and TRNRun processes."""
 
 from dataclasses import dataclass, fields
 from pathlib import Path
@@ -6,13 +6,13 @@ from typing import ClassVar, cast
 
 
 @dataclass
-class SimulationConfig:
+class SimulationSettings:
     r"""TRNRun options for a simulation, with named, typed fields.
 
     Each field maps to a trnrun.exe command-line flag (noted below as
     ``--flag``), passed as ``--name:value``. A field left at ``None`` is not
     passed, so TRNRun's own default applies; run ``trnrun.exe --help`` for
-    them. ``SimulationConfig()`` therefore passes nothing. The trnrun.exe
+    them. ``SimulationSettings()`` therefore passes nothing. The trnrun.exe
     executable itself is chosen per ``Daemon``, since one daemon runs every
     simulation with the same runner. Relative paths are interpreted from
     Python's working directory.
@@ -145,20 +145,10 @@ class SimulationConfig:
     )
 
     def to_cli_args(self) -> list[str]:
-        """Return unquoted argv entries for the fields that are set, with trnexe_path made absolute.
-
-        Does not mutate the configuration.
-
-        Raises
-        ------
-        FileNotFoundError
-            If trnexe_path is set but is not a file.
-        TypeError
-            If a boolean field holds another type.
-        """
+        """Return unquoted argv entries for the fields that are set, with trnexe_path made absolute."""
         args: list[str] = []
-        for config_field in fields(self):
-            name = config_field.name
+        for settings_field in fields(self):
+            name = settings_field.name
             value = cast("object", getattr(self, name))
             if value is None:
                 continue
@@ -171,5 +161,60 @@ class SimulationConfig:
                 if not trnexe.is_file():
                     raise FileNotFoundError(f"TrnEXE executable not found: {trnexe}")
                 value = trnexe
+            args.append(f"--{self._FLAGS[name]}:{value}")
+        return args
+
+
+@dataclass
+class DaemonSettings:
+    r"""trnrund options for a daemon, with named, typed fields.
+
+    Each field maps to a trnrund.exe command-line flag (noted below as
+    ``--flag``), passed as ``--name:value``. A field left at ``None`` is not
+    passed, so trnrund's own default applies; run ``trnrund.exe --help`` for
+    them. ``Daemon`` builds one from its parameters, so callers keep passing
+    those. Relative paths are interpreted from Python's working directory.
+
+    Attributes
+    ----------
+    trnrun_path : str or Path, optional
+        TRNRun executable every run is started with (``--trnrun``). trnrund
+        defaults to the trnrun.exe beside it.
+    max_concurrent : int, optional
+        Simulations run at once (``--maxConcurrent``), at least 1. trnrund
+        defaults to one less than the CPU count, at least 1.
+    database_path : str or Path, optional
+        SQLite database holding every run's state and logs (``--database``).
+        It is created if missing, but its directory must exist. trnrund
+        defaults to trnrund.sqlite3 in its working directory.
+
+    Notes
+    -----
+    trnrund checks the values when it starts, and exits with a usage error
+    for a missing TRNRun or a max_concurrent below 1.
+    """
+
+    trnrun_path: str | Path | None = None
+    max_concurrent: int | None = None
+    database_path: str | Path | None = None
+
+    # trnrund flag of each field.
+    _FLAGS: ClassVar[dict[str, str]] = {
+        "trnrun_path": "trnrun",
+        "max_concurrent": "maxConcurrent",
+        "database_path": "database",
+    }
+    _PATHS: ClassVar[frozenset[str]] = frozenset({"trnrun_path", "database_path"})
+
+    def to_cli_args(self) -> list[str]:
+        """Return unquoted argv entries for the fields that are set, with paths made absolute."""
+        args: list[str] = []
+        for settings_field in fields(self):
+            name = settings_field.name
+            value = cast("object", getattr(self, name))
+            if value is None:
+                continue
+            if name in self._PATHS:
+                value = Path(str(value)).absolute()
             args.append(f"--{self._FLAGS[name]}:{value}")
         return args

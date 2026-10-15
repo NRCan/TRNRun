@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 from time import perf_counter
 
-from trnrun import SimulationConfig
+from trnrun import SimulationSettings
 from trnrun.batch import Simulation, SimulationManager
 
 # -----------------------------------------------------------------------------
@@ -34,9 +34,9 @@ DCK_FOLDER = __root__ / "runs"
 FAST_SIM_COUNT = 0
 SLOW_SIM_COUNT = 50
 MAX_CONCURRENT = 25
-POLL_INTERVAL = 0.1
+REFRESH_INTERVAL = 0.1
 
-CONFIG = SimulationConfig(
+SETTINGS = SimulationSettings(
     trnexe_path=TRNEXE_PATH,
     watch_tmp=True,
 )
@@ -59,8 +59,8 @@ def copy_dck(src: Path, dst_dir: Path, n: int) -> list[Path]:
 
 def run_simulations(dck_files: list[Path]) -> list[Simulation]:
     """Submit both workloads to one manager and wait for all runs to finish."""
-    with SimulationManager(max_concurrent=MAX_CONCURRENT, poll_interval=POLL_INTERVAL) as manager:
-        simulations = [manager.add(dck, CONFIG) for dck in dck_files]
+    with SimulationManager(max_concurrent=MAX_CONCURRENT, refresh_interval=REFRESH_INTERVAL) as manager:
+        simulations = [manager.add(dck, SETTINGS) for dck in dck_files]
         manager.wait()
 
     return simulations
@@ -71,7 +71,7 @@ def run_simulations(dck_files: list[Path]) -> list[Simulation]:
 # -----------------------------------------------------------------------------
 def main() -> int:
     """Prepare the stress workload and return a failing exit code unless all succeed."""
-    _ = CONFIG.to_cli_args()  # Fail on a missing TRNSYS before copying decks.
+    _ = SETTINGS.to_cli_args()  # Fail on a missing TRNSYS before copying decks.
 
     for source in (FAST_DCK, SLOW_DCK):
         if not source.is_file():

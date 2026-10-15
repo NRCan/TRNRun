@@ -24,7 +24,8 @@ from rich.segment import Segment
 from rich.text import Text
 
 from trnrun.batch.simulation import Simulation
-from trnrun.records import SimulationState, SimulationStatus
+from trnrun.events import SimulationStatus
+from trnrun.runs import SimulationState
 
 # -----------------------------------------------------------------
 # Constants

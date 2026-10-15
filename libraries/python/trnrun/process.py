@@ -14,24 +14,8 @@ from .job import assign_to_job
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_EXECUTABLE = Path(__file__).parent / "bin" / "trnrund.exe"
-DEFAULT_REQUEST_TIMEOUT = 60.0
 _EXIT_WAIT = 10.0  # Seconds to wait for trnrund to exit once its stdout ended.
-
-
-def _cli_args(
-    *,
-    database_path: str | Path,
-    max_concurrent: int | None,
-    trnrun_path: str | Path | None,
-) -> list[str]:
-    """Return trnrund options with absolute paths; None keeps the daemon's default."""
-    args = [f"--database:{Path(database_path).absolute()}"]
-    if max_concurrent is not None:
-        args.append(f"--maxConcurrent:{max_concurrent}")
-    if trnrun_path is not None:
-        args.append(f"--trnrun:{Path(trnrun_path).absolute()}")
-    return args
+_CLOSE_WAIT = 10.0  # Seconds trnrund gets to save interrupted runs and exit once stdin is closed.
 
 
 class DaemonProcess:
@@ -47,17 +31,8 @@ class DaemonProcess:
     Requests are serialized, so any thread may send one.
     """
 
-    def __init__(
-        self,
-        *,
-        database_path: str | Path,
-        max_concurrent: int | None,
-        trnrun_path: str | Path | None,
-        executable: str | Path,
-        request_timeout: float,
-    ) -> None:
-        """Start trnrund without a console window, in the kill-on-close job; do not wait for it."""
-        args = _cli_args(database_path=database_path, max_concurrent=max_concurrent, trnrun_path=trnrun_path)
+    def __init__(self, trnrund_path: str | Path, args: list[str], *, request_timeout: float) -> None:
+        """Start trnrund with ``args`` without a console window, in the kill-on-close job; do not wait for it."""
         self._request_timeout: float = request_timeout
         # Serializes requests, so replies arrive in the order they are awaited.
         self._request_lock: threading.Lock = threading.Lock()
@@ -75,7 +50,7 @@ class DaemonProcess:
         self._diagnostics: str | None = None
         try:
             self._popen: subprocess.Popen[str] = subprocess.Popen(
-                [executable, *args],
+                [trnrund_path, *args],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -85,10 +60,8 @@ class DaemonProcess:
                 creationflags=subprocess.CREATE_NO_WINDOW,
             )
         except FileNotFoundError as error:
-            raise FileNotFoundError(
-                f"trnrund executable not found: {executable}. "
-                "Run 'nimble deploy' in components/trnrund, or pass executable=.",
-            ) from error
+            hint = "Run 'nimble deploy' in components/trnrund, or pass trnrund_path=."
+            raise FileNotFoundError(f"trnrund executable not found: {trnrund_path}. {hint}") from error
         _ = assign_to_job(self._popen)
         self._reader: threading.Thread = threading.Thread(target=self._read, name="trnrund-stdout", daemon=True)
         self._reader.start()
@@ -214,7 +187,9 @@ class DaemonProcess:
     def close(self) -> None:
         """Close stdin, which interrupts unfinished runs, and wait for trnrund to exit.
 
-        Safe to call again, after wait(), or after trnrund crashed.
+        A trnrund still running after ``_CLOSE_WAIT`` seconds is killed, and
+        its job object kills its runs with it, so closing never hangs. Safe
+        to call again, after wait(), or after trnrund crashed.
         """
         self._expect_exit = True
         stdin = self._popen.stdin
@@ -222,9 +197,18 @@ class DaemonProcess:
             # A crashed trnrund leaves an unsent request whose flush fails; the stream is closed regardless.
             with suppress(OSError):
                 stdin.close()
-        _ = self._popen.wait()
+        try:
+            _ = self._popen.wait(_CLOSE_WAIT)
+        except subprocess.TimeoutExpired:
+            logger.warning("trnrund did not exit within %s s of closing stdin; killing it", _CLOSE_WAIT)
+            self._popen.kill()
+            _ = self._popen.wait()
         if threading.current_thread() is not self._reader:
-            self._reader.join()
+            self._reader.join(_EXIT_WAIT)
+            if self._reader.is_alive():
+                # Its blocked read holds stdout's lock, so closing stdout would hang too; the daemon thread is left.
+                logger.warning("trnrund's stdout is still open after it exited; leaving it to the reader thread")
+                return
         for stream in (self._popen.stdout, self._popen.stderr):
             if stream is not None:
                 with suppress(OSError):

@@ -1,14 +1,20 @@
 """Start trnrund, submit runs to it, and follow them through its database."""
 
 from collections.abc import Sequence
+from contextlib import ExitStack
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import TracebackType
 from typing import Self
 
-from .config import SimulationConfig
 from .database import Database
-from .process import DEFAULT_EXECUTABLE, DEFAULT_REQUEST_TIMEOUT, DaemonProcess
-from .records import Changes
+from .process import DaemonProcess
+from .runs import Changes
+from .settings import DaemonSettings, SimulationSettings
+
+DEFAULT_TRNRUN = Path(__file__).parent / "bin" / "trnrun.exe"
+DEFAULT_TRNRUND = Path(__file__).parent / "bin" / "trnrund.exe"
+DEFAULT_REQUEST_TIMEOUT = 60.0
 
 
 def _field[T](reply: dict[str, object], key: str, kind: type[T]) -> T:
@@ -48,32 +54,45 @@ class Daemon:
 
     def __init__(
         self,
-        database_path: str | Path = "trnrund.sqlite3",
+        database_path: str | Path | None = None,
         *,
         max_concurrent: int | None = None,
-        trnrun_path: str | Path | None = None,
-        executable: str | Path = DEFAULT_EXECUTABLE,
+        trnrund_path: str | Path = DEFAULT_TRNRUND,
+        trnrun_path: str | Path = DEFAULT_TRNRUN,
         request_timeout: float = DEFAULT_REQUEST_TIMEOUT,
     ) -> None:
         """Start the daemon, wait for ready, then open its database.
 
-        The database is created if missing, but its directory must exist; an
-        existing one keeps its runs and logs, and the daemon continues its run
-        numbers in a new session. max_concurrent defaults to one less than the
-        CPU count, at least 1. trnrun_path defaults to trnrun.exe beside the
-        trnrund executable. Relative paths use the current working directory.
+        Without database_path, the runs are kept in a temporary database,
+        deleted by ``close()``. A given database is created if missing, but its
+        directory must exist; an existing one keeps its runs and logs, and the
+        daemon continues its run numbers in a new session. max_concurrent
+        defaults to one less than the CPU count, at least 1. trnrund_path and
+        trnrun_path default to the trnrund.exe and trnrun.exe bundled in
+        ``trnrun/bin``. Relative paths use the current working directory.
         Requests that get no reply within request_timeout seconds raise
         TimeoutError. Startup failures raise RuntimeError with trnrund's
         message.
         """
-        self._process: DaemonProcess = DaemonProcess(
-            database_path=database_path,
-            max_concurrent=max_concurrent,
-            trnrun_path=trnrun_path,
-            executable=executable,
-            request_timeout=request_timeout,
-        )
+        # Unwound by close(): the database, then the daemon, then a temporary directory.
+        self._resources: ExitStack = ExitStack()
         try:
+            if database_path is None:
+                temporary = self._resources.enter_context(
+                    TemporaryDirectory(prefix="trnrun-", ignore_cleanup_errors=True),
+                )
+                database_path = Path(temporary) / "runs.sqlite3"
+            settings = DaemonSettings(
+                trnrun_path=trnrun_path,
+                max_concurrent=max_concurrent,
+                database_path=database_path,
+            )
+            self._process: DaemonProcess = DaemonProcess(
+                trnrund_path,
+                settings.to_cli_args(),
+                request_timeout=request_timeout,
+            )
+            _ = self._resources.callback(self._process.close)
             ready = self._process.request({"cmd": "ready"})
             self.database_path: Path = Path(_field(ready, "databasePath", str))
             self.session_id: int = _field(ready, "sessionId", int)
@@ -84,8 +103,9 @@ class Daemon:
                 after_revision=self.start_revision,
                 after_log_id=self.start_log_id,
             )
+            _ = self._resources.callback(self.database.close)
         except BaseException:
-            self._process.close()
+            self._resources.close()
             raise
 
     # -----------------------------------------------------------------
@@ -94,18 +114,18 @@ class Daemon:
     def add(
         self,
         deck_file: str | Path,
-        trnrun_args: Sequence[str] | SimulationConfig = (),
+        trnrun_args: Sequence[str] | SimulationSettings = (),
         *,
         label: str | None = None,
     ) -> int:
         """Submit a deck and return the run ID trnrund assigned; return after saving, not finishing.
 
-        ``trnrun_args`` are raw TRNRun options or a ``SimulationConfig``.
+        ``trnrun_args`` are raw TRNRun options or a ``SimulationSettings``.
         ``label`` is an optional tag saved with the run. A relative deck_file
         resolves from the current working directory now, not from the
         daemon's. Raises ValueError if trnrund rejects the run.
         """
-        args = trnrun_args.to_cli_args() if isinstance(trnrun_args, SimulationConfig) else list(trnrun_args)
+        args = trnrun_args.to_cli_args() if isinstance(trnrun_args, SimulationSettings) else list(trnrun_args)
         request: dict[str, object] = {"cmd": "add", "deckFile": str(Path(deck_file).absolute()), "trnrunArgs": args}
         if label is not None:
             request["label"] = label
@@ -171,24 +191,17 @@ class Daemon:
         """Return how trnrund exited if it ended before ``shutdown()`` or ``close()``, else None."""
         return self._process.exit_error()
 
-    def check(self) -> None:
-        """Raise RuntimeError if trnrund exited before ``shutdown()`` or ``close()``."""
-        error = self._process.exit_error()
-        if error is not None:
-            raise error
-
     # -----------------------------------------------------------------
     # Closing
     # -----------------------------------------------------------------
     def close(self) -> None:
-        """Close stdin, interrupting unfinished runs, wait for trnrund, then close ``database``.
+        """Close ``database``, close stdin, interrupting unfinished runs, and wait for trnrund.
 
-        Safe to call more than once, including after the daemon crashed.
+        trnrund is killed, with its runs, if it has not exited 10 seconds
+        after stdin closes. A temporary database is then deleted. Safe to
+        call more than once, including after the daemon crashed.
         """
-        try:
-            self._process.close()
-        finally:
-            self.database.close()
+        self._resources.close()
 
     def __enter__(self) -> Self:
         """Return this daemon for use in a with block."""

@@ -9,7 +9,8 @@ from pathlib import Path
 from types import TracebackType
 from typing import Self
 
-from .records import Changes, LogEvent, SimulationInfo, SimulationState, parse_log, parse_run
+from .events import LogEvent
+from .runs import Changes, SimulationInfo, SimulationState, parse_log, parse_run
 
 SCHEMA_VERSION = 3
 

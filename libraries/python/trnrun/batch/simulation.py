@@ -8,14 +8,15 @@ complete log history. To wait for a run, use ``SimulationManager.wait()``.
 
 from pathlib import Path
 
-from trnrun.config import SimulationConfig
-from trnrun.records import LogEvent, ProgressEvent, SimulationInfo, SimulationState, SimulationStatus
+from trnrun.events import LogEvent, ProgressEvent, SimulationStatus
+from trnrun.runs import SimulationInfo, SimulationState
+from trnrun.settings import SimulationSettings
 
 
 class Simulation:
     """One submitted simulation, kept up to date by its ``SimulationManager``.
 
-    ``id``, ``deck_path``, and ``config`` are what was submitted; ``id`` is
+    ``id``, ``deck_path``, and ``settings`` are what was submitted; ``id`` is
     the run ID trnrund assigned, the ``run_id`` of its database row. ``info``
     is the run's latest state from the daemon's database, and the properties
     below are shortcuts to its everyday fields; the rest, such as the exit
@@ -25,11 +26,11 @@ class Simulation:
     holds every log entry received.
     """
 
-    def __init__(self, run_id: int, deck_path: str | Path, config: SimulationConfig) -> None:
+    def __init__(self, run_id: int, deck_path: str | Path, settings: SimulationSettings) -> None:
         """Initialize a queued simulation with an empty log history."""
         self.id: int = run_id
         self.deck_path: Path = Path(deck_path)
-        self.config: SimulationConfig = config
+        self.settings: SimulationSettings = settings
 
         self._info: SimulationInfo = SimulationInfo(run_id, SimulationState.QUEUED, deck_file=self.deck_path)
         self._logs: list[LogEvent] = []

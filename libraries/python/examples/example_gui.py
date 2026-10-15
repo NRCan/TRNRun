@@ -8,30 +8,26 @@ a GUI that would rather let a background thread keep handles up to date, see
 
 import tkinter as tk
 from pathlib import Path
-from tempfile import TemporaryDirectory
 
-from trnrun import Daemon, SimulationConfig
+from trnrun import Daemon, SimulationSettings
 
 __root__ = Path(__file__).resolve().parent
 
 DECKS = [__root__ / "dck" / "example_wo_plot_w_tracking.dck", __root__ / "dck" / "example_wo_plot_wo_tracking.dck"]
-CONFIG = SimulationConfig(watch_tmp=True)
+SETTINGS = SimulationSettings(watch_tmp=True)
 POLL_MS = 500
 
 
 def main() -> None:
     """Submit decks and draw database changes on the UI thread."""
-    with (
-        TemporaryDirectory(prefix="trnrun-gui-", ignore_cleanup_errors=True) as database_dir,
-        Daemon(Path(database_dir) / "runs.sqlite3", max_concurrent=2) as daemon,
-    ):
+    with Daemon(max_concurrent=2) as daemon:
         root = tk.Tk()
         root.title("TRNRun - custom GUI")
         labels: dict[int, tk.Label] = {}
         decks: dict[int, Path] = {}
 
         for deck in DECKS:
-            run_id = daemon.add(deck, CONFIG)
+            run_id = daemon.add(deck, SETTINGS)
             label = tk.Label(root, anchor="w", width=80, text=f"{deck.name}: queued")
             label.pack()
             labels[run_id] = label
