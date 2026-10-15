@@ -1,7 +1,6 @@
 """The trnrund process: start it, exchange JSON lines with it, and report its exit."""
 
 import json
-import logging
 import queue
 import subprocess
 import threading
@@ -11,8 +10,6 @@ from pathlib import Path
 from typing import cast
 
 from .job import assign_to_job
-
-logger = logging.getLogger(__name__)
 
 _EXIT_WAIT = 10.0  # Seconds to wait for trnrund to exit once its stdout ended.
 _CLOSE_WAIT = 10.0  # Seconds trnrund gets to save interrupted runs and exit once stdin is closed.
@@ -85,14 +82,12 @@ class DaemonProcess:
             self._replies.put(None)
 
     def _dispatch(self, line: str) -> None:
-        """Route one stdout line to its request or to change waiters."""
+        """Route one stdout line to its request or to change waiters; other lines are ignored."""
         try:
             decoded = cast("object", json.loads(line))
         except json.JSONDecodeError:
-            logger.warning("Ignoring a trnrund line that is not JSON: %r", line)
             return
         if not isinstance(decoded, dict):
-            logger.warning("Ignoring a trnrund line that is not an object: %r", line)
             return
         message = cast("dict[str, object]", decoded)
         if "event" in message:
@@ -103,8 +98,6 @@ class DaemonProcess:
                     self._changed.notify_all()
         elif isinstance(message.get("ok"), bool):
             self._replies.put(message)
-        else:
-            logger.warning("Ignoring an unknown trnrund line: %r", line)
 
     # -----------------------------------------------------------------
     # Requests and notifications
@@ -200,14 +193,12 @@ class DaemonProcess:
         try:
             _ = self._popen.wait(_CLOSE_WAIT)
         except subprocess.TimeoutExpired:
-            logger.warning("trnrund did not exit within %s s of closing stdin; killing it", _CLOSE_WAIT)
             self._popen.kill()
             _ = self._popen.wait()
         if threading.current_thread() is not self._reader:
             self._reader.join(_EXIT_WAIT)
             if self._reader.is_alive():
                 # Its blocked read holds stdout's lock, so closing stdout would hang too; the daemon thread is left.
-                logger.warning("trnrund's stdout is still open after it exited; leaving it to the reader thread")
                 return
         for stream in (self._popen.stdout, self._popen.stderr):
             if stream is not None:

@@ -1,6 +1,6 @@
 """Example: running one simulation with the built-in progress display.
 
-Install with ``pip install trnrun[display]``.
+Install with ``pip install trnrun``.
 """
 
 from pathlib import Path

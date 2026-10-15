@@ -1,6 +1,6 @@
 """Example: running multiple TRNSYS simulations with SimulationManager.
 
-Install with ``pip install trnrun[display]``.
+Install with ``pip install trnrun``.
 """
 
 from __future__ import annotations

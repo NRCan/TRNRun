@@ -1,13 +1,12 @@
 # TRNRun for Python
 
 A thin wrapper for the Windows `trnrund` daemon, plus a simulation manager
-with an optional live progress display built on Rich.
+with a live progress display built on Rich.
 Requires Python 3.12 or later and the native `trnrund.exe` and `trnrun.exe`.
 Real simulations also require TRNSYS.
 
 ```sh
-pip install trnrun            # Daemon, Database, SimulationSettings, SimulationManager
-pip install trnrun[display]   # adds Rich, for the manager's built-in progress display
+pip install trnrun
 ```
 
 Just want to launch a batch and watch it? Skip to the
@@ -273,9 +272,7 @@ Everything else is in `simulation.info`, a frozen
 agree.
 
 The display keeps one live line per running simulation and prints each
-finished one once above them, in terminals and Jupyter notebooks alike. It
-needs Rich, from `pip install trnrun[display]`; without it, `display=True`
-raises an `ImportError` that says so.
+finished one once above them, in terminals and Jupyter notebooks alike.
 
 ```text
 [1] …\decks\model.dck | Status: DONE       | Logs: N:2 W:1 F:0  | Elapsed: 00:01:12 | ETA: 00:00:00 | [####################]  8,760 /  8,760 (100%)

@@ -1,47 +1,24 @@
 """Simulation handles kept in sync with one trnrund daemon."""
 
-import logging
 from collections.abc import Sequence
-from contextlib import ExitStack
+from contextlib import ExitStack, suppress
 from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Condition, Event, Lock, Thread, current_thread
 from time import monotonic
 from types import TracebackType
-from typing import Final, Protocol, Self
+from typing import Final, Self
 
+from trnrun.batch.display import Display, ProgressDisplay
 from trnrun.batch.simulation import Simulation
 from trnrun.daemon import DEFAULT_TRNRUN, DEFAULT_TRNRUND, Daemon
 from trnrun.database import Database
 from trnrun.events import LogEvent
 from trnrun.settings import SimulationSettings
 
-logger = logging.getLogger(__name__)
-
 DEFAULT_REFRESH_INTERVAL: Final[float] = 0.1
 _STOP_CHECK: Final[float] = 0.5  # Longest the background thread waits before checking for shutdown.
-
-
-class Display(Protocol):
-    """What ``SimulationManager`` drives, from its background thread."""
-
-    def update(self, changed: Sequence[Simulation]) -> None:
-        """Show the runs that changed in the latest sync, in submission order."""
-
-    def close(self) -> None:
-        """Release output resources; the manager calls it once, on shutdown."""
-
-
-def _progress_display() -> Display:
-    """Create the built-in display, which needs the optional Rich dependency."""
-    try:
-        from trnrun.batch.display import ProgressDisplay  # noqa: PLC0415 - Rich is optional
-    except ImportError as error:
-        raise ImportError(
-            "The built-in progress display needs Rich: install trnrun[display], or pass display=False.",
-        ) from error
-    return ProgressDisplay()
 
 
 class SimulationManager:
@@ -59,9 +36,8 @@ class SimulationManager:
     the manager; its directory must exist. A manager reusing it adds its runs
     in a new session and never deletes the existing ones.
 
-    By default the manager shows its runs with a ``ProgressDisplay``, which
-    needs Rich (``pip install trnrun[display]``). Pass ``display=False`` to
-    show them yourself, for example from a GUI timer reading the handles, or
+    By default the manager shows its runs with a ``ProgressDisplay``. Pass
+    ``display=False`` to show them yourself, for example from a GUI timer reading the handles, or
     any ``Display``, which the background thread then updates instead. The
     display is closed on ``shutdown()``.
 
@@ -98,7 +74,7 @@ class SimulationManager:
         self._resources: ExitStack = ExitStack()
         self.display: Display | None
         if display is True:
-            self.display = _progress_display()
+            self.display = ProgressDisplay()
         else:
             self.display = None if display is False else display
         if self.display is not None:
@@ -318,12 +294,11 @@ class SimulationManager:
                 return  # Shut down meanwhile; waiters already raise that the manager is closed.
             self._failure = error
             self._changed.notify_all()
-        logger.error("TRNRun manager stopped syncing simulations", exc_info=error)
 
     def _sync(self, reader: Database) -> None:
         """Read once what changed, apply it to the handles, show it, then release finished ones.
 
-        A display failure is logged and never stops syncing. Raises the
+        A display failure is ignored and never stops syncing. Raises the
         daemon's exit, after applying what it saved, since it can no longer
         finish the remaining runs.
         """
@@ -350,10 +325,8 @@ class SimulationManager:
         changed.sort(key=lambda simulation: simulation.id)
 
         if changed and self.display is not None:
-            try:
+            with suppress(Exception):
                 self.display.update(changed)
-            except Exception:
-                logger.exception("TRNRun display failed to update")
 
         # Kept tracked until displayed, so wait() returns only after their final lines.
         with self._changed:

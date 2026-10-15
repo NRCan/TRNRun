@@ -9,13 +9,10 @@ automatically when we die. The package is Windows-only.
 """
 
 import ctypes
-import logging
 import subprocess
 from ctypes import wintypes
 from threading import Lock
 from typing import cast
-
-logger = logging.getLogger(__name__)
 
 # -----------------------------------------------------------------
 # Constants
@@ -134,11 +131,7 @@ def _get_job() -> int | None:
         try:
             _job_handle = _create_job()
         except OSError:
-            _job_failed = True
-            logger.warning(
-                "could not create a Job Object; TRNSYS processes may be orphaned if this process is killed",
-                exc_info=True,
-            )
+            _job_failed = True  # TRNSYS processes may be orphaned if this process is killed.
         return _job_handle
 
 
@@ -148,8 +141,7 @@ def _get_job() -> int | None:
 def assign_to_job(process: subprocess.Popen[str]) -> bool:
     """Assign a freshly spawned process to the kill-on-close job.
 
-    Best effort: a failure is logged and reported through the return value,
-    never raised, because losing orphan cleanup is not a reason to fail a
+    Best effort: a failure is reported through the return value, never raised, because losing orphan cleanup is not a reason to fail a
     simulation.
 
     Parameters
@@ -171,10 +163,5 @@ def assign_to_job(process: subprocess.Popen[str]) -> bool:
         if not _kernel32.AssignProcessToJobObject(job, handle):
             _raise_last_error("AssignProcessToJobObject")
     except (OSError, AttributeError, TypeError, ValueError):
-        logger.warning(
-            "could not assign pid %s to the Job Object; it may be orphaned",
-            process.pid,
-            exc_info=True,
-        )
         return False
     return True

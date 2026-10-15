@@ -39,20 +39,19 @@ Progress reporting requires the optional
 
 ## Python quick start
 
-Install the package with its optional Rich-based display:
+Install the package:
 
 ```powershell
-pip install "trnrun[display]"
+pip install trnrun
 ```
 
 Or with uv:
 
 ```powershell
-uv add "trnrun[display]"
+uv add trnrun
 ```
 
-For client or non-display usage, install `pip install trnrun` (or
-`uv add trnrun`); use `SimulationManager(display=False)` to run without Rich.
+Use `SimulationManager(display=False)` to run without the progress display.
 
 Run a deck:
 

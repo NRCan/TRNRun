@@ -64,6 +64,13 @@ fixable = ["ALL"]
 unfixable = []
 dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
 
+[lint.per-file-ignores]
+"tests/**" = [
+    "S101",    # assert
+    "SLF001",  # private-member-access: tests check internals
+    "PLC2701", # import-private-name: tests check internals
+]
+
 [lint.pydocstyle]
 convention = "numpy"
 

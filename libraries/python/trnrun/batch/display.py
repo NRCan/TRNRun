@@ -1,9 +1,9 @@
-"""Built-in progress display for ``SimulationManager`` runs. Requires Rich.
+"""Progress displays for ``SimulationManager`` runs.
 
 ``SimulationManager`` calls its display's ``update`` from its background
 thread after every sync that changed a run, with those runs, and ``close`` on
 shutdown. Any object with those two methods, a ``Display``, can replace the
-built-in ``ProgressDisplay``. Install ``trnrun[display]`` for Rich.
+built-in ``ProgressDisplay``.
 
 ``ProgressDisplay`` keeps one live line per running simulation, and prints
 each finished run once as a final line above them. In a terminal the live
@@ -17,6 +17,7 @@ redirected output works too.
 
 from collections.abc import Sequence
 from io import StringIO
+from typing import Protocol
 
 from rich.console import Console, Group
 from rich.live import Live
@@ -44,6 +45,19 @@ NOTEBOOK_FRAME = (
     '<pre style="margin:0;white-space:pre;overflow-x:auto;line-height:1.3;'
     'font-family:monospace;color:inherit;background:transparent">{code}</pre>'
 )
+
+
+# -----------------------------------------------------------------
+# Display
+# -----------------------------------------------------------------
+class Display(Protocol):
+    """What ``SimulationManager`` drives, from its background thread."""
+
+    def update(self, changed: Sequence[Simulation]) -> None:
+        """Show the runs that changed in the latest sync, in submission order."""
+
+    def close(self) -> None:
+        """Release output resources; the manager calls it once, on shutdown."""
 
 
 # -----------------------------------------------------------------
