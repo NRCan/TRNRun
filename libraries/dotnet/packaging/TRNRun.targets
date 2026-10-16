@@ -1,0 +1,11 @@
+<Project>
+  <!-- Keep child executables on disk in the same layout as project-reference builds. -->
+  <ItemGroup>
+    <None Include="$(MSBuildThisFileDirectory)../native/trnrun.exe" Link="native/trnrun.exe"
+          CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"
+          ExcludeFromSingleFile="true" Pack="false" />
+    <None Include="$(MSBuildThisFileDirectory)../native/trnrunq.exe" Link="native/trnrunq.exe"
+          CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"
+          ExcludeFromSingleFile="true" Pack="false" />
+  </ItemGroup>
+</Project>

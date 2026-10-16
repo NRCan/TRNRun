@@ -1,0 +1,16 @@
+C:\Users\alexl\Documents\Project\Coding\NRCan\TRNRun_V5\TRNRun\libraries\dotnet\src\TRNRun\bin\Debug\net10.0-windows\native\trnrun.exe
+C:\Users\alexl\Documents\Project\Coding\NRCan\TRNRun_V5\TRNRun\libraries\dotnet\src\TRNRun\bin\Debug\net10.0-windows\native\trnrunq.exe
+C:\Users\alexl\Documents\Project\Coding\NRCan\TRNRun_V5\TRNRun\libraries\dotnet\src\TRNRun\bin\Debug\net10.0-windows\TRNRun.deps.json
+C:\Users\alexl\Documents\Project\Coding\NRCan\TRNRun_V5\TRNRun\libraries\dotnet\src\TRNRun\bin\Debug\net10.0-windows\TRNRun.dll
+C:\Users\alexl\Documents\Project\Coding\NRCan\TRNRun_V5\TRNRun\libraries\dotnet\src\TRNRun\bin\Debug\net10.0-windows\TRNRun.pdb
+C:\Users\alexl\Documents\Project\Coding\NRCan\TRNRun_V5\TRNRun\libraries\dotnet\src\TRNRun\bin\Debug\net10.0-windows\TRNRun.xml
+C:\Users\alexl\Documents\Project\Coding\NRCan\TRNRun_V5\TRNRun\libraries\dotnet\src\TRNRun\obj\Debug\net10.0-windows\TRNRun.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\alexl\Documents\Project\Coding\NRCan\TRNRun_V5\TRNRun\libraries\dotnet\src\TRNRun\obj\Debug\net10.0-windows\TRNRun.AssemblyInfoInputs.cache
+C:\Users\alexl\Documents\Project\Coding\NRCan\TRNRun_V5\TRNRun\libraries\dotnet\src\TRNRun\obj\Debug\net10.0-windows\TRNRun.AssemblyInfo.cs
+C:\Users\alexl\Documents\Project\Coding\NRCan\TRNRun_V5\TRNRun\libraries\dotnet\src\TRNRun\obj\Debug\net10.0-windows\TRNRun.csproj.CoreCompileInputs.cache
+C:\Users\alexl\Documents\Project\Coding\NRCan\TRNRun_V5\TRNRun\libraries\dotnet\src\TRNRun\obj\Debug\net10.0-windows\TRNRun.sourcelink.json
+C:\Users\alexl\Documents\Project\Coding\NRCan\TRNRun_V5\TRNRun\libraries\dotnet\src\TRNRun\obj\Debug\net10.0-windows\TRNRun.dll
+C:\Users\alexl\Documents\Project\Coding\NRCan\TRNRun_V5\TRNRun\libraries\dotnet\src\TRNRun\obj\Debug\net10.0-windows\refint\TRNRun.dll
+C:\Users\alexl\Documents\Project\Coding\NRCan\TRNRun_V5\TRNRun\libraries\dotnet\src\TRNRun\obj\Debug\net10.0-windows\TRNRun.xml
+C:\Users\alexl\Documents\Project\Coding\NRCan\TRNRun_V5\TRNRun\libraries\dotnet\src\TRNRun\obj\Debug\net10.0-windows\TRNRun.pdb
+C:\Users\alexl\Documents\Project\Coding\NRCan\TRNRun_V5\TRNRun\libraries\dotnet\src\TRNRun\obj\Debug\net10.0-windows\ref\TRNRun.dll
