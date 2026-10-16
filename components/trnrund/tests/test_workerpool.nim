@@ -1,12 +1,7 @@
 import std/[options, os, osproc, sequtils, unittest]
 
 import ../src/[messages, trnrun, workerpool]
-import ./fake_trnrun
-
-
-proc createDeck(directory, name: string): string =
-  result = directory / name
-  writeFile(result, "fake TRNSYS deck")
+import ./[fake_deck, fake_trnrun]
 
 proc receiveUntilExited(inbox: var Channel[Message], runs: int): seq[Message] =
   ## Receives every message until `runs` simulations have exited.
@@ -27,9 +22,11 @@ proc drain(inbox: var Channel[Message]): seq[Message] =
     result.add(message)
 
 proc readWork(runId: int, launched: Launched): Work =
+  ## `wkRead` work for the run `launched` started as `runId`.
   Work(kind: wkRead, runId: runId, output: launched.output, process: launched.waitHandle)
 
 proc runTests() =
+  ## Runs the worker pool tests in a temporary directory.
   let testDirectory = getTempDir() / "trnrund_workerpool_tests"
   if dirExists(testDirectory):
     removeDir(testDirectory)
@@ -99,7 +96,7 @@ proc runTests() =
 
       pool.start(1, addr inbox)
       var launched: seq[Launched] = @[]
-      for runId in 1 .. 3:
+      for runId in 1..3:
         launched.add(launch(runId, doneDeck, trnrun, []))
         pool.submit(readWork(runId, launched[^1]))
       pool.shutdown()

@@ -21,19 +21,23 @@ proc record(lines: seq[string]): bool {.nimcall, gcsafe, raises: [].} =
   accepting.load()
 
 proc writes(): seq[seq[string]] =
+  ## The lines of every write so far.
   withLock outputLock:
     result = written
 
 proc waitForCalls(count: int) =
+  ## Waits until `count` writes began; fails after 5 seconds.
   let deadline = getMonoTime() + initDuration(seconds = 5)
   while calls.load() < count:
     doAssert getMonoTime() < deadline, "the writer never wrote"
     sleep(1)
 
 proc changed(revision: int): string =
+  ## The notification line announcing `revision`.
   $(%*{"event": "changed", "revision": revision})
 
 proc runTests() =
+  ## Runs the writer tests.
   initLock(outputLock)
 
   suite "writer":

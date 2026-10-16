@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("TRNRun.Example")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+b6551f646124a10a30e21e5215bbde7490b142ba")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+311d1eafd5690eca4d0992e5ec6a165b3764965a")]
 [assembly: System.Reflection.AssemblyProductAttribute("TRNRun.Example")]
 [assembly: System.Reflection.AssemblyTitleAttribute("TRNRun.Example")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

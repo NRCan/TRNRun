@@ -1,12 +1,7 @@
 import std/[monotimes, options, os, osproc, times, unittest]
 
 import ../src/trnrun
-import ./fake_trnrun
-
-
-proc createDeck(directory, name: string): string =
-  result = directory / name
-  writeFile(result, "fake TRNSYS deck")
+import ./[fake_deck, fake_trnrun]
 
 proc runRecorded(
     deckFile: string,
@@ -19,6 +14,7 @@ proc runRecorded(
   var lines: seq[string] = @[]
 
   proc onOutput(line: string) {.gcsafe, raises: [].} =
+    ## Records one output line.
     lines.add(line)
 
   if killAfterFirstLine:
@@ -27,6 +23,7 @@ proc runRecorded(
   result = (outcome: outcome, lines: lines)
 
 proc runTests() =
+  ## Runs the launch and capture tests in a temporary directory.
   let testDirectory = getTempDir() / "trnrund_trnrun_tests"
   if dirExists(testDirectory):
     removeDir(testDirectory)

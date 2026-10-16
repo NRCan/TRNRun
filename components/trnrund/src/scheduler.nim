@@ -9,21 +9,15 @@
 ## finished run frees its slot for the next queued run as its exit is applied.
 ##
 ## Close the scheduler with `close` once `isDone`, so every worker is joined,
-## or `abandon` it right before the process exits. The inbox remains open
-## because of the Nim 2.2 ORC channel-close issue.
+## or `abandon` it right before the process exits. The inbox is never closed,
+## to avoid the Nim 2.2 ORC crash described in `workerpool`.
 ##
 ## The database is the record of every run; the scheduler only keeps in memory
 ## the runs waiting for a slot and those running, which a new daemon never
 ## resumes anyway.
 
 import std/[deques, options, osproc, tables]
-import ./database
-import ./events
-import ./job
-import ./messages
-import ./trnrun
-import ./validate
-import ./workerpool
+import ./[database, events, messages, trnrun, validate, workerpool]
 
 export InputError
 
@@ -35,6 +29,7 @@ const
 
 type
   Queued = object
+    ## A saved run waiting for a slot, with what its launch needs.
     runId: int
     deckFile: string
     trnrunArgs: seq[string]
@@ -46,44 +41,39 @@ type
 
   Scheduler* = ref object
     ## Queued and running simulations, plus the pool that reads their output.
-    ##
-    ## A `ref` so the inbox and work channel keep the stable addresses that
-    ## the workers and the request reader retain.
     pool: WorkerPool
-    inbox: Channel[Message]
+    inbox: Channel[Message] ## Never moves, being in a `ref`, so threads can point to it.
     database: Database
 
     trnrunPath: string
     maxConcurrent: int
     isShuttingDown: bool ## No more runs start; set by `requestShutdown` and `abandon`.
     isClosed: bool ## The database is closed; set by `close` and `abandon`.
-    queue: Deque[Queued]
-      ## Submitted runs waiting for a slot, oldest first.
-    running: Table[int, Running]
-      ## Launched runs until their exit is applied; at most `maxConcurrent`.
+    queue: Deque[Queued] ## Oldest first.
+    running: Table[int, Running] ## At most `maxConcurrent`, by runId.
+
+proc launchQueued(scheduler: Scheduler, run: Queued) =
+  ## Launches one queued run, or finishes it with the launch error if TRNRun cannot start.
+  let launched =
+    try:
+      launch(run.runId, run.deckFile, scheduler.trnrunPath, run.trnrunArgs)
+    except CatchableError as error:
+      scheduler.database.finish(run.runId, none(int), error.msg)
+      return
+  scheduler.database.start(run.runId)
+  scheduler.running[run.runId] = Running(process: launched.process)
+  scheduler.pool.submit(
+    Work(kind: wkRead, runId: run.runId, output: launched.output, process: launched.waitHandle)
+  )
 
 proc dispatch(scheduler: Scheduler) =
   ## Launches the longest-queued runs while a slot is free.
-  ##
-  ## A run whose TRNRun cannot start finishes at once with the launch error.
   while not scheduler.isShuttingDown and scheduler.running.len < scheduler.maxConcurrent and
       scheduler.queue.len > 0:
-    let run = scheduler.queue.popFirst()
-    let launched =
-      try:
-        launch(run.runId, run.deckFile, scheduler.trnrunPath, run.trnrunArgs)
-      except CatchableError as error:
-        scheduler.database.finish(run.runId, none(int), error.msg)
-        continue
-    scheduler.database.start(run.runId)
-    scheduler.running[run.runId] = Running(process: launched.process)
-    scheduler.pool.submit(
-      Work(kind: wkRead, runId: run.runId, output: launched.output, process: launched.waitHandle)
-    )
+    scheduler.launchQueued(scheduler.queue.popFirst())
 
 proc kill(run: var Running, reason: string) =
   ## Kills a running TRNRun once; its exit is applied as cancelled for `reason`.
-  ## A TRNRun that already exited, before its exit is applied, keeps its real outcome.
   if run.cancelReason.len == 0 and run.process.running:
     run.cancelReason = reason
     run.process.kill()
@@ -114,28 +104,37 @@ proc removeQueued(scheduler: Scheduler, runId: int): bool =
 # Public API
 
 proc newScheduler*(trnrunPath: string, maxConcurrent: int, databasePath: string): Scheduler =
-  ## Starts a scheduler that runs the TRNRun at `trnrunPath` and saves to
-  ## `databasePath`, in a new session. Raises `InputError` on bad input,
-  ## `DbError` if the database cannot be opened.
+  ## Starts a scheduler running `trnrunPath`, saving to `databasePath`; call `initJobGuard` first.
   if maxConcurrent < 1:
     raise newException(InputError, "'maxConcurrent' must be at least 1")
   let trnrunPath = validateFile(trnrunPath, "TRNRun")
-  initJobGuard()
   result = Scheduler(
     trnrunPath: trnrunPath, maxConcurrent: maxConcurrent, database: openDatabase(databasePath)
   )
   result.inbox.open()
   result.pool.start(maxConcurrent, addr result.inbox)
 
-proc database*(scheduler: Scheduler): Database =
-  ## The database every change is saved to.
-  scheduler.database
-
-proc databasePath*(scheduler: Scheduler): string =
+proc databasePath*(scheduler: Scheduler): string {.inline.} =
   ## Absolute path of the database clients read.
   scheduler.database.path
 
-proc requestInbox*(scheduler: Scheduler): ptr Channel[Message] =
+proc sessionId*(scheduler: Scheduler): int {.inline.} =
+  ## This daemon's session, recorded on every run it adds.
+  scheduler.database.sessionId
+
+proc savedRevision*(scheduler: Scheduler): int =
+  ## Largest revision a run holds: the latest change readers can reach.
+  scheduler.database.savedRevision
+
+proc lastLogId*(scheduler: Scheduler): int =
+  ## Largest `log_id`, or 0 without logs.
+  scheduler.database.lastLogId
+
+proc contains*(scheduler: Scheduler, runId: int): bool =
+  ## Whether `runId` was ever saved, by this daemon or an earlier one.
+  runId in scheduler.database
+
+proc requestInbox*(scheduler: Scheduler): ptr Channel[Message] {.inline.} =
   ## Inbox address for the thread that posts `mkRequest` and `mkClosed`.
   addr scheduler.inbox
 
@@ -155,7 +154,6 @@ template atomically*(scheduler: Scheduler, body: untyped) =
 
 proc apply*(scheduler: Scheduler, message: Message) =
   ## Applies one worker message; an exit frees a slot for the next queued run.
-  ## Client messages are ignored.
   case message.kind
   of mkOutput:
     let event = parseEventLine(message.line)
@@ -170,10 +168,7 @@ proc apply*(scheduler: Scheduler, message: Message) =
 proc add*(
     scheduler: Scheduler, deckFile: string, trnrunArgs: seq[string] = @[], label = none(string)
 ): int =
-  ## Validates and queues a run, launching it at once if a slot is free;
-  ## returns the `run_id` the database assigned it.
-  ##
-  ## Raises `InputError` for invalid input or once shutting down.
+  ## Validates, saves and queues a run, launching it if a slot is free; returns its `run_id`.
   if scheduler.isShuttingDown:
     raise newException(InputError, "The daemon is shutting down")
   validateTrnrunArgs(trnrunArgs)
@@ -183,12 +178,7 @@ proc add*(
   scheduler.dispatch()
 
 proc cancel*(scheduler: Scheduler, runId: int) =
-  ## Stops `runId` unless it already finished, which leaves it unchanged.
-  ##
-  ## A queued run finishes as CANCELLED at once. A running one is killed and
-  ## finishes as CANCELLED when its exit is applied. Allowed while shutting
-  ## down. Raises `InputError` for an unknown runId, and `ValueError` once
-  ## closed.
+  ## Stops `runId` unless it already finished; `InputError` if unknown, `ValueError` once closed.
   if scheduler.isClosed:
     raise newException(ValueError, "The scheduler is closed")
   if runId in scheduler.running:
@@ -199,11 +189,7 @@ proc cancel*(scheduler: Scheduler, runId: int) =
     raise newException(InputError, "Unknown runId: " & $runId)
 
 proc requestShutdown*(scheduler: Scheduler, cancelRunning = false) =
-  ## Rejects new runs and finishes queued ones as CANCELLED, without waiting.
-  ##
-  ## With `cancelRunning`, running runs are killed too. Repeating it is
-  ## harmless and can add `cancelRunning`. The scheduler `isDone` once no run
-  ## is running.
+  ## Rejects new runs and cancels queued ones, and running ones too with `cancelRunning`.
   if scheduler.isClosed:
     return
   if not scheduler.isShuttingDown:
@@ -214,7 +200,7 @@ proc requestShutdown*(scheduler: Scheduler, cancelRunning = false) =
     for run in scheduler.running.mvalues:
       run.kill(ShutdownReason)
 
-proc isDone*(scheduler: Scheduler): bool =
+proc isDone*(scheduler: Scheduler): bool {.inline.} =
   ## Whether a requested shutdown has no running run left to wait for.
   scheduler.isShuttingDown and scheduler.running.len == 0
 
@@ -227,25 +213,20 @@ proc close*(scheduler: Scheduler) =
   scheduler.database.close()
 
 proc abandon*(scheduler: Scheduler) =
-  ## Finishes every queued and running run as interrupted, kills running
-  ## TRNRun, then closes the database without joining the workers. For a
-  ## daemon about to exit.
-  ##
-  ## Worker messages that already arrived are applied first, so a run that
-  ## exited just before keeps its real outcome. Idempotent, and a no-op after
-  ## `close`.
+  ## Saves every unfinished run as interrupted and closes without joining workers; for exit only.
   if scheduler.isClosed:
     return
   scheduler.isShuttingDown = true # Also stops exits applied below from launching queued runs.
   scheduler.atomically:
-    for _ in 1 .. scheduler.inbox.peek(): # Bounded: running TRNRun may keep posting.
+    # Applies what already arrived first, so a run that just exited keeps its real outcome.
+    for _ in 1..scheduler.inbox.peek(): # Bounded: running TRNRun may keep posting.
       let (available, message) = scheduler.inbox.tryRecv()
       if not available:
         break
       scheduler.apply(message)
     scheduler.database.interrupt(DisconnectReason, Unfinished)
   for run in scheduler.running.mvalues:
-    run.process.kill() # The job object would kill them at exit anyway.
+    run.process.kill() # The Job Object would kill them at exit anyway.
   scheduler.queue.clear()
   scheduler.running.clear() # Not closed: workers may still be reading their output.
   scheduler.isClosed = true

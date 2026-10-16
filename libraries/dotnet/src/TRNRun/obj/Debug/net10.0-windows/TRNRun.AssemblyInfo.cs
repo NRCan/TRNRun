@@ -16,7 +16,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyDescriptionAttribute(("Run, monitor, and orchestrate TRNSYS simulations on Windows using the bundled nat" +
     "ive TRNRun runners."))]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("0.6.1.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("0.6.1+b6551f646124a10a30e21e5215bbde7490b142ba")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("0.6.1+311d1eafd5690eca4d0992e5ec6a165b3764965a")]
 [assembly: System.Reflection.AssemblyProductAttribute("TRNRun")]
 [assembly: System.Reflection.AssemblyTitleAttribute("TRNRun")]
 [assembly: System.Reflection.AssemblyVersionAttribute("0.6.1.0")]

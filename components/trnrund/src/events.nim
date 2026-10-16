@@ -1,14 +1,15 @@
 ## Defines the events TRNRun reports and parses them from its JSON lines.
-## Fields the types do not declare, such as TRNRun timestamps, are ignored.
 ##
-## The types mirror TRNRun's own events. `test_events` checks `SettingEvent`
-## against the `SETTING` event TRNRun builds, so a TRNRun option change that
-## this module misses fails the tests instead of dropping settings.
+## The types mirror TRNRun's own events. Fields they do not declare, such as
+## TRNRun timestamps, are ignored. `test_events` checks `SettingEvent` against
+## the `SETTING` event TRNRun builds, so a TRNRun option change that this
+## module misses fails the tests instead of dropping settings.
 
 import std/[json, options]
 
 type
   SimStatus* = enum
+    ## TRNRun lifecycle status. Values are part of the wire protocol.
     stPending = "PENDING"
     stLaunching = "LAUNCHING"
     stRunning = "RUNNING"
@@ -19,12 +20,13 @@ type
     stStalled = "STALLED"
 
   LogSeverity* = enum
-    ## Values are part of the wire protocol.
+    ## Severity of a TRNSYS log entry. Values are part of the wire protocol.
     lsNotice = "Notice"
     lsWarning = "Warning"
     lsFatal = "Fatal"
 
   SettingEvent* = object
+    ## TRNRun settings applied to a run, reported once before anything else.
     trnexePath*: string
     guiVisibility*: string
     waitForGui*: bool
@@ -44,28 +46,26 @@ type
     writeEvents*: bool
 
   StatusEvent* = object
+    ## A lifecycle transition, with outcome details.
     status*: SimStatus
     message*: string
 
   ConfigEvent* = object
-    start*: float
-    stop*: float
-    step*: float
+    ## Simulation start, stop and time step, in simulation hours.
+    start*, stop*, step*: float
 
   ProgressEvent* = object
-    time*: float
-    percent*: float
-    elapsedMs*: float
-    etaMs*: float
+    ## Simulation progress and wall-clock timing.
+    time*: float ## Simulation time reached, in hours.
+    percent*: float ## Fraction done, in `[0, 1]`.
+    elapsedMs*, etaMs*: float
 
   LogEvent* = object
+    ## One entry of the TRNSYS log.
     severity*: LogSeverity
-    time*: float
-    unitId*: Option[int]
-    typeId*: Option[int]
-    messageCode*: Option[int]
-    message*: Option[string]
-    information*: Option[string]
+    time*: float ## Simulation time of the entry, in hours.
+    unitId*, typeId*, messageCode*: Option[int]
+    message*, information*: Option[string]
 
   SimulationEventKind* = enum
     ## Values are JSON `kind` tags.
@@ -76,6 +76,7 @@ type
     ekLog = "LOG"
 
   SimulationEvent* = object
+    ## One event TRNRun reports about a run.
     case kind*: SimulationEventKind
     of ekSetting:
       setting*: SettingEvent
@@ -89,10 +90,7 @@ type
       log*: LogEvent
 
 proc parseSimulationEvent(node: JsonNode): SimulationEvent =
-  ## Parses one TRNRun event.
-  ##
-  ## Raises `ValueError` when `node` is not a known event or has a wrong field
-  ## type, and `KeyError` when it misses a required field.
+  ## Parses one TRNRun event; `ValueError` or `KeyError` if `node` is not a valid one.
   if node.kind != JObject:
     raise newException(ValueError, "Event must be a JSON object")
 

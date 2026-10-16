@@ -1,11 +1,7 @@
 import std/[os, strutils, unittest]
 
 import ../src/validate
-
-
-proc createDeck(directory, name: string): string =
-  result = directory / name
-  writeFile(result, "fake TRNSYS deck")
+import ./fake_deck
 
 proc raisesInputError(validation: proc(), expected: string): bool =
   ## Whether `validation` raises an `InputError` whose message holds `expected`.
@@ -16,6 +12,7 @@ proc raisesInputError(validation: proc(), expected: string): bool =
     result = error.msg.contains(expected)
 
 proc runTests() =
+  ## Runs the validation tests in a temporary directory.
   let testDirectory = getTempDir() / "trnrund_validate_tests"
   if dirExists(testDirectory):
     removeDir(testDirectory)
@@ -76,7 +73,8 @@ proc runTests() =
         (args: @["-x"], expected: "Unknown option in trnrunArgs: 'x'"),
         (args: @["--pollMs:fast"], expected: "Invalid value for 'pollMs' in trnrunArgs:"),
         (args: @["--watchTmp:yes please"], expected: "Invalid value for 'watchTmp' in trnrunArgs:"),
-        (args: @["--guiVisibility:loud"], expected: "Invalid value for 'guiVisibility' in trnrunArgs:"),
+        (args: @["--guiVisibility:loud"],
+          expected: "Invalid value for 'guiVisibility' in trnrunArgs:"),
         (args: @["--deckFile:other.dck"], expected: "Option not allowed in trnrunArgs: 'deckFile'"),
         (args: @["--deckFile=other.dck"], expected: "Option not allowed in trnrunArgs: 'deckFile'"),
         (args: @["--runId:other"], expected: "Option not allowed in trnrunArgs: 'runId'"),

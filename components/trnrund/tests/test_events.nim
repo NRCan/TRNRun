@@ -4,10 +4,9 @@ import ../src/events
 from ../../trnrun/src/events as trnrunEvents import nil
 from ../../trnrun/src/settings as trnrunSettings import nil
 
-
 proc parseLine(line: string): SimulationEvent =
+  ## Parses one TRNRun event line, which must be a valid event.
   parseEventLine(line).get()
-
 
 suite "TRNRun event parsing":
   test "parses every event kind into its payload":

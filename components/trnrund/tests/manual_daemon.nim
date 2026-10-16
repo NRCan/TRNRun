@@ -14,7 +14,6 @@
 import std/[json, monotimes, os, osproc, streams, strutils, tables, terminal, times]
 import db_connector/db_sqlite
 
-
 # Manual-run configuration.
 const
   DeckFilename = "test_slow_wo_plot_w_tracking.dck"
@@ -43,8 +42,8 @@ const
     "--writeEvents:false",
   ]
 
-
 proc formatSeconds(milliseconds: int64): string =
+  ## `milliseconds` as seconds, with one decimal.
   formatFloat(milliseconds.float / 1_000.0, ffDecimal, 1)
 
 proc stageDecks(sourceDeck, stagingDirectory: string): seq[string] =
@@ -54,7 +53,7 @@ proc stageDecks(sourceDeck, stagingDirectory: string): seq[string] =
     sourceName = sourceDeck.splitFile().name
     copyNumberWidth = ($CopyCount).len
 
-  for copyIndex in 1 .. CopyCount:
+  for copyIndex in 1..CopyCount:
     let
       runName = sourceName & "_" & align($copyIndex, copyNumberWidth, '0')
       stagedDeck = stagingDirectory / (runName & ".dck")
@@ -102,6 +101,7 @@ proc runDaemon(daemon: Process, deckFiles: openArray[string]): Table[string, Jso
   let deadline = getMonoTime() + initDuration(milliseconds = TimeoutMs)
 
   proc note(name, state: string) =
+    ## Prints the state of run `name` when it changed since the last poll.
     if states.getOrDefault(name) != state:
       states[name] = state
       styledWriteLine(stdout, fgWhite, "  " & name & ": " & state)
@@ -150,6 +150,7 @@ proc reportRun(name: string, collected: Table[string, JsonNode]): bool =
       styledWriteLine(stdout, fgRed, "       " & simulation["error"].getStr())
 
 proc main(): int =
+  ## Runs every staged deck through the daemon and returns the exit code.
   if paramCount() > 0:
     stderr.writeLine(
       "manual_daemon does not accept arguments; run: nim r tests/manual_daemon.nim"

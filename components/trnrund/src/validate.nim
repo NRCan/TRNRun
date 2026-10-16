@@ -23,16 +23,13 @@ proc validateFile*(path, label: string): string =
     raise newException(InputError, fmt"{label} not found: '{result}'")
 
 proc validateDeck*(deckFile: string): string =
-  ## Returns an existing absolute `.dck` or `.trd` path.
+  ## Returns `deckFile` absolute and normalized; `InputError` unless it is a `.dck` or `.trd` file.
   result = validateFile(deckFile, "Deck file")
   if result.splitFile().ext.toLowerAscii() notin [".dck", ".trd"]:
     raise newException(InputError, fmt"Expected .dck or .trd, got: '{deckFile}'")
 
 proc validateTrnrunArgs*(trnrunArgs: openArray[string]) =
-  ## Raises `InputError` unless TRNRun accepts every option in `trnrunArgs`.
-  ##
-  ## Rejects positional arguments and `DaemonOptions` too: the daemon passes
-  ## the deck and runId itself.
+  ## Raises `InputError` unless each of `trnrunArgs` is a TRNRun option outside `DaemonOptions`.
   if trnrunArgs.len == 0:
     return # `initOptParser` would parse the daemon's own command line instead.
   var

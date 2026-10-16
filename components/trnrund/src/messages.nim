@@ -1,16 +1,12 @@
-## Defines the values exchanged between the scheduler, its workers, and the
-## client reader.
+## Defines the messages passed between the scheduler and the other threads.
 ##
 ## The scheduler thread owns all simulation state, including every TRNRun
-## `Process`. Workers only read a run's output; they post `Message`s to the
-## scheduler inbox, as does the thread reading client requests. One shared
-## inbox lets the scheduler block on a single channel, since Nim channels
-## cannot wait on several at once. Work flows the other way through one shared
-## worker channel. `Message` is a flat object, since several kinds share
-## fields: each kind lists the fields it sets, and the rest keep their
-## defaults. Nothing else is shared between threads
-## but the replies handed to the stdout writer, see `writer`, which posts
-## `mkClosed` here too.
+## `Process`. Workers only read a run's output and post `Message`s to the
+## scheduler inbox, as do the stdin reader and the stdout writer, see `writer`.
+## One shared inbox lets the scheduler block on a single channel, since Nim
+## channels cannot wait on several at once. `Work` flows the other way, through
+## one channel the workers share. Nothing else crosses threads but the replies
+## handed to the writer.
 
 import std/[options, winlean]
 
@@ -20,6 +16,7 @@ type
     wkStop ## Sent once per worker during shutdown.
 
   Work* = object
+    ## A task the scheduler hands to the worker pool.
     case kind*: WorkKind
     of wkRead:
       runId*: int
@@ -38,6 +35,7 @@ type
     mkClosed ## No fields. The client closed its input.
 
   Message* = object
+    ## A message posted to the scheduler inbox; each kind sets only the fields it lists.
     kind*: MessageKind
     runId*: int
     line*: string ## TRNRun output or client request.

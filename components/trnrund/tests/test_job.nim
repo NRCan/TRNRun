@@ -2,12 +2,12 @@ import std/unittest
 
 include ../src/job
 
-
 proc isProcessInJob(
     processHandle: Handle,
     job: Handle,
     result: ptr int32,
 ): int32 {.importc: "IsProcessInJob", dynlib: "kernel32", stdcall.}
+  ## Sets `result` to whether `processHandle` is in `job`; returns 0 on failure.
 
 proc queryInformationJobObject(
     job: Handle,
@@ -16,7 +16,7 @@ proc queryInformationJobObject(
     length: uint32,
     returnLength: ptr uint32,
 ): int32 {.importc: "QueryInformationJobObject", dynlib: "kernel32", stdcall.}
-
+  ## Reads one class of Job Object information; returns 0 on failure.
 
 suite "Windows Job Object guard":
   test "configures and joins one kill-on-close job":

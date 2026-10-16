@@ -145,8 +145,6 @@ While it waits, the daemon still answers every request: `cancel` works,
 `shutdown` can be sent again with `cancelRunning`, and `add` is rejected. To
 stop waiting at any time, close stdin (see below).
 
-See [`src/protocol.nim`](src/protocol.nim) for details.
-
 ## Reading the database
 
 The daemon saves every change as it happens, so clients only read; they never

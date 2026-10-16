@@ -15,6 +15,7 @@ proc openUnreadPipe*() =
   doAssert createPipe(unreadOutput, unreadInput, attributes, 512) != 0
 
 proc closeUnreadPipe*() =
+  ## Closes both ends of the pipe `openUnreadPipe` opened.
   discard closeHandle(unreadInput)
   discard closeHandle(unreadOutput)
 

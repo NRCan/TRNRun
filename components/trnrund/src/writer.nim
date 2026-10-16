@@ -1,4 +1,4 @@
-## Writes replies and change notifications to the client on a thread of its own.
+## Writes replies and change notifications to the client on its own thread.
 ##
 ## The scheduler hands each batch's replies to `send` and goes straight back
 ## to work, so a client that reads slowly, or not at all, never stops the
@@ -41,8 +41,7 @@ type
     inbox: ptr Channel[Message]
 
   Writer* = object
-    ## Its address must stay stable from `start` until `stop` returns, since
-    ## the thread holds a pointer into it.
+    ## Writes to the client on its own thread; must not move from `start` until `stop` returns.
     shared: Shared
     thread: Thread[ptr Shared]
     started: bool
@@ -58,8 +57,7 @@ proc notification(revision: int): string =
   $(%*{"event": "changed", "revision": revision})
 
 proc take(shared: ptr Shared): seq[string] =
-  ## Waits until there is something to write and takes it. Returns nothing
-  ## once stopped, or once finishing with nothing left.
+  ## Waits for something to write and takes it; nothing once stopped or finished.
   result = @[]
   withLock shared.lock:
     while shared.pending.replies.len == 0 and
@@ -91,20 +89,16 @@ proc runWriter(shared: ptr Shared) {.thread.} =
 proc start*(
     writer: var Writer, write: WriteLines, inbox: ptr Channel[Message], revision: int
 ) =
-  ## Starts the thread writing with `write`. `revision` is the one the client
-  ## already knows, from `ready`; only later revisions are announced. A failed
-  ## write posts `mkClosed` to `inbox`.
+  ## Starts the thread writing with `write`, announcing only revisions after `revision`.
+  writer.shared =
+    Shared(pending: Pending(revision: revision, announced: revision), write: write, inbox: inbox)
   initLock(writer.shared.lock)
   initCond(writer.shared.wake)
-  writer.shared.pending = Pending(revision: revision, announced: revision)
-  writer.shared.write = write
-  writer.shared.inbox = inbox
   writer.thread.startThread(runWriter, addr writer.shared)
   writer.started = true
 
 proc send*(writer: var Writer, replies: sink seq[string], revision: int) =
-  ## Hands over one batch's replies, in request order, and the revision saved
-  ## with it. Returns at once, whether or not the client is reading.
+  ## Hands over one batch's replies and the revision it saved; returns at once.
   withLock writer.shared.lock:
     let pending = addr writer.shared.pending
     if not pending.stopped and not pending.finishing:
@@ -113,10 +107,7 @@ proc send*(writer: var Writer, replies: sink seq[string], revision: int) =
       signal(writer.shared.wake)
 
 proc stop*(writer: var Writer, graceMs: int32) =
-  ## Takes no more sends and writes everything already sent, for up to
-  ## `graceMs` milliseconds. Then cancels a write still blocked on a client
-  ## that is not reading, leaving its line cut short, and drops the rest.
-  ## Idempotent.
+  ## Writes what was sent for up to `graceMs`, then cancels any blocked write and joins the thread.
   if not writer.started:
     return
   withLock writer.shared.lock:

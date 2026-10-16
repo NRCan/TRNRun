@@ -1,8 +1,7 @@
 import std/[json, monotimes, os, osproc, sequtils, streams, strutils, tempfiles, times, unittest]
 import db_connector/db_sqlite
 
-import ./fake_trnrun
-
+import ./[fake_deck, fake_trnrun]
 
 type
   CommandResult = object
@@ -18,17 +17,19 @@ type
 proc runCommand(
     executable: string, arguments: openArray[string], workingDirectory: string
 ): CommandResult =
-  result = CommandResult(output: "", error: "", exitCode: -1)
+  ## Runs `executable` with stdin closed and returns its output, error output, and exit code.
   let process = startProcess(
     executable, workingDir = workingDirectory, args = arguments, options = {}
   )
   defer: process.close()
   process.inputStream.close()
-  result.output = process.outputStream.readAll()
-  result.error = process.errorStream.readAll()
-  result.exitCode = process.waitForExit(10_000)
+  let
+    output = process.outputStream.readAll()
+    error = process.errorStream.readAll()
+  result = CommandResult(output: output, error: error, exitCode: process.waitForExit(10_000))
 
 proc send(daemon: Daemon, line: string) =
+  ## Writes one request line to the daemon's stdin.
   daemon.process.inputStream.writeLine(line)
   daemon.process.inputStream.flush()
 
@@ -48,6 +49,7 @@ proc request(daemon: Daemon, line: string): JsonNode =
     result = daemon.readMessage()
 
 proc request(daemon: Daemon, request: JsonNode): JsonNode =
+  ## Sends `request` and returns its reply, keeping notifications read meanwhile.
   daemon.request($request)
 
 proc add(daemon: Daemon, deckFile: string): int =
@@ -83,15 +85,18 @@ proc waitFor(db: DbConn, runId: int, condition: string) =
   raise newException(IOError, "Timed out waiting for run " & $runId & " in the database")
 
 proc waitForState(db: DbConn, runId: int, state: string) =
+  ## Polls the database until `runId` is in `state`.
   db.waitFor(runId, "state = '" & state & "'")
 
 proc closeDaemon(daemon: Daemon) =
+  ## Terminates the daemon if it still runs, then closes its process.
   if daemon.process.running:
     daemon.process.terminate()
     discard daemon.process.waitForExit(5_000)
   daemon.process.close()
 
 proc runTests() =
+  ## Builds the daemon, then runs the CLI tests against it in a temporary directory.
   const TestVersion = "daemon-test-version"
   let
     daemonDirectory = currentSourcePath().parentDir().parentDir()
@@ -104,7 +109,7 @@ proc runTests() =
   let compiler = findExe("nim")
   let buildResult =
     if compiler.len == 0:
-      CommandResult(output: "Nim compiler was not found on PATH", error: "", exitCode: -1)
+      CommandResult(output: "Nim compiler was not found on PATH", exitCode: -1)
     else:
       runCommand(compiler, [
         "c", "--hints:off", "--verbosity:0", "--nimcache:" & nimCache,
@@ -128,14 +133,12 @@ proc runTests() =
     var arguments = @arguments
     if not arguments.anyIt(it.startsWith("--database:")):
       arguments.add("--database:" & (testDirectory / ($launchNumber & ".sqlite3")))
-    Daemon(
-      process: startProcess(daemonExecutable, workingDir = testDirectory, args = arguments, options = {}),
-      events: @[],
-    )
+    Daemon(process: startProcess(daemonExecutable, workingDir = testDirectory,
+      args = arguments, options = {}))
 
   proc deck(name: string): string =
-    result = testDirectory / name
-    writeFile(result, "fake TRNSYS deck")
+    ## Writes a placeholder deck named `name` in the test directory.
+    createDeck(testDirectory, name)
 
   suite "daemon CLI":
     test "prints help and version without a TRNRun executable":
@@ -237,11 +240,11 @@ proc runTests() =
         reader.getValue(sql"SELECT max(revision) FROM runs")
       check reader.columns(runId, "state, succeeded") == @["FINISHED", "1"]
 
-    test "a reused database keeps its history; each daemon starts a session and continues the numbers":
+    test "a reused database keeps its history; each daemon adds a session and continues numbering":
       let
         deckFile = deck("done-restart.dck")
         databaseOption = "--database:" & (testDirectory / "restart.sqlite3")
-      for launch in 1 .. 2:
+      for launch in 1..2:
         checkpoint("launch " & $launch)
         let daemon = startDaemon(trnrunOption, databaseOption)
         defer: daemon.closeDaemon()
@@ -266,7 +269,8 @@ proc runTests() =
         defer: old.close()
         old.exec(sql"CREATE TABLE runs (run_id TEXT PRIMARY KEY)")
         old.exec(sql"PRAGMA user_version = 2")
-      let command = runCommand(daemonExecutable, [trnrunOption, "--database:" & path], testDirectory)
+      let command =
+        runCommand(daemonExecutable, [trnrunOption, "--database:" & path], testDirectory)
       check command.exitCode == 1
       check command.output == ""
       check command.error.contains("schema version 2")
@@ -391,7 +395,7 @@ proc runTests() =
       let reader = daemon.openReader()
       defer: reader.close()
       let gated = daemon.add(gateDeck)
-      for _ in 1 .. 200: # Unread replies, far more than the pipe holds.
+      for _ in 1..200: # Unread replies, far more than the pipe holds.
         daemon.send($(%*{"cmd": "ready"}))
       daemon.send($(%*{"cmd": "add", "deckFile": doneDeck}))
       reader.waitFor(gated + 1, "state = 'FINISHED' AND succeeded")

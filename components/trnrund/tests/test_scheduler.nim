@@ -2,11 +2,8 @@ import std/[os, strutils, unittest]
 import db_connector/db_sqlite
 
 include ../src/scheduler
-import ./fake_trnrun
-
-proc createDeck(directory, name: string): string =
-  result = directory / name
-  writeFile(result, "fake TRNSYS deck")
+import ../src/job
+import ./[fake_deck, fake_trnrun]
 
 proc release(deckFile: string) =
   ## Lets a `gate` run finish.
@@ -49,6 +46,8 @@ proc shutdown(scheduler: Scheduler, cancelRunning = false) =
   scheduler.close()
 
 proc runTests() =
+  ## Runs the scheduler tests in a temporary directory.
+  initJobGuard()
   let testDirectory = getTempDir() / "trnrund_scheduler_tests"
   if dirExists(testDirectory):
     removeDir(testDirectory)
@@ -66,7 +65,8 @@ proc runTests() =
       expect InputError:
         discard newScheduler(trnrun, 0, testDirectory / "unused.sqlite3")
       expect InputError:
-        discard newScheduler(testDirectory / "missing-trnrun.exe", 1, testDirectory / "unused.sqlite3")
+        discard newScheduler(testDirectory / "missing-trnrun.exe", 1,
+          testDirectory / "unused.sqlite3")
 
     test "numbers runs and rejects invalid submissions without saving them":
       let scheduler = newScheduler(trnrun, 1, testDirectory / "rejected.sqlite3")
@@ -85,7 +85,7 @@ proc runTests() =
         checkpoint("case: " & $testCase)
         expect InputError:
           discard scheduler.add(testCase.deckFile, testCase.trnrunArgs)
-      check 3 notin scheduler.database
+      check 3 notin scheduler
       check scheduler.columns(2, "label") == @["second"]
 
     test "launches a run at once and finishes it successfully":
@@ -160,7 +160,7 @@ proc runTests() =
       defer: scheduler.shutdown()
 
       var runIds: seq[int] = @[]
-      for _ in 1 .. 5:
+      for _ in 1..5:
         runIds.add(scheduler.add(doneDeck))
       check scheduler.running.len == 2
       check scheduler.queue.len == 3
@@ -193,6 +193,7 @@ proc runTests() =
         reader = db_sqlite.open(path, "", "", "")
       defer: reader.close()
       proc saved(runId: int, expressions: string): Row =
+        ## `expressions` on the saved row of `runId`.
         reader.getRow(sql("SELECT " & expressions & " FROM runs WHERE run_id = ?"), runId)
 
       block:
@@ -227,9 +228,10 @@ proc runTests() =
       let second = scheduler.add(doneDeck)
       let third = scheduler.add(doneDeck)
       scheduler.cancel(second)
-      check scheduler.columns(second,
-        "state, trnrun_status, trnrun_message, error, exit_code IS NULL, started_at IS NULL, succeeded") ==
-        @["FINISHED", "CANCELLED", "Not started", "Not started: cancelled by the client", "1", "1", "0"]
+      let expressions = "state, trnrun_status, trnrun_message, error, exit_code IS NULL, " &
+        "started_at IS NULL, succeeded"
+      check scheduler.columns(second, expressions) == @["FINISHED", "CANCELLED", "Not started",
+        "Not started: cancelled by the client", "1", "1", "0"]
       check scheduler.queue.len == 1
       check scheduler.queue.peekFirst().runId == third
 
@@ -250,8 +252,9 @@ proc runTests() =
       check scheduler.stateOf(running) == ssRunning # Finished only once its exit is applied.
 
       scheduler.waitFor(running, ssFinished)
-      check scheduler.columns(running,
-        "trnrun_status, trnrun_message, error, exit_code IS NULL, started_at IS NOT NULL, succeeded") ==
+      let expressions = "trnrun_status, trnrun_message, error, exit_code IS NULL, " &
+        "started_at IS NOT NULL, succeeded"
+      check scheduler.columns(running, expressions) ==
         @["CANCELLED", "Interrupted", "Interrupted: cancelled by the client", "1", "1", "0"]
       check not fileExists(deckFile.changeFileExt("released"))
       check running notin scheduler.running

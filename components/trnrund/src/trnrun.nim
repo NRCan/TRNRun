@@ -16,13 +16,16 @@ import std/[options, oserrors, osproc, strutils, winlean]
 
 type
   OutputCallback* = proc(line: string) {.gcsafe, raises: [].}
+    ## Receives one output line, without its line break.
 
   Launched* = object
+    ## A started TRNRun, with the handles its capture needs.
     process*: Process ## Owned by the launching thread; close it after the capture ends.
     output*: Handle ## Read end of the merged output; closed with `process`.
     waitHandle*: Handle ## For `captureOutput`, which closes it.
 
   CaptureResult* = tuple
+    ## How TRNRun ended, as `captureOutput` saw it.
     exitCode: Option[int] ## None when it could not be read.
     error: string ## Capture failure; empty otherwise.
 
@@ -34,13 +37,9 @@ const
 proc launch*(
     runId: int, deckFile, trnrunPath: string, trnrunArgs: openArray[string]
 ): Launched =
-  ## Starts TRNRun on `deckFile` with `trnrunArgs` and `--runId:<runId>`.
-  ## Raises `OSError` when it cannot start.
-  let process = startProcess(
-    trnrunPath,
-    args = @[deckFile] & @trnrunArgs & @["--runId:" & $runId],
-    options = {poStdErrToStdOut, poDaemon},
-  )
+  ## Starts TRNRun on `deckFile` with `trnrunArgs` and `--runId:<runId>`; `OSError` on failure.
+  let process = startProcess(trnrunPath, args = @[deckFile] & @trnrunArgs & @["--runId:" & $runId],
+    options = {poStdErrToStdOut, poDaemon})
   # The scheduler's `Process` keeps TRNRun's process ID from being reused meanwhile.
   let waitHandle = openProcess(WaitAccess, 0, process.processID.DWORD)
   if waitHandle == 0:
@@ -57,8 +56,7 @@ proc launch*(
   Launched(process: process, output: Handle(process.outputHandle), waitHandle: waitHandle)
 
 proc forwardLines(pending: var string, onOutput: OutputCallback) =
-  ## Forwards each complete line in `pending`, without its line break, and
-  ## keeps the incomplete rest.
+  ## Forwards each complete line in `pending`, without its line break, keeping the rest.
   var start = 0
   while true:
     let newline = pending.find('\n', start)
@@ -67,17 +65,17 @@ proc forwardLines(pending: var string, onOutput: OutputCallback) =
     var stop = newline
     if stop > start and pending[stop - 1] == '\r':
       dec stop
-    onOutput(pending[start ..< stop])
+    onOutput(pending[start..<stop])
     start = newline + 1
   if start > 0:
-    pending.delete(0 ..< start)
+    pending.delete(0..<start)
 
 proc captureOutput*(output, process: Handle, onOutput: OutputCallback): CaptureResult =
-  ## Forwards every output line until the pipe ends, then waits for TRNRun to
-  ## exit and closes `process`.
+  ## Forwards every output line until the pipe ends, including a last line
+  ## without a line break, then waits for TRNRun to exit and closes `process`.
   ##
   ## A failed read kills TRNRun, so it cannot block on a full pipe, and is
-  ## reported as the error. Callbacks run on the calling thread.
+  ## reported as the error. `onOutput` runs on the calling thread.
   result = (exitCode: none(int), error: "")
   var
     buffer = default(array[ReadSize, char])

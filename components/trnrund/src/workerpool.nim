@@ -7,18 +7,16 @@
 ## The work channel remains open to avoid a Nim 2.2 ORC crash when closing
 ## channels that transported moved strings, so start a pool only once.
 
-import ./messages
-import ./threadstart
-import ./trnrun
+import ./[messages, threadstart, trnrun]
 
 type
   WorkerContext = object
+    ## The channels one worker reads from and reports to.
     work: ptr Channel[Work]
     inbox: ptr Channel[Message]
 
   WorkerPool* = object
-    ## Owned by the scheduler thread. Its address must stay stable while
-    ## workers run, since each holds a `ptr Channel[Work]` into it.
+    ## Worker threads capturing TRNRun output; must not move while they hold a pointer into it.
     work: Channel[Work]
     threads: seq[Thread[WorkerContext]]
 
@@ -59,7 +57,7 @@ proc start*(pool: var WorkerPool, workers: int, inbox: ptr Channel[Message]) =
     thread.startThread(runWorker, WorkerContext(work: addr pool.work, inbox: inbox))
 
 proc submit*(pool: var WorkerPool, work: Work) =
-  ## Hands `wkRead` work to the next free worker.
+  ## Hands `wkRead` work to the next free worker; returns at once.
   pool.work.send(work)
 
 proc shutdown*(pool: var WorkerPool) =

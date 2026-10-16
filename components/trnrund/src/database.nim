@@ -1,4 +1,4 @@
-## SQLite database for simulations, and the only record of their state.
+## Stores every run and its logs in SQLite, the only record of their state.
 ##
 ## The daemon numbers runs itself: `run_id` is an `AUTOINCREMENT` key, never
 ## reused in a database. Each daemon start is one session, and every run
@@ -24,9 +24,6 @@ type
 
   Database* = ref object
     ## The open database, held exclusively by this daemon until `close`.
-    ##
-    ## A `ref` so the revision counter it keeps in memory is shared by every
-    ## holder; only this daemon writes, so the counter is the database's.
     path*: string ## Absolute and normalized.
     connection: DbConn
     lock: Handle ## Exclusive handle on the lock file; 0 once released.
@@ -37,6 +34,7 @@ type
     sakNull, sakInt, sakFloat, sakText
 
   SqlArg = object
+    ## One value bound to a statement parameter.
     case kind: SqlArgKind
     of sakNull: discard
     of sakInt: intValue: int
@@ -104,7 +102,7 @@ const
   Now = "strftime('%Y-%m-%dT%H:%M:%fZ')" ## The current time, as every timestamp is stored.
   HasTerminalStatus = "trnrun_status IN ('DONE', 'CANCELLED', 'ERROR', 'TIMEOUT', 'STALLED')"
     ## Whether TRNRun already reported a status that ends a run.
-  Unfinished* = {ssQueued, ssRunning}
+  Unfinished* = {ssQueued, ssRunning} ## States of a run its daemon still tracks.
 
 # SQLite helpers
 
@@ -141,7 +139,7 @@ proc toSqlArg(value: SettingEvent): SqlArg =
   toSqlArg($(%value))
 
 proc toSqlArg[T](value: Option[T]): SqlArg =
-  ## NULL when `value` is none.
+  ## Binds the value of `value`, or NULL when it is none.
   if value.isSome: toSqlArg(value.get()) else: SqlArg(kind: sakNull)
 
 proc execute(
@@ -162,7 +160,7 @@ proc execute(
     while true:
       case step(statement.PStmt)
       of SQLITE_ROW:
-        result.add((0'i32 ..< column_count(statement.PStmt)).mapIt($column_text(statement.PStmt, it)))
+        result.add((0'i32..<column_count(statement.PStmt)).mapIt($column_text(statement.PStmt, it)))
       of SQLITE_DONE: break
       else: dbError(db.connection)
   finally:
@@ -173,10 +171,7 @@ proc scalarInt(db: Database, query: string, args: varargs[SqlArg, toSqlArg]): in
   db.execute(query, args)[0][0].parseInt()
 
 template transaction*(db: Database, body: untyped) =
-  ## Runs `body` atomically, rolling back everything it wrote if it raises.
-  ##
-  ## Nests: an inner transaction commits with the outermost one. Readers see
-  ## the writes of `body` only once the outermost one commits.
+  ## Runs `body` atomically, rolling back if it raises; nested, it commits with the outermost one.
   execute(db, "SAVEPOINT trnrund")
   try:
     body
@@ -192,10 +187,10 @@ template transaction*(db: Database, body: untyped) =
 # Runs
 
 proc savedRevision*(db: Database): int =
-  ## Largest revision a run holds, the one readers can reach. What clients are told.
+  ## Largest revision a run holds: the latest change clients can read.
   db.scalarInt("SELECT coalesce(max(revision), 0) FROM runs")
 
-proc sessionId*(db: Database): int =
+proc sessionId*(db: Database): int {.inline.} =
   ## This daemon's session, recorded on every run it adds.
   db.sessionId
 
@@ -210,8 +205,6 @@ proc nextRevision(db: Database): int =
 
 proc update(db: Database, runId: int, assignments: string, args: varargs[SqlArg, toSqlArg]) =
   ## Applies `assignments` to the row of `runId` and gives it the next revision.
-  ##
-  ## Every right-hand side reads the row as it was before this update.
   db.execute("UPDATE runs SET revision = ?, " & assignments & " WHERE run_id = ?",
     @[toSqlArg(db.nextRevision())] & @args & toSqlArg(runId))
 
@@ -230,7 +223,7 @@ proc submit*(
   db.scalarInt("SELECT last_insert_rowid()")
 
 proc start*(db: Database, runId: int) =
-  ## Marks `runId` running once its TRNRun process started.
+  ## Marks `runId` running once its TRNRun process has started.
   db.update(runId, "state = ?, started_at = " & Now, ssRunning)
 
 proc recordSetting(db: Database, runId: int, setting: SettingEvent) =
@@ -267,10 +260,7 @@ proc recordLog(db: Database, runId: int, log: LogEvent) =
       log.unitId, log.typeId, log.messageCode, log.message, log.information)
 
 proc record*(db: Database, runId: int, event: SimulationEvent) =
-  ## Saves one TRNRun event of `runId`.
-  ##
-  ## `SETTING`, `STATUS`, `CONFIG` and `PROGRESS` replace the previous value;
-  ## each `LOG` is appended and counted by severity, atomically.
+  ## Saves one TRNRun event of `runId`: a `LOG` is appended, any other replaces the previous value.
   case event.kind
   of ekSetting: db.recordSetting(runId, event.setting)
   of ekStatus: db.recordStatus(runId, event.status)
@@ -281,10 +271,8 @@ proc record*(db: Database, runId: int, event: SimulationEvent) =
 proc finish(
     db: Database, runId: int, exitCode: Option[int], error: string, fallback: StatusEvent
 ) =
-  ## Marks `runId` finished, with `fallback` as its status unless TRNRun
-  ## already reported a terminal one.
-  ##
-  ## Success requires a `DONE` status, exit code 0, and no execution error.
+  ## Marks `runId` finished, with `fallback` as its status unless TRNRun reported a terminal one.
+  # It succeeded only with a `DONE` status from TRNRun, exit code 0, and no execution error.
   db.update(runId, "state = ?, finished_at = " & Now & """,
       exit_code = ?, error = nullif(?, ''),
       trnrun_status = CASE WHEN """ & HasTerminalStatus & """ THEN trnrun_status ELSE ? END,
@@ -294,29 +282,18 @@ proc finish(
     exitCode == some(0) and error.len == 0)
 
 proc finish*(db: Database, runId: int, exitCode: Option[int], error: string) =
-  ## Marks `runId` finished once TRNRun exited or failed to launch.
-  ##
-  ## Guarantees a terminal status: when TRNRun did not report one, a
-  ## daemon-owned `ERROR` status explains why. Execution errors are kept
-  ## independently, even when TRNRun already reported a terminal status.
+  ## Marks `runId` finished once TRNRun exited or failed to launch; `ERROR` if it reported no end.
   let message = if error.len > 0: error else: "TRNRun exited without a terminal status"
   db.finish(runId, exitCode, error, StatusEvent(status: stError, message: message))
 
 proc cancel*(db: Database, runId: int, started: bool, reason: string) =
-  ## Finishes `runId` as stopped before TRNRun exited by itself, without an exit code.
-  ##
-  ## It is CANCELLED, unless TRNRun already reported a terminal status, and
-  ## its error gives `reason` after whether it `started`, such as
-  ## `Not started: the daemon shut down` or `Interrupted: cancelled by the client`.
+  ## Finishes `runId` as CANCELLED, with `reason` after `Interrupted: ` or `Not started: `.
   let outcome = if started: "Interrupted" else: "Not started"
   db.finish(runId, none(int), outcome & ": " & reason,
     StatusEvent(status: stCancelled, message: outcome))
 
 proc interrupt*(db: Database, reason: string, states: set[SimulationState]) =
-  ## Cancels every run in `states`, which the daemon stops tracking before TRNRun exits.
-  ##
-  ## A queued run never started; a running one did, and its TRNRun is killed
-  ## with the daemon.
+  ## Cancels every run in one of `states` for `reason`, as runs the daemon stops tracking.
   let states = toSeq(states)
   db.transaction:
     # Reads every row before finishing any, since finishing changes what the query selects.
@@ -370,9 +347,11 @@ proc close*(db: Database) =
 
 proc openDatabase*(path: string): Database =
   ## Opens or creates the database at `path` and starts a new session in it,
-  ## holding the database until `close`; raises `DbError`.
+  ## holding the database until `close`.
   ##
   ## Runs an earlier daemon left unfinished are finished as interrupted first.
+  ## Raises `DbError` when another daemon holds the database, its schema
+  ## version differs, or it cannot use WAL mode.
   let path = path.absolutePath().normalizedPath()
   result = Database(path: path, lock: lockDatabase(path))
   try:

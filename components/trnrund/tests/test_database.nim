@@ -8,12 +8,15 @@ privateAccess(Database) # Reads the revision counter.
 const TimestampFormat = "yyyy-MM-dd'T'HH:mm:ss'.'fff'Z'"
 
 proc event(line: string): SimulationEvent =
+  ## Parses one TRNRun event line, which must be a valid event.
   parseEventLine(line).get()
 
 proc statusEvent(status: string, message = ""): SimulationEvent =
+  ## A `STATUS` event with `status` and `message`.
   event($(%*{"kind": "STATUS", "status": status, "message": message}))
 
 proc logEvent(severity: string, message = ""): SimulationEvent =
+  ## A `LOG` event of `severity` at simulation time 0.
   event($(%*{"kind": "LOG", "severity": severity, "time": 0, "message": message}))
 
 const Setting = SettingEvent(guiVisibility: "hidden", severity: lsWarning, pollMs: 50)
@@ -41,9 +44,15 @@ proc reported(db: Database): int =
   db.record(result, logEvent("Warning", "careful"))
 
 proc finished(db: Database): int =
+  ## Saves a new run as finished with a `DONE` status and exit code 0.
   result = db.started()
   db.record(result, statusEvent("DONE"))
   db.finish(result, some(0), "")
+
+proc abort() =
+  ## Fails the enclosing transaction, so it rolls back. A proc rather than a
+  ## bare `raise`, which would leave the template's commit unreachable.
+  raise newException(ValueError, "abort")
 
 const Reported = """deck_file, start_time, stop_time, time_step,
   sim_time, percent, elapsed_ms, eta_ms, notices, warnings, fatals"""
@@ -58,6 +67,7 @@ suite "run database":
     reader.exec(sql"PRAGMA query_only = ON")
 
     proc columns(runId: int, expressions: string): Row =
+      ## `expressions` on the saved row of `runId`, read as a client would.
       reader.getRow(sql("SELECT " & expressions & " FROM runs WHERE run_id = ?"), runId)
 
   teardown:
@@ -175,8 +185,10 @@ suite "run database":
 
   test "finish adds a daemon ERROR when TRNRun reported no terminal status":
     let cases = [
-      (status: "", exitCode: some(0), error: "", expected: "TRNRun exited without a terminal status"),
-      (status: "RUNNING", exitCode: some(0), error: "", expected: "TRNRun exited without a terminal status"),
+      (status: "", exitCode: some(0), error: "",
+        expected: "TRNRun exited without a terminal status"),
+      (status: "RUNNING", exitCode: some(0), error: "",
+        expected: "TRNRun exited without a terminal status"),
       (status: "", exitCode: none(int), error: "Launch failed", expected: "Launch failed"),
     ]
     for testCase in cases:
@@ -246,7 +258,7 @@ suite "run database":
         discard db.submit("rolled back.dck")
         db.transaction:
           discard db.submit("also rolled back.dck")
-        raise newException(ValueError, "abort")
+        abort()
     check reader.getValue(sql"SELECT count(*) FROM runs") == "2"
     check db.submit("next.dck") == 3 # No reader ever saw the rolled-back ones.
 
