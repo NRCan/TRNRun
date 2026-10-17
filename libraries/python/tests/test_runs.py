@@ -3,15 +3,17 @@
 import json
 import sqlite3
 from collections.abc import Iterator
-from dataclasses import FrozenInstanceError, fields
+from dataclasses import FrozenInstanceError
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
 from tests.helpers import SETTING, create_database, fetch_row, insert_log, insert_run
-from trnrun.events import ConfigEvent, LogEvent, ProgressEvent, SettingEvent, SimulationStatus, StatusEvent
-from trnrun.runs import _SETTING_FIELDS, Changes, SimulationInfo, SimulationState, parse_log, parse_run
+from trnrun.events import ConfigEvent, LogEvent, LogSeverity, ProgressEvent, SimulationStatus
+from trnrun.runs import Changes, SimulationInfo, SimulationState, parse_log, parse_run
+
+DECK = Path(r"C:\decks\model.dck")
 
 
 @pytest.fixture
@@ -36,33 +38,31 @@ def test_simulation_state_values_are_the_daemon_names() -> None:
 )
 def test_simulation_info_is_finished_only_when_finished(state: SimulationState, finished: bool) -> None:  # noqa: FBT001 - parametrized
     """Report a run finished only once the daemon finished it."""
-    assert SimulationInfo(1, state).is_finished is finished
+    assert SimulationInfo(1, state, DECK).is_finished is finished
 
 
 def test_simulation_info_defaults_describe_a_fresh_run() -> None:
     """Start with no events, no counts, no outcome and independent argument lists."""
-    first = SimulationInfo(1, SimulationState.QUEUED)
-    second = SimulationInfo(2, SimulationState.QUEUED)
+    first = SimulationInfo(1, SimulationState.QUEUED, DECK)
+    second = SimulationInfo(2, SimulationState.QUEUED, DECK)
 
-    assert (first.status, first.progress, first.config, first.setting) == (None, None, None, None)
+    assert (first.status, first.status_message, first.progress, first.config, first.setting) == (None,) * 5
     assert (first.notices, first.warnings, first.fatals) == (0, 0, 0)
-    assert not first.succeeded
-    assert first.exit_code is None
-    assert first.error == ""
+    assert (first.succeeded, first.exit_code, first.error) == (None, None, None)
     assert first.trnrun_args is not second.trnrun_args
 
 
 def test_simulation_info_is_frozen() -> None:
     """Keep snapshots immutable, so handles can share them across threads."""
     with pytest.raises(FrozenInstanceError):
-        SimulationInfo(1, SimulationState.QUEUED).state = SimulationState.RUNNING  # ty: ignore[invalid-assignment]  # pyright: ignore[reportAttributeAccessIssue]
+        SimulationInfo(1, SimulationState.QUEUED, DECK).state = SimulationState.RUNNING  # ty: ignore[invalid-assignment]  # pyright: ignore[reportAttributeAccessIssue]
 
 
 def test_changes_are_truthy_only_when_something_changed() -> None:
     """Let ``if changes:`` skip empty polls."""
     assert not Changes()
-    assert Changes(runs=[SimulationInfo(1, SimulationState.QUEUED)])
-    assert Changes(logs=[LogEvent(log_id=1, run_id=1, severity="Notice", time=0.0)])
+    assert Changes(runs=[SimulationInfo(1, SimulationState.QUEUED, DECK)])
+    assert Changes(logs=[LogEvent(log_id=1, run_id=1, severity=LogSeverity.NOTICE, time=0.0)])
 
 
 # -----------------------------------------------------------------
@@ -115,23 +115,22 @@ def test_parse_run_of_a_finished_run(connection: sqlite3.Connection) -> None:
 
     assert info.state is SimulationState.FINISHED
     assert info.session_id == 4
-    assert info.status == StatusEvent(SimulationStatus.DONE, "All good")
+    assert info.status is SimulationStatus.DONE
+    assert info.status_message == "All good"
     assert info.progress == ProgressEvent(time=8_760.0, percent=1.0, elapsed_ms=1_500.0, eta_ms=0.0)
     assert info.config == ConfigEvent(start=0.0, stop=8_760.0, step=1.0)
-    assert info.setting is not None
-    assert info.setting.trnexe_path == SETTING["trnexePath"]
-    assert info.setting.detect_timeout_ms == 300_000
+    assert info.setting == SETTING
     assert (info.notices, info.warnings, info.fatals) == (3, 2, 1)
     assert info.succeeded is True
     assert info.exit_code == 0
-    assert info.error == ""
+    assert info.error is None
     assert info.started_at == datetime(2026, 10, 9, 14, 3, 13, tzinfo=UTC)
     assert info.finished_at == datetime(2026, 10, 9, 14, 5, 0, 500_000, tzinfo=UTC)
     assert info.is_finished
 
 
 def test_parse_run_of_a_failed_run(connection: sqlite3.Connection) -> None:
-    """Keep the daemon error and exit code, and read a NULL message as empty."""
+    """Keep the daemon error and exit code, and read a NULL message as None."""
     run_id = insert_run(
         connection,
         state="FINISHED",
@@ -143,19 +142,20 @@ def test_parse_run_of_a_failed_run(connection: sqlite3.Connection) -> None:
 
     info = parse_run(fetch_row(connection, "runs", "run_id", run_id))
 
-    assert info.status == StatusEvent(SimulationStatus.ERROR, "")
+    assert info.status is SimulationStatus.ERROR
+    assert info.status_message is None
     assert info.succeeded is False
     assert info.exit_code == 1
     assert info.error == "Cannot start TRNRun"
 
 
-def test_parse_run_keeps_unfinished_outcome_false(connection: sqlite3.Connection) -> None:
-    """Read a NULL ``succeeded`` as False until the run finishes."""
+def test_parse_run_keeps_unfinished_outcome_none(connection: sqlite3.Connection) -> None:
+    """Read a NULL ``succeeded`` as None until the run finishes, so unfinished is not failed."""
     run_id = insert_run(connection, state="RUNNING", started_at="2026-10-09T14:03:13.000Z")
 
     info = parse_run(fetch_row(connection, "runs", "run_id", run_id))
 
-    assert info.succeeded is False
+    assert info.succeeded is None
     assert info.exit_code is None
     assert info.started_at is not None
     assert info.finished_at is None
@@ -167,31 +167,6 @@ def test_parse_run_rejects_an_unknown_state(connection: sqlite3.Connection) -> N
 
     with pytest.raises(ValueError, match="PAUSED"):
         _ = parse_run(fetch_row(connection, "runs", "run_id", run_id))
-
-
-def test_parse_run_rejects_an_unknown_setting(connection: sqlite3.Connection) -> None:
-    """Fail on a SETTING key this package does not know instead of dropping it."""
-    run_id = insert_run(connection, setting=json.dumps({**SETTING, "newOption": 1}))
-
-    with pytest.raises(KeyError, match="newOption"):
-        _ = parse_run(fetch_row(connection, "runs", "run_id", run_id))
-
-
-def test_parse_run_rejects_a_missing_setting(connection: sqlite3.Connection) -> None:
-    """Fail on a SETTING that lacks one of the fields."""
-    partial = {key: value for key, value in SETTING.items() if key != "pollMs"}
-    run_id = insert_run(connection, setting=json.dumps(partial))
-
-    with pytest.raises(TypeError, match="poll_ms"):
-        _ = parse_run(fetch_row(connection, "runs", "run_id", run_id))
-
-
-def test_setting_keys_map_to_every_setting_field() -> None:
-    """Map each camelCase SETTING key TRNRun writes to its snake_case field."""
-    assert set(_SETTING_FIELDS) == set(SETTING)
-    assert set(_SETTING_FIELDS.values()) == {setting_field.name for setting_field in fields(SettingEvent)}
-    assert _SETTING_FIELDS["detectTimeoutMs"] == "detect_timeout_ms"
-    assert _SETTING_FIELDS["trnexePath"] == "trnexe_path"
 
 
 # -----------------------------------------------------------------
@@ -216,7 +191,7 @@ def test_parse_log_with_every_field(connection: sqlite3.Connection) -> None:
     assert log == LogEvent(
         log_id=log_id,
         run_id=7,
-        severity="Warning",
+        severity=LogSeverity.WARNING,
         time=2_190.5,
         unit_id=12,
         type_id=56,
@@ -233,6 +208,6 @@ def test_parse_log_with_only_required_fields(connection: sqlite3.Connection) -> 
     assert parse_log(fetch_row(connection, "logs", "log_id", log_id)) == LogEvent(
         log_id=log_id,
         run_id=3,
-        severity="Fatal",
+        severity=LogSeverity.FATAL,
         time=1.0,
     )

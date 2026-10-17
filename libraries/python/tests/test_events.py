@@ -4,7 +4,7 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
-from trnrun.events import ConfigEvent, LogEvent, ProgressEvent, SettingEvent, SimulationStatus, StatusEvent
+from trnrun.events import ConfigEvent, LogEvent, LogSeverity, ProgressEvent, SimulationStatus
 
 
 def test_simulation_status_values_are_the_runner_names() -> None:
@@ -34,14 +34,9 @@ def test_unknown_simulation_status_is_rejected() -> None:
         _ = SimulationStatus("BOGUS")
 
 
-def test_status_event_message_defaults_to_empty() -> None:
-    """Report no detail as an empty message, not None."""
-    assert StatusEvent(SimulationStatus.RUNNING).message == ""
-
-
 def test_log_event_optional_fields_default_to_none() -> None:
     """Require only the severity and time TRNSYS always attaches."""
-    log = LogEvent(log_id=1, run_id=2, severity="Notice", time=0.5)
+    log = LogEvent(log_id=1, run_id=2, severity=LogSeverity.NOTICE, time=0.5)
 
     assert (log.unit_id, log.type_id, log.message_code, log.message, log.information) == (None,) * 5
 
@@ -49,10 +44,9 @@ def test_log_event_optional_fields_default_to_none() -> None:
 @pytest.mark.parametrize(
     ("event", "name"),
     [
-        (StatusEvent(SimulationStatus.DONE), "status"),
         (ProgressEvent(time=1.0, percent=0.5, elapsed_ms=10.0, eta_ms=10.0), "percent"),
         (ConfigEvent(start=0.0, stop=8_760.0, step=1.0), "stop"),
-        (LogEvent(log_id=1, run_id=1, severity="Fatal", time=0.0), "message"),
+        (LogEvent(log_id=1, run_id=1, severity=LogSeverity.FATAL, time=0.0), "message"),
     ],
 )
 def test_events_are_frozen(event: object, name: str) -> None:
@@ -68,29 +62,3 @@ def test_events_compare_and_hash_by_value() -> None:
 
     assert first == second
     assert len({first, second}) == 1
-
-
-def test_setting_event_holds_every_setting() -> None:
-    """Build a setting event from keyword fields, as the row parser does."""
-    setting = SettingEvent(
-        trnexe_path=r"C:\TRNSYS18\Exe\TrnEXE64.exe",
-        gui_visibility="hidden",
-        wait_for_gui=True,
-        wait_for_lst=True,
-        wait_for_tmp=False,
-        detect_timeout_ms=300_000,
-        extra_delay_ms=0,
-        watch_log=True,
-        watch_tmp=False,
-        watch_timeout_ms=0,
-        stall_timeout_ms=0,
-        poll_ms=100,
-        clean_on_success=False,
-        kill_on_timeout=False,
-        kill_on_stall=False,
-        severity="Notice",
-        write_events=False,
-    )
-
-    assert setting.detect_timeout_ms == 300_000
-    assert setting.poll_ms == 100

@@ -17,7 +17,7 @@ from trnrun.batch.display import (
     _truncate_left,
 )
 from trnrun.batch.simulation import Simulation
-from trnrun.events import ConfigEvent, ProgressEvent, SimulationStatus, StatusEvent
+from trnrun.events import ConfigEvent, ProgressEvent, SimulationStatus
 from trnrun.runs import SimulationInfo, SimulationState
 from trnrun.settings import SimulationSettings
 
@@ -38,12 +38,12 @@ def _simulation(
     if percent is not None:
         progress = ProgressEvent(time=10 * percent, percent=percent, elapsed_ms=65_000.0, eta_ms=5_000.0)
         config = ConfigEvent(start=0.0, stop=10.0, step=1.0)
-    simulation.apply(
+    simulation._apply(
         SimulationInfo(
             run_id,
             state,
             deck_file=DECK,
-            status=None if status is None else StatusEvent(status),
+            status=status,
             progress=progress,
             config=config,
             notices=1,
@@ -176,7 +176,7 @@ def test_finished_runs_are_printed_once(display: ProgressDisplay, output: String
     """Print each finished run once, as a final line that stays."""
     simulation = _simulation(1, SimulationState.RUNNING, SimulationStatus.RUNNING, percent=0.5)
     display.update([simulation])
-    simulation.apply(_simulation(1, SimulationState.FINISHED, SimulationStatus.DONE).info, [])
+    simulation._apply(_simulation(1, SimulationState.FINISHED, SimulationStatus.DONE).info, [])
 
     display.update([simulation])
     display.update([])
@@ -199,7 +199,7 @@ def test_live_lines_are_the_running_runs_in_start_order(display: ProgressDisplay
 
     assert list(display._rows) == [3, 2]
 
-    third.apply(SimulationInfo(3, SimulationState.FINISHED, deck_file=DECK), [])
+    third._apply(SimulationInfo(3, SimulationState.FINISHED, deck_file=DECK), [])
     display.update([third])
 
     assert list(display._rows) == [2]
@@ -214,7 +214,7 @@ def test_live_region_stops_when_empty(display: ProgressDisplay) -> None:
     display.update([simulation])
     assert terminal._live is not None
 
-    simulation.apply(SimulationInfo(1, SimulationState.FINISHED, deck_file=DECK), [])
+    simulation._apply(SimulationInfo(1, SimulationState.FINISHED, deck_file=DECK), [])
     display.update([simulation])
     assert terminal._live is None
 
@@ -282,7 +282,7 @@ def test_notebook_publishes_changed_frames_only(
 
     notebook.update([simulation])
     notebook.update([simulation])
-    simulation.apply(_simulation(1, SimulationState.RUNNING, percent=0.5).info, [])
+    simulation._apply(_simulation(1, SimulationState.RUNNING, percent=0.5).info, [])
     notebook.update([simulation])
 
     assert [kind for kind, _ in published] == ["display", "update"]

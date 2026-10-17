@@ -5,22 +5,36 @@ runs every copy, but follows them in a window: a live table of runs, overall
 progress, the selected run's details, and a log of every TRNSYS message. Decks
 can be added and runs cancelled while the batch runs.
 
-It does not use ``trnrun.batch``: the application owns its widgets and timer,
-and each tick reads what changed with the non-blocking ``Daemon.poll()``. For
-a GUI that would rather let a background thread keep handles up to date, see
-``SimulationManager(display=False)`` in the README.
+It does not use ``SimulationManager``: the application owns its widgets, its
+timer, and its database connection. Each tick asks ``Daemon.wait_for_change``
+without blocking whether anything was saved, and reads it with
+``read_changes``. For a GUI that would rather let a background thread keep
+handles up to date, see ``SimulationManager(display=False)`` in the README.
 """
 
 from __future__ import annotations
 
 import shutil
+import sqlite3
 import tkinter as tk
+from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import Literal
 
-from trnrun import Daemon, LogEvent, SimulationInfo, SimulationSettings, SimulationState, SimulationStatus
+from trnrun import (
+    Daemon,
+    DaemonExitedError,
+    LogEvent,
+    LogSeverity,
+    SimulationInfo,
+    SimulationSettings,
+    SimulationState,
+    SimulationStatus,
+    TrnrunError,
+    read_changes,
+)
 
 # -----------------------------------------------------------------------------
 # Configuration
@@ -56,7 +70,7 @@ OUTCOME_COLORS = {
     "cancelled": "#b45309",
     "failed": "#b91c1c",
 }
-SEVERITY_COLORS = {"Notice": "#374151", "Warning": "#b45309", "Fatal": "#b91c1c"}
+SEVERITY_COLORS = {LogSeverity.NOTICE: "#374151", LogSeverity.WARNING: "#b45309", LogSeverity.FATAL: "#b91c1c"}
 
 
 # -----------------------------------------------------------------------------
@@ -102,7 +116,7 @@ def outcome(run: SimulationInfo) -> str:
         return run.state.lower()
     if run.succeeded:
         return "succeeded"
-    if run.status is not None and run.status.status is SimulationStatus.CANCELLED:
+    if run.status is SimulationStatus.CANCELLED:
         return "cancelled"
     return "failed"
 
@@ -135,10 +149,14 @@ def format_log(log: LogEvent) -> str:
 class Dashboard:
     """A window following a daemon's runs: table, overall progress, details, and logs."""
 
-    def __init__(self, root: tk.Tk, daemon: Daemon) -> None:
+    def __init__(self, root: tk.Tk, daemon: Daemon, connection: sqlite3.Connection) -> None:
         """Build the widgets; call ``tick()`` once to start following the daemon."""
         self.root: tk.Tk = root
         self.daemon: Daemon = daemon
+        self.connection: sqlite3.Connection = connection
+        # Where the next read starts: only this daemon's changes.
+        self.revision: int = daemon.start_revision
+        self.log_id: int = daemon.start_log_id
         self.runs: dict[int, SimulationInfo] = {}
         self.logs: list[LogEvent] = []
         self.started_at: datetime = datetime.now(UTC)
@@ -218,7 +236,7 @@ class Dashboard:
         """Submit a deck and show it as queued until the daemon reports on it."""
         try:
             run_id = self.daemon.add(deck, SETTINGS, label=deck.stem)
-        except (ValueError, RuntimeError) as error:
+        except (TrnrunError, OSError) as error:  # Rejected, trnrund exited, TRNSYS missing, or no reply.
             _ = messagebox.showerror("TRNRun", f"{deck.name} was not added:\n{error}", parent=self.root)
             return
         self.runs[run_id] = SimulationInfo(run_id, SimulationState.QUEUED, deck_file=deck, label=deck.stem)
@@ -241,7 +259,7 @@ class Dashboard:
         try:
             for run_id in run_ids:
                 self.daemon.cancel(run_id)
-        except RuntimeError as error:  # trnrund exited; tick() reports it.
+        except TrnrunError as error:  # trnrund exited; tick() reports it.
             self.footer["text"] = str(error)
 
     def cancel_selected(self) -> None:
@@ -269,21 +287,27 @@ class Dashboard:
     def tick(self) -> None:
         """Read what changed, redraw it, and schedule the next tick."""
         try:
-            changes = self.daemon.poll()
-        except RuntimeError as error:  # trnrund exited, and everything it saved was read.
+            changed = self.daemon.wait_for_change(self.revision, timeout=0)
+        except DaemonExitedError as error:  # trnrund exited, and everything it saved was read.
             self.following = False
             self.footer["text"] = f"trnrund stopped: {error}"
             _ = messagebox.showerror("TRNRun", str(error), parent=self.root)
             return
 
-        for run in changes.runs:
+        runs: list[SimulationInfo] = []
+        logs: list[LogEvent] = []
+        if changed:
+            changes = read_changes(self.connection, self.revision, self.log_id)
+            self.revision, self.log_id = changes.revision, changes.log_id
+            runs, logs = changes.runs, changes.logs
+        for run in runs:
             self.runs[run.run_id] = run
         # Running rows are redrawn every tick so their elapsed time keeps counting.
-        redraw = {run.run_id for run in changes.runs}
+        redraw = {run.run_id for run in runs}
         redraw |= {run.run_id for run in self.runs.values() if run.state is SimulationState.RUNNING}
         for run_id in sorted(redraw):
             self._draw_row(self.runs[run_id])
-        self._append_logs(changes.logs)
+        self._append_logs(logs)
         self._draw_summary()
         if redraw & set(self._selected()):
             self._draw_details()
@@ -311,16 +335,15 @@ class Dashboard:
     def _draw_row(self, run: SimulationInfo) -> None:
         """Insert or update a run's table row."""
         progress, config = run.progress, run.config
-        status = run.status.status if run.status is not None else ""
         simulated = "" if progress is None else f"{progress.time:,.0f}"
         if config is not None:
             simulated += f" / {config.stop:,.0f} h"
         eta = progress.eta_ms if progress is not None and run.state is SimulationState.RUNNING else None
         values = (
             run.run_id,
-            run.deck_file.name if run.deck_file is not None else "",
+            run.deck_file.name,
             run.state,
-            status,
+            run.status or "",
             format_bar(completion(run)) if run.succeeded or not run.is_finished else "",
             simulated,
             format_duration(elapsed_ms(run)),
@@ -358,8 +381,8 @@ class Dashboard:
                 f"Deck      {run.deck_file}",
                 f"Label     {run.label or ''}",
                 f"State     {run.state}",
-                f"Status    {run.status.status if run.status else ''}  {run.status.message if run.status else ''}",
-                f"Error     {run.error}",
+                f"Status    {run.status or ''}  {run.status_message or ''}",
+                f"Error     {run.error or ''}",
                 f"Exit code {'' if run.exit_code is None else run.exit_code}",
                 f"Simulated {span}",
                 f"Submitted {format_timestamp(run.submitted_at)}",
@@ -408,9 +431,10 @@ class Dashboard:
 def main() -> None:
     """Copy the master deck, submit every copy, and follow them in the dashboard."""
     dck_files = copy_dck(MASTER_DCK, DCK_FOLDER, n=SIM_COUNT)
-    with Daemon(max_concurrent=MAX_CONCURRENT) as daemon:
+    # The connection closes first, before the daemon deletes its temporary database.
+    with Daemon(max_concurrent=MAX_CONCURRENT) as daemon, closing(daemon.connect()) as connection:
         root = tk.Tk()
-        dashboard = Dashboard(root, daemon)
+        dashboard = Dashboard(root, daemon, connection)
         for dck in dck_files:
             dashboard.add(dck)
         dashboard.tick()

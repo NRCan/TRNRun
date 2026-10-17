@@ -16,42 +16,41 @@ from trnrun.settings import SimulationSettings
 class Simulation:
     """One submitted simulation, kept up to date by its ``SimulationManager``.
 
-    ``id``, ``deck_path``, and ``settings`` are what was submitted; ``id`` is
-    the run ID trnrund assigned, the ``run_id`` of its database row. ``info``
-    is the run's latest state from the daemon's database, and the properties
-    below are shortcuts to its everyday fields; the rest, such as the exit
-    code, timestamps, status message, label, and TRNRun's config and
-    settings, are read from ``info``. Separate reads may reflect different
-    updates, so read ``info`` once when several fields must agree. ``logs``
-    holds every log entry received.
+    ``run_id``, ``deck_file``, and ``settings`` are what was submitted;
+    ``run_id`` is the ID trnrund assigned, the ``run_id`` of its database
+    row. ``info`` is the run's latest state from the daemon's database. Each
+    other property is the ``info`` field of the same name and type, for the
+    everyday ones; read the rest, such as the exit code, timestamps, label,
+    and TRNRun's config and settings, from ``info``. Separate reads may
+    reflect different updates, so read ``info`` once when several fields must
+    agree. ``logs`` holds every log entry received.
     """
 
-    def __init__(self, run_id: int, deck_path: str | Path, settings: SimulationSettings) -> None:
+    def __init__(self, run_id: int, deck_file: str | Path, settings: SimulationSettings) -> None:
         """Initialize a queued simulation with an empty log history."""
-        self.id: int = run_id
-        self.deck_path: Path = Path(deck_path)
+        self.run_id: int = run_id
+        self.deck_file: Path = Path(deck_file)
         self.settings: SimulationSettings = settings
 
-        self._info: SimulationInfo = SimulationInfo(run_id, SimulationState.QUEUED, deck_file=self.deck_path)
+        self._info: SimulationInfo = SimulationInfo(run_id, SimulationState.QUEUED, deck_file=self.deck_file)
         self._logs: list[LogEvent] = []
 
-    def apply(self, info: SimulationInfo | None, logs: list[LogEvent]) -> None:
-        """Append new log entries, then replace ``info`` unless it is None.
-
-        The manager calls this with what each poll read; read the handle
-        instead.
-        """
+    def _apply(self, info: SimulationInfo | None, logs: list[LogEvent]) -> None:
+        """Append new log entries, then replace ``info`` unless it is None; only the manager calls it."""
         # Logs first, so a handle that reads finished already holds its final entries.
         self._logs.extend(logs)
         if info is not None:
             self._info = info
 
     def __repr__(self) -> str:
-        """Summarize the run, such as ``Simulation(id=3, deck='model.dck', state=RUNNING, status=RUNNING, 42%)``."""
+        """Summarize the run, such as ``Simulation(run_id=3, deck='model.dck', state=RUNNING, status=RUNNING, 42%)``."""
         info = self._info
-        status = info.status.status.value if info.status is not None else None
+        status = None if info.status is None else info.status.value
         percent = "" if info.progress is None else f", {info.progress.percent:.0%}"
-        return f"Simulation(id={self.id}, deck={self.deck_path.name!r}, state={info.state.value}, status={status}{percent})"
+        return (
+            f"Simulation(run_id={self.run_id}, deck={self.deck_file.name!r}, "
+            f"state={info.state.value}, status={status}{percent})"
+        )
 
     @property
     def info(self) -> SimulationInfo:
@@ -60,14 +59,13 @@ class Simulation:
 
     @property
     def state(self) -> SimulationState:
-        """Return the daemon lifecycle state."""
+        """Return the daemon lifecycle: QUEUED, RUNNING or FINISHED."""
         return self._info.state
 
     @property
     def status(self) -> SimulationStatus | None:
-        """Return the latest TRNRun status; its message is in ``info.status``."""
-        status = self._info.status
-        return status.status if status is not None else None
+        """Return TRNRun's latest status, such as DONE; its detail is ``info.status_message``."""
+        return self._info.status
 
     @property
     def progress(self) -> ProgressEvent | None:
@@ -90,13 +88,13 @@ class Simulation:
         return self._info.fatals
 
     @property
-    def succeeded(self) -> bool:
-        """Return whether the run finished with `DONE`, exit code 0, and no error."""
+    def succeeded(self) -> bool | None:
+        """Return whether the run finished with DONE, exit code 0, and no error; None until it finishes."""
         return self._info.succeeded
 
     @property
-    def error(self) -> str:
-        """Return the daemon execution error, or an empty string."""
+    def error(self) -> str | None:
+        """Return the daemon execution error, or None."""
         return self._info.error
 
     @property

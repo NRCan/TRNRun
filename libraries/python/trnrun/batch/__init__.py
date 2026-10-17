@@ -2,9 +2,9 @@
 
 For scripts and notebooks: ``SimulationManager`` starts the daemon, keeps a
 ``Simulation`` handle per run in sync from a background thread, and shows
-their progress with a ``ProgressDisplay``, or any ``Display``. Applications
-that want their own polling or database handling should use ``trnrun.Daemon``
-instead.
+their progress with a ``ProgressDisplay``, or any ``Display``. Both are also
+importable from ``trnrun``. Applications that want their own polling or
+database handling should use ``trnrun.Daemon`` instead.
 """
 
 from .display import Display, ProgressDisplay

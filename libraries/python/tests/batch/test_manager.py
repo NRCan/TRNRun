@@ -3,18 +3,22 @@
 The daemon is real; TRNRun is Python running decks from ``helpers.write_deck``.
 """
 
+import sqlite3
 import time
 from collections.abc import Callable, Iterator, Sequence
+from contextlib import closing
 from pathlib import Path
 
 import pytest
 
 from tests.helpers import FAILED_EVENTS, PYTHON, release, requires_trnrund, write_deck
+from trnrun.batch import manager as manager_module
 from trnrun.batch.manager import SimulationManager
 from trnrun.batch.simulation import Simulation
-from trnrun.database import Database
+from trnrun.database import connect
+from trnrun.errors import ClosedError, DaemonExitedError, RequestRejectedError, SyncError
 from trnrun.events import SimulationStatus
-from trnrun.runs import SimulationState
+from trnrun.runs import SimulationState, parse_run
 from trnrun.settings import SimulationSettings
 
 type StartManager = Callable[..., SimulationManager]
@@ -32,7 +36,7 @@ class RecordingDisplay:
 
     def update(self, changed: Sequence[Simulation]) -> None:
         """Record the runs that changed."""
-        self.updates.append([(simulation.id, simulation.state) for simulation in changed])
+        self.updates.append([(simulation.run_id, simulation.state) for simulation in changed])
 
     def close(self) -> None:
         """Count the closes."""
@@ -117,11 +121,10 @@ def test_given_database_outlives_the_manager(start: StartManager, tmp_path: Path
         simulation = manager.add(write_deck(tmp_path / "model.dck"))
         manager.wait(timeout=TIMEOUT)
 
-    with Database(path) as database:
-        info = database.get_run(simulation.id)
+    with closing(connect(path)) as connection:
+        row = connection.execute("SELECT * FROM runs WHERE run_id = ?", (simulation.run_id,)).fetchone()
 
-    assert info is not None
-    assert info.succeeded
+    assert parse_run(row).succeeded is True
 
 
 # -----------------------------------------------------------------
@@ -137,15 +140,16 @@ def test_added_runs_are_synced_until_finished(start: StartManager, tmp_path: Pat
     manager.wait(timeout=TIMEOUT)
 
     assert done.is_finished
-    assert done.succeeded
+    assert done.succeeded is True
     assert done.status is SimulationStatus.DONE
     assert done.info.label == "baseline"
     assert done.info.session_id == manager.session_id
     assert (done.notices, done.warnings, done.fatals) == (1, 1, 1)
     assert [log.message for log in done.logs] == ["first", "second", "third"]
     assert failed.is_finished
-    assert not failed.succeeded
+    assert failed.succeeded is False
     assert failed.status is SimulationStatus.ERROR
+    assert failed.info.status_message == "Fake failure"
     assert failed.info.exit_code == 1
     assert manager.active == []
 
@@ -224,7 +228,7 @@ def test_relative_deck_resolves_from_the_working_directory(
 
     simulation = manager.add("done.dck")
 
-    assert simulation.deck_path == tmp_path / "done.dck"
+    assert simulation.deck_file == tmp_path / "done.dck"
 
 
 @requires_trnrund
@@ -234,7 +238,7 @@ def test_add_rejects_invalid_runs(start: StartManager, tmp_path: Path) -> None:
 
     with pytest.raises(FileNotFoundError):
         _ = manager.add(write_deck(tmp_path / "done.dck"), SimulationSettings(trnexe_path=tmp_path / "missing.exe"))
-    with pytest.raises(ValueError, match="Deck file not found"):
+    with pytest.raises(RequestRejectedError, match="Deck file not found"):
         _ = manager.add(tmp_path / "missing.dck")
 
     assert manager.active == []
@@ -255,8 +259,8 @@ def test_display_gets_every_change_and_is_closed(start: StartManager, tmp_path: 
 
     assert all(update == sorted(update) for update in display.updates)
     shown = [entry for update in display.updates for entry in update]
-    assert (first.id, SimulationState.FINISHED) in shown
-    assert (second.id, SimulationState.FINISHED) in shown
+    assert (first.run_id, SimulationState.FINISHED) in shown
+    assert (second.run_id, SimulationState.FINISHED) in shown
     manager.shutdown()
     assert display.closed == 1
 
@@ -291,10 +295,10 @@ def test_cancel_queued_and_running_simulations(start: StartManager, tmp_path: Pa
     manager.wait(running, timeout=TIMEOUT)
 
     assert queued.status is SimulationStatus.CANCELLED
-    assert queued.error.startswith("Not started")
+    assert queued.error == "Not started: cancelled by the client"
     assert running.status is SimulationStatus.CANCELLED
-    assert running.error.startswith("Interrupted")
-    assert not running.succeeded
+    assert running.error == "Interrupted: cancelled by the client"
+    assert running.succeeded is False
 
 
 @requires_trnrund
@@ -340,13 +344,13 @@ def test_after_shutdown(start: StartManager, tmp_path: Path) -> None:
     manager.wait(done)  # Already finished: returns at once.
     assert done.succeeded
     assert gate.state is SimulationState.RUNNING  # Handles keep their last state.
-    with pytest.raises(RuntimeError, match="SimulationManager is closed"):
+    with pytest.raises(ClosedError, match="SimulationManager is closed"):
         manager.wait(gate)
-    with pytest.raises(RuntimeError, match="SimulationManager is closed"):
+    with pytest.raises(ClosedError, match="SimulationManager is closed"):
         _ = manager.add(tmp_path / "done.dck")
-    with pytest.raises(RuntimeError, match="SimulationManager is closed"):
+    with pytest.raises(ClosedError, match="SimulationManager is closed"):
         manager.cancel(gate)
-    with pytest.raises(RuntimeError, match="SimulationManager is closed"), manager:
+    with pytest.raises(ClosedError, match="SimulationManager is closed"), manager:
         pass
 
 
@@ -358,8 +362,41 @@ def test_daemon_crash_stops_syncing(start: StartManager, tmp_path: Path) -> None
     wait_for_state(simulation, SimulationState.RUNNING)
 
     manager._daemon._process._popen.kill()
-    with pytest.raises(RuntimeError, match="stopped syncing: trnrund exited with code 1"):
+    with pytest.raises(DaemonExitedError, match="trnrund exited with code 1") as raised:
         manager.wait(timeout=TIMEOUT)
+    assert raised.value.exit_code == 1
 
-    with pytest.raises(RuntimeError, match="stopped syncing"):
+    with pytest.raises(DaemonExitedError, match="code 1"):
         _ = manager.add(tmp_path / "gate.dck")
+
+
+@requires_trnrund
+def test_database_failure_stops_syncing(
+    start: StartManager,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Raise SyncError, chaining the cause, when reading the database fails."""
+
+    def broken(*_args: object) -> None:
+        """Fail like an unreadable database."""
+        raise sqlite3.OperationalError("disk I/O error")
+
+    monkeypatch.setattr(manager_module, "read_changes", broken)
+    manager = start()
+    _ = manager.add(write_deck(tmp_path / "done.dck"))
+
+    with pytest.raises(SyncError, match="stopped syncing: disk I/O error") as raised:
+        manager.wait(timeout=TIMEOUT)
+    assert isinstance(raised.value.__cause__, sqlite3.OperationalError)
+
+
+@requires_trnrund
+def test_shutdown_returns_promptly(start: StartManager) -> None:
+    """Stop the background thread quickly, even though it now stops before the daemon."""
+    manager = start()
+
+    started = time.monotonic()
+    manager.shutdown()
+
+    assert time.monotonic() - started < 5.0

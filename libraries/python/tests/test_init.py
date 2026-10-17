@@ -14,6 +14,12 @@ def test_every_export_resolves() -> None:
             assert getattr(package, name) is not None, f"{package.__name__}.{name}"
 
 
+def test_the_simulation_manager_is_importable_from_the_top() -> None:
+    """Give scripts and notebooks everything they need from ``import trnrun``."""
+    assert trnrun.SimulationManager is batch.SimulationManager
+    assert trnrun.Simulation is batch.Simulation
+
+
 def test_version_is_the_package_version() -> None:
     """Read the version hatch builds from, in the ``major.minor.patch`` form."""
     pyproject = tomllib.loads((Path(__file__).parents[1] / "pyproject.toml").read_text(encoding="utf-8"))

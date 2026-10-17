@@ -18,8 +18,7 @@ import sys
 from pathlib import Path
 from time import perf_counter
 
-from trnrun import SimulationSettings
-from trnrun.batch import Simulation, SimulationManager
+from trnrun import Simulation, SimulationManager, SimulationSettings
 
 # -----------------------------------------------------------------------------
 # Configuration
@@ -98,10 +97,9 @@ def main() -> int:
 
     for simulation in failed:
         info = simulation.info
-        message = info.status.message if info.status is not None else ""
         print(
-            f"FAILED [{simulation.id}] {simulation.deck_path.name}: status={simulation.status}, "
-            f"exit_code={info.exit_code}, error={simulation.error!r}, message={message!r}",
+            f"FAILED [{simulation.run_id}] {simulation.deck_file.name}: status={info.status}, "
+            f"exit_code={info.exit_code}, error={info.error!r}, message={info.status_message!r}",
         )
 
     return 0 if not failed else 1

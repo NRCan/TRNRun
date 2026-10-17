@@ -8,8 +8,7 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
-from trnrun import SimulationSettings
-from trnrun.batch import Simulation, SimulationManager
+from trnrun import Simulation, SimulationManager, SimulationSettings
 
 # -----------------------------------------------------------------------------
 # Configuration
@@ -62,13 +61,11 @@ def main() -> None:
     """Copy the master deck, run every copy, and report the failures."""
     dck_files = copy_dck(MASTER_DCK, DCK_FOLDER, n=SIM_COUNT)
     simulations = run_simulations(dck_files)
-    succeeded = sum(simulation.succeeded for simulation in simulations)
-    print(f"{succeeded}/{len(simulations)} succeeded")
-    for simulation in simulations:
-        if not simulation.succeeded:
-            status = simulation.info.status
-            reason = simulation.error or (status.message if status else "")
-            print(f"  [{simulation.id}] {simulation.deck_path.name}: {simulation.status} {reason}")
+    failed = [simulation for simulation in simulations if not simulation.succeeded]
+    print(f"{len(simulations) - len(failed)}/{len(simulations)} succeeded")
+    for simulation in failed:
+        reason = simulation.error or simulation.info.status_message or ""
+        print(f"  [{simulation.run_id}] {simulation.deck_file.name}: {simulation.status} {reason}")
 
 
 if __name__ == "__main__":

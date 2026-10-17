@@ -9,7 +9,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import cast
 
-from .job import assign_to_job
+from .errors import ClosedError, DaemonExitedError, RequestRejectedError
 
 _EXIT_WAIT = 10.0  # Seconds to wait for trnrund to exit once its stdout ended.
 _CLOSE_WAIT = 10.0  # Seconds trnrund gets to save interrupted runs and exit once stdin is closed.
@@ -23,13 +23,13 @@ class DaemonProcess:
     trnrund's stdout ends only after its final changes are saved, so the end
     of stdout is how a crashed daemon is noticed. stderr is captured rather
     than shown: trnrund writes to it only before a fatal exit, and that text
-    is added to the RuntimeError reporting the exit.
+    is added to the DaemonExitedError reporting the exit.
 
     Requests are serialized, so any thread may send one.
     """
 
     def __init__(self, trnrund_path: str | Path, args: list[str], *, request_timeout: float) -> None:
-        """Start trnrund with ``args`` without a console window, in the kill-on-close job; do not wait for it."""
+        """Start trnrund with ``args`` without a console window; do not wait for it."""
         self._request_timeout: float = request_timeout
         # Serializes requests, so replies arrive in the order they are awaited.
         self._request_lock: threading.Lock = threading.Lock()
@@ -59,7 +59,6 @@ class DaemonProcess:
         except FileNotFoundError as error:
             hint = "Run 'nimble deploy' in components/trnrund, or pass trnrund_path=."
             raise FileNotFoundError(f"trnrund executable not found: {trnrund_path}. {hint}") from error
-        _ = assign_to_job(self._popen)
         self._reader: threading.Thread = threading.Thread(target=self._read, name="trnrund-stdout", daemon=True)
         self._reader.start()
 
@@ -105,22 +104,23 @@ class DaemonProcess:
     def request(self, request: dict[str, object], timeout: float | None = None) -> dict[str, object]:
         """Send one request and return its reply.
 
-        Raises ValueError if trnrund rejects it, TimeoutError if no reply
-        arrives within ``timeout`` seconds (by default the instance's request
-        timeout), and RuntimeError if trnrund has exited.
+        Raises RequestRejectedError if trnrund rejects it, TimeoutError if no
+        reply arrives within ``timeout`` seconds (by default the instance's
+        request timeout), DaemonExitedError if trnrund has exited, and
+        ClosedError once it was closed.
         """
         timeout = self._request_timeout if timeout is None else timeout
         with self._request_lock:
             stdin = self._popen.stdin
             if stdin is None or stdin.closed:
-                raise RuntimeError("trnrund is closed")
+                raise ClosedError("trnrund is closed")
             self._next_id += 1
             request_id = self._next_id
             try:
                 _ = stdin.write(json.dumps({"id": request_id, **request}, ensure_ascii=False) + "\n")
                 stdin.flush()
             except OSError:
-                raise self._exit_error() from None
+                raise self._describe_exit() from None
             deadline = time.monotonic() + timeout
             while True:
                 try:
@@ -129,13 +129,19 @@ class DaemonProcess:
                     raise TimeoutError(f"trnrund did not answer {request.get('cmd')!r} within {timeout} s") from None
                 if reply is None:
                     self._replies.put(None)  # Later requests also find the end.
-                    raise self._exit_error()
+                    raise self._describe_exit()
                 if reply.get("id") == request_id:
                     break
                 # Otherwise it answers an earlier request that timed out.
         if reply["ok"] is not True:
-            raise ValueError(reply.get("error", "trnrund rejected the request"))
+            raise RequestRejectedError(reply.get("error", "trnrund rejected the request"))
         return reply
+
+    @property
+    def revision(self) -> int:
+        """Return the largest revision trnrund has announced; 0 before the first."""
+        with self._changed:
+            return self._revision
 
     def wait_for_change(self, after_revision: int, timeout: float | None = None) -> bool:
         """Block until trnrund announces a revision after ``after_revision``, or its stdout ends.
@@ -148,7 +154,7 @@ class DaemonProcess:
     # -----------------------------------------------------------------
     # Exit
     # -----------------------------------------------------------------
-    def exit_error(self) -> RuntimeError | None:
+    def exit_error(self) -> DaemonExitedError | None:
         """Return how trnrund exited if it ended before wait() or close(), else None.
 
         Its stdout ends only after its final changes are saved, so everything
@@ -157,21 +163,22 @@ class DaemonProcess:
         with self._changed:
             ended = self._ended
         if ended and not self._expect_exit:
-            return self._exit_error()
+            return self._describe_exit()
         return None
 
     def wait(self, timeout: float | None = None) -> bool:
         """Wait for trnrund to exit by itself, as after shutdown, then close it.
 
         Returns False, leaving it running, if ``timeout`` seconds pass first.
-        Raises RuntimeError, with its diagnostics, if it exited with an error.
+        Raises DaemonExitedError, with its diagnostics, if it exited with an
+        error.
         """
         self._expect_exit = True
         try:
             code = self._popen.wait(timeout)
         except subprocess.TimeoutExpired:
             return False
-        error = self._exit_error() if code else None
+        error = self._describe_exit() if code else None
         self.close()
         if error is not None:
             raise error
@@ -181,7 +188,7 @@ class DaemonProcess:
         """Close stdin, which interrupts unfinished runs, and wait for trnrund to exit.
 
         A trnrund still running after ``_CLOSE_WAIT`` seconds is killed, and
-        its job object kills its runs with it, so closing never hangs. Safe
+        trnrund's own job object kills its runs with it, so closing never hangs. Safe
         to call again, after wait(), or after trnrund crashed.
         """
         self._expect_exit = True
@@ -205,15 +212,16 @@ class DaemonProcess:
                 with suppress(OSError):
                     stream.close()
 
-    def _exit_error(self) -> RuntimeError:
+    def _describe_exit(self) -> DaemonExitedError:
         """Describe how trnrund exited, waiting briefly for it if needed."""
         try:
             code = self._popen.wait(_EXIT_WAIT)
         except subprocess.TimeoutExpired:
-            return RuntimeError("trnrund closed its output but did not exit")
+            return DaemonExitedError(None)
         with self._exit_lock:
-            if self._diagnostics is None:
+            diagnostics = self._diagnostics
+            if diagnostics is None:
                 stderr = self._popen.stderr
-                self._diagnostics = "" if stderr is None or stderr.closed else stderr.read().strip()
-        message = f"trnrund exited with code {code}"
-        return RuntimeError(f"{message}: {self._diagnostics}" if self._diagnostics else message)
+                diagnostics = "" if stderr is None or stderr.closed else stderr.read().strip()
+                self._diagnostics = diagnostics
+        return DaemonExitedError(code, diagnostics)

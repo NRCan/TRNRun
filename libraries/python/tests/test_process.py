@@ -4,7 +4,6 @@ They run ``fake_trnrund.py`` in place of trnrund, which answers each request
 as its ``cmd`` names.
 """
 
-import subprocess
 import threading
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -13,6 +12,7 @@ import pytest
 
 from tests.helpers import FAKE_TRNRUND, PYTHON
 from trnrun import process as process_module
+from trnrun.errors import ClosedError, DaemonExitedError, RequestRejectedError
 from trnrun.process import DaemonProcess
 
 type StartProcess = Callable[..., DaemonProcess]
@@ -47,18 +47,11 @@ def test_missing_executable_names_it(tmp_path: Path) -> None:
     assert str(missing) in str(raised.value)
 
 
-def test_start_passes_the_arguments_and_assigns_the_job(
-    start: StartProcess,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Start trnrund with the given arguments, inside the kill-on-close job."""
-    assigned: list[subprocess.Popen[str]] = []
-    monkeypatch.setattr(process_module, "assign_to_job", assigned.append)
-
+def test_start_passes_the_arguments(start: StartProcess) -> None:
+    """Start trnrund with the given arguments."""
     process = start("--database:runs.sqlite3", "--maxConcurrent:2")
 
     assert process.request({"cmd": "ready"})["args"] == ["--database:runs.sqlite3", "--maxConcurrent:2"]
-    assert len(assigned) == 1
 
 
 # -----------------------------------------------------------------
@@ -75,13 +68,14 @@ def test_request_returns_the_reply_with_increasing_ids(start: StartProcess) -> N
     assert second["id"] == 2
 
 
-def test_rejected_request_raises_value_error(start: StartProcess) -> None:
-    """Raise trnrund's error for a rejected request, and keep serving."""
+def test_rejected_request_raises_request_rejected_error(start: StartProcess) -> None:
+    """Raise trnrund's error for a rejected request, still a ValueError, and keep serving."""
     process = start()
 
-    with pytest.raises(ValueError, match="Rejected on purpose"):
+    with pytest.raises(RequestRejectedError, match="Rejected on purpose") as raised:
         _ = process.request({"cmd": "reject"})
-    with pytest.raises(ValueError, match="trnrund rejected the request"):
+    assert isinstance(raised.value, ValueError)
+    with pytest.raises(RequestRejectedError, match="trnrund rejected the request"):
         _ = process.request({"cmd": "bare_reject"})
     assert process.request({"cmd": "ready"})["ok"] is True
 
@@ -137,10 +131,12 @@ def test_wait_for_change_wakes_on_a_later_revision(start: StartProcess) -> None:
     process = start()
 
     assert process.wait_for_change(0, timeout=0.05) is False
+    assert process.revision == 0
     _ = process.request({"cmd": "notify", "revision": 5})
 
     assert process.wait_for_change(4, timeout=5.0) is True
     assert process.wait_for_change(5, timeout=0.05) is False
+    assert process.revision == 5
 
 
 def test_wait_for_change_keeps_the_largest_revision(start: StartProcess) -> None:
@@ -169,17 +165,18 @@ def test_wait_for_change_from_another_thread(start: StartProcess) -> None:
 # Exit
 # -----------------------------------------------------------------
 def test_crash_is_reported_with_its_diagnostics(start: StartProcess) -> None:
-    """Raise RuntimeError with the exit code and stderr, for this and every later request."""
+    """Raise DaemonExitedError with the exit code and stderr, for this and every later request."""
     process = start()
 
-    with pytest.raises(RuntimeError, match="trnrund exited with code 3: boom"):
+    with pytest.raises(DaemonExitedError, match="trnrund exited with code 3: boom"):
         _ = process.request({"cmd": "crash"})
-    with pytest.raises(RuntimeError, match="code 3"):
+    with pytest.raises(DaemonExitedError, match="code 3"):
         _ = process.request({"cmd": "ready"})
 
     error = process.exit_error()
+    assert isinstance(error, DaemonExitedError)
     assert isinstance(error, RuntimeError)
-    assert "boom" in str(error)
+    assert (error.exit_code, error.diagnostics) == (3, "boom")
     assert process.wait_for_change(0, timeout=5.0) is True  # Its end wakes waiters.
 
 
@@ -198,7 +195,7 @@ def test_wait_returns_once_trnrund_exits_cleanly(start: StartProcess) -> None:
 
     assert process.wait(timeout=10.0) is True
     assert process.exit_error() is None
-    with pytest.raises(RuntimeError, match="trnrund is closed"):
+    with pytest.raises(ClosedError, match="trnrund is closed"):
         _ = process.request({"cmd": "ready"})
 
 
@@ -207,7 +204,7 @@ def test_wait_raises_when_trnrund_exits_with_an_error(start: StartProcess) -> No
     process = start()
     _ = process.request({"cmd": "exit", "code": 2})
 
-    with pytest.raises(RuntimeError, match="trnrund exited with code 2: bye"):
+    with pytest.raises(DaemonExitedError, match="trnrund exited with code 2: bye"):
         _ = process.wait(timeout=10.0)
 
 
@@ -228,14 +225,14 @@ def test_close_ends_trnrund_and_is_idempotent(start: StartProcess) -> None:
     process.close()
 
     assert process.exit_error() is None
-    with pytest.raises(RuntimeError, match="trnrund is closed"):
+    with pytest.raises(ClosedError, match="trnrund is closed"):
         _ = process.request({"cmd": "ready"})
 
 
 def test_close_after_a_crash(start: StartProcess) -> None:
     """Close a daemon that already exited without raising."""
     process = start()
-    with pytest.raises(RuntimeError):
+    with pytest.raises(DaemonExitedError):
         _ = process.request({"cmd": "crash"})
 
     process.close()

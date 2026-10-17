@@ -1,10 +1,9 @@
 """Simulation handles kept in sync with one trnrund daemon."""
 
-from collections.abc import Sequence
+import sqlite3
 from contextlib import ExitStack, suppress
 from dataclasses import replace
 from pathlib import Path
-from tempfile import TemporaryDirectory
 from threading import Condition, Event, Lock, Thread, current_thread
 from time import monotonic
 from types import TracebackType
@@ -13,12 +12,14 @@ from typing import Final, Self
 from trnrun.batch.display import Display, ProgressDisplay
 from trnrun.batch.simulation import Simulation
 from trnrun.daemon import DEFAULT_TRNRUN, DEFAULT_TRNRUND, Daemon
-from trnrun.database import Database
+from trnrun.database import read_changes
+from trnrun.errors import ClosedError, DaemonExitedError, SyncError
 from trnrun.events import LogEvent
+from trnrun.runs import Changes
 from trnrun.settings import SimulationSettings
 
 DEFAULT_REFRESH_INTERVAL: Final[float] = 0.1
-_STOP_CHECK: Final[float] = 0.5  # Longest the background thread waits before checking for shutdown.
+_STOP_CHECK: Final[float] = 0.1  # Longest the background thread waits before checking for shutdown.
 
 
 class SimulationManager:
@@ -41,11 +42,10 @@ class SimulationManager:
     any ``Display``, which the background thread then updates instead. The
     display is closed on ``shutdown()``.
 
-    When syncing stops, because the daemon exited, a database read failed, or
-    the manager shut down, ``wait()`` raises a RuntimeError naming the cause
-    for unfinished runs instead of hanging, and later submissions raise it
-    too. Handles keep their last state. Runs already submitted go on until
-    ``shutdown()``, which stops the daemon.
+    When syncing stops, because the daemon exited or a database read failed,
+    ``wait()`` raises ``DaemonExitedError`` or ``SyncError`` for unfinished
+    runs instead of hanging, and later submissions raise it too. After
+    ``shutdown()`` they raise ``ClosedError``. Handles keep their last state.
 
     Call ``add()``, ``cancel()``, and ``shutdown()`` from the thread that
     created the manager. Use ``Daemon`` directly when an application needs to
@@ -65,26 +65,17 @@ class SimulationManager:
         """Start the daemon and the background thread syncing its runs.
 
         max_concurrent defaults to one less than the CPU count, at least 1.
-        trnrund_path and trnrun_path are passed to ``Daemon``. Startup failures
-        raise as they do there.
+        database_path, trnrund_path and trnrun_path are passed to ``Daemon``.
+        Startup failures raise as they do there.
         """
         if refresh_interval < 0:
             raise ValueError("refresh_interval must not be negative")
-        # Unwound by shutdown: the daemon first, then the temporary database, then the display.
+        # Unwound by shutdown: the daemon, with a temporary database, then the display.
         self._resources: ExitStack = ExitStack()
-        self.display: Display | None
-        if display is True:
-            self.display = ProgressDisplay()
-        else:
-            self.display = None if display is False else display
+        self.display: Display | None = ProgressDisplay() if display is True else (display or None)
         if self.display is not None:
             _ = self._resources.callback(self.display.close)
         try:
-            if database_path is None:
-                temporary = self._resources.enter_context(
-                    TemporaryDirectory(prefix="trnrun-", ignore_cleanup_errors=True),
-                )
-                database_path = Path(temporary) / "runs.sqlite3"
             self._daemon: Daemon = self._resources.enter_context(
                 Daemon(
                     database_path,
@@ -148,20 +139,21 @@ class SimulationManager:
         ------
         FileNotFoundError
             If the configured TRNSYS executable is missing.
-        ValueError
+        RequestRejectedError
             If the daemon rejects the run, such as for a missing deck or one
             that is not a ``.dck`` or ``.trd`` file.
-        RuntimeError
-            If the manager is closed, or the error that stopped syncing.
+        ClosedError
+            If the manager was shut down.
+        DaemonExitedError, SyncError
+            The error that stopped syncing.
         """
         settings = SimulationSettings() if settings is None else replace(settings)
-        trnrun_args = settings.to_cli_args()
-        deck_path = Path(deck_file).absolute()
+        deck_file = Path(deck_file).absolute()
 
         with self._lock:
             self._check()
-            run_id = self._daemon.add(deck_path, trnrun_args, label=label)
-            simulation = Simulation(run_id, deck_path, settings)
+            run_id = self._daemon.add(deck_file, settings, label=label)
+            simulation = Simulation(run_id, deck_file, settings)
             self._simulations[run_id] = simulation
         return simulation
 
@@ -174,15 +166,17 @@ class SimulationManager:
         ------
         ValueError
             If the simulation is unfinished but was not added to this manager.
-        RuntimeError
-            If the manager is closed, or the error that stopped syncing.
+        ClosedError
+            If the manager was shut down.
+        DaemonExitedError, SyncError
+            The error that stopped syncing.
         """
         with self._lock:
             self._check()
             self._check_owned(simulation)
             if not self._is_pending(simulation):
                 return  # Finished: keep its real outcome.
-        self._daemon.cancel(simulation.id)
+        self._daemon.cancel(simulation.run_id)
 
     def wait(self, simulation: Simulation | None = None, *, timeout: float | None = None) -> None:
         """Block until ``simulation`` has finished, or every run if None, including those added meanwhile.
@@ -197,9 +191,10 @@ class SimulationManager:
             If runs are unfinished after ``timeout`` seconds.
         ValueError
             If the simulation is unfinished but was not added to this manager.
-        RuntimeError
-            If runs are unfinished when the manager is closed, or the error
-            that stopped syncing, such as the daemon exiting.
+        ClosedError
+            If runs are unfinished when the manager is shut down.
+        DaemonExitedError, SyncError
+            The error that stopped syncing, such as the daemon exiting.
         """
         deadline = None if timeout is None else monotonic() + timeout
         with self._changed:
@@ -216,17 +211,15 @@ class SimulationManager:
         """Stop the daemon, interrupting unfinished runs, then release everything.
 
         Unfinished handles keep their last state, and waiting for them raises
-        that the manager is closed. A temporary database is deleted, and the
-        display is closed. Later calls do nothing.
+        ``ClosedError``. A temporary database is deleted, and the display is
+        closed. Later calls do nothing.
         """
         with self._changed:
             if self._stop.is_set():
                 return
             self._stop.set()
             self._changed.notify_all()
-        # Stopping the daemon ends its stdout, which wakes the background thread.
-        self._daemon.close()
-        # Joined before the temporary database is deleted, since it reads it.
+        # Joined first: it reads the database that closing the daemon may delete.
         if current_thread() is not self._poller:
             self._poller.join()
         self._resources.close()
@@ -250,42 +243,43 @@ class SimulationManager:
         """Return whether ``wait(simulation)`` must keep waiting; the caller holds the lock."""
         if simulation is None:
             return bool(self._simulations)
-        return self._simulations.get(simulation.id) is simulation
+        return self._simulations.get(simulation.run_id) is simulation
 
     def _check_owned(self, simulation: Simulation) -> None:
         """Raise ValueError for an unfinished simulation this manager does not track; the caller holds the lock."""
         if not self._is_pending(simulation) and not simulation.is_finished:
-            raise ValueError(f"Simulation {simulation.id} was not added to this manager")
+            raise ValueError(f"Simulation {simulation.run_id} was not added to this manager")
 
     def _check(self) -> None:
-        """Raise RuntimeError if the manager is closed or stopped syncing; the caller holds the lock."""
+        """Raise if the manager is closed or stopped syncing; the caller holds the lock."""
         if self._stop.is_set():
-            raise RuntimeError("SimulationManager is closed")
-        if self._failure is not None:
-            # A fresh error each time, so tracebacks do not pile up on the recorded one.
-            raise RuntimeError(f"SimulationManager stopped syncing: {self._failure}") from self._failure
+            raise ClosedError("SimulationManager is closed")
+        failure = self._failure
+        if failure is None:
+            return
+        # A fresh error each time, so tracebacks do not pile up on the recorded one.
+        if isinstance(failure, DaemonExitedError):
+            raise DaemonExitedError(failure.exit_code, failure.diagnostics) from failure
+        raise SyncError(f"SimulationManager stopped syncing: {failure}") from failure
 
     def _poll(self) -> None:
         """Sync after each announced change until shutdown or the first failed sync."""
-        reader: Database | None = None
+        connection: sqlite3.Connection | None = None
         try:
             # Its own connection: SQLite connections stay in the thread that opened them. It
             # starts where the daemon did, so a run that finishes before its first sync is seen.
-            reader = Database(
-                self._daemon.database_path,
-                after_revision=self._daemon.start_revision,
-                after_log_id=self._daemon.start_log_id,
-            )
+            connection = self._daemon.connect()
+            position = Changes(revision=self._daemon.start_revision, log_id=self._daemon.start_log_id)
             while not self._stop.is_set():
-                if not self._daemon.wait_for_change(reader.revision, _STOP_CHECK) or self._stop.is_set():
+                if not self._daemon.wait_for_change(position.revision, _STOP_CHECK) or self._stop.is_set():
                     continue
-                self._sync(reader)
+                position = self._sync(connection, position)
                 _ = self._stop.wait(self._refresh_interval)  # Gathers the changes saved meanwhile.
         except Exception as error:  # noqa: BLE001 - any failure stops syncing
             self._fail(error)
         finally:
-            if reader is not None:
-                reader.close()
+            if connection is not None:
+                connection.close()
 
     def _fail(self, error: Exception) -> None:
         """Record why syncing stopped, so waiting for unfinished runs and later calls raise ``error``."""
@@ -295,19 +289,16 @@ class SimulationManager:
             self._failure = error
             self._changed.notify_all()
 
-    def _sync(self, reader: Database) -> None:
-        """Read once what changed, apply it to the handles, show it, then release finished ones.
+    def _sync(self, connection: sqlite3.Connection, position: Changes) -> Changes:
+        """Read what changed after ``position``, apply it to the handles, show it, then release finished ones.
 
-        A display failure is ignored and never stops syncing. Raises the
-        daemon's exit, after applying what it saved, since it can no longer
-        finish the remaining runs.
+        Returns what was read, the position to read after next time. A
+        display failure is ignored and never stops syncing.
         """
         changed: list[Simulation] = []
         finished: list[Simulation] = []
         with self._lock:
-            # Checked before reading: once the daemon's stdout ended, everything it saved is readable.
-            exit_error = self._daemon.exit_error()
-            changes = reader.poll()
+            changes = read_changes(connection, position.revision, position.log_id)
             infos = {info.run_id: info for info in changes.runs}
             logs: dict[int, list[LogEvent]] = {}
             for log in changes.logs:
@@ -317,12 +308,12 @@ class SimulationManager:
                 if simulation is None:
                     continue
                 info = infos.get(run_id)
-                simulation.apply(info, logs.get(run_id, []))
+                simulation._apply(info, logs.get(run_id, []))  # noqa: SLF001 # pyright: ignore[reportPrivateUsage] - the manager is its only writer
                 if info is not None:
                     changed.append(simulation)
                     if simulation.is_finished:
                         finished.append(simulation)
-        changed.sort(key=lambda simulation: simulation.id)
+        changed.sort(key=lambda simulation: simulation.run_id)
 
         if changed and self.display is not None:
             with suppress(Exception):
@@ -331,7 +322,6 @@ class SimulationManager:
         # Kept tracked until displayed, so wait() returns only after their final lines.
         with self._changed:
             for simulation in finished:
-                _ = self._simulations.pop(simulation.id, None)
+                _ = self._simulations.pop(simulation.run_id, None)
             self._changed.notify_all()
-        if exit_error is not None:
-            raise exit_error
+        return changes

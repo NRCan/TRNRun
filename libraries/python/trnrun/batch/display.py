@@ -88,7 +88,7 @@ def _truncate_left(text: str, width: int) -> str:
 def _render_line(simulation: Simulation) -> Text:
     """Render one simulation as a status line; missing progress renders as placeholders."""
     info = simulation.info
-    status = info.status.status if info.status is not None else None
+    status = info.status
     progress = info.progress
     stop = info.config.stop if info.config is not None else None
 
@@ -102,7 +102,7 @@ def _render_line(simulation: Simulation) -> Text:
     logs = f"N:{info.notices} W:{info.warnings} F:{info.fatals}"
 
     return Text.assemble(
-        f"[{simulation.id}] {_truncate_left(str(simulation.deck_path), PATH_WIDTH)} | Status: ",
+        f"[{simulation.run_id}] {_truncate_left(str(simulation.deck_file), PATH_WIDTH)} | Status: ",
         (f"{status or '':<10}", STATUS_STYLES.get(status, "") if status is not None else ""),
         f" | Logs: {logs:<12} | Elapsed: {elapsed:<8} | ETA: {eta:<8} | {bar} {sim_time} {sim_percent:6}",
     )
@@ -230,10 +230,10 @@ class ProgressDisplay:
         for simulation in changed:
             state = simulation.state
             if state is SimulationState.FINISHED:
-                _ = self._rows.pop(simulation.id, None)
+                _ = self._rows.pop(simulation.run_id, None)
                 self._output.print(_render_line(simulation))
             elif state is not SimulationState.QUEUED:
-                _ = self._rows.setdefault(simulation.id, simulation)
+                _ = self._rows.setdefault(simulation.run_id, simulation)
         self._output.show([_render_line(simulation) for simulation in self._rows.values()])
 
     def close(self) -> None:

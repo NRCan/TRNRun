@@ -1,19 +1,22 @@
-"""Tests for ``trnrun.daemon``: driving the bundled trnrund and following its runs.
+"""Tests for ``trnrun.daemon``: driving the bundled trnrund and knowing when its database changed.
 
 The daemon is real; TRNRun is Python running decks from ``helpers.write_deck``.
 """
 
+import sqlite3
 import time
 from collections.abc import Callable, Iterator
+from contextlib import closing
 from pathlib import Path
 
 import pytest
 
 from tests.helpers import FAILED_EVENTS, PYTHON, release, requires_trnrund, write_deck
-from trnrun.daemon import Daemon, _field
-from trnrun.database import Database
-from trnrun.events import SimulationStatus, StatusEvent
-from trnrun.runs import SimulationInfo, SimulationState
+from trnrun.daemon import Daemon
+from trnrun.database import connect, read_changes
+from trnrun.errors import ClosedError, DaemonExitedError, RequestRejectedError
+from trnrun.events import SimulationStatus
+from trnrun.runs import SimulationInfo, SimulationState, parse_log, parse_run
 from trnrun.settings import SimulationSettings
 
 type StartDaemon = Callable[..., Daemon]
@@ -39,14 +42,34 @@ def start() -> Iterator[StartDaemon]:
         daemon.close()
 
 
+def fetch_run(connection: sqlite3.Connection, run_id: int) -> SimulationInfo | None:
+    """Return a run's current row as a record, or None for an unknown ID."""
+    row = connection.execute("SELECT * FROM runs WHERE run_id = ?", (run_id,)).fetchone()
+    return None if row is None else parse_run(row)
+
+
+def get_run(daemon: Daemon, run_id: int) -> SimulationInfo | None:
+    """Return a run's current row through a connection of its own."""
+    with closing(daemon.connect()) as connection:
+        return fetch_run(connection, run_id)
+
+
+def latest_revision(connection: sqlite3.Connection) -> int:
+    """Return the largest run revision saved so far, or 0 for an empty database."""
+    return int(connection.execute("SELECT coalesce(max(revision), 0) FROM runs").fetchone()[0])
+
+
 def wait_until(daemon: Daemon, run_id: int, done: Callable[[SimulationInfo], bool]) -> SimulationInfo:
-    """Follow the daemon's changes until run ``run_id`` satisfies ``done``, and return it."""
+    """Wait for the daemon's changes until run ``run_id`` satisfies ``done``, and return it."""
     deadline = time.monotonic() + TIMEOUT
-    while time.monotonic() < deadline:
-        info = daemon.database.get_run(run_id)
-        if info is not None and done(info):
-            return info
-        _ = daemon.wait(0.5)
+    with closing(daemon.connect()) as connection:
+        while time.monotonic() < deadline:
+            # Read before the run, so a save in between wakes the next wait at once.
+            revision = latest_revision(connection)
+            info = fetch_run(connection, run_id)
+            if info is not None and done(info):
+                return info
+            _ = daemon.wait_for_change(revision, 0.5)
     raise AssertionError(f"run {run_id} did not reach the expected state within {TIMEOUT} s")
 
 
@@ -58,21 +81,6 @@ def finished(info: SimulationInfo) -> bool:
 def running(info: SimulationInfo) -> bool:
     """Return whether the run is running."""
     return info.state is SimulationState.RUNNING
-
-
-# -----------------------------------------------------------------
-# Reply fields
-# -----------------------------------------------------------------
-def test_field_returns_a_value_of_the_expected_type() -> None:
-    """Read a reply field that has the expected type."""
-    assert _field({"ok": True, "runId": 3}, "runId", int) == 3
-
-
-@pytest.mark.parametrize("reply", [{"ok": True}, {"ok": True, "runId": "3"}])
-def test_field_rejects_a_missing_or_mistyped_value(reply: dict[str, object]) -> None:
-    """Report a reply trnrund should not have sent as a protocol error."""
-    with pytest.raises(RuntimeError, match="trnrund reply has no int 'runId'"):
-        _ = _field(reply, "runId", int)
 
 
 # -----------------------------------------------------------------
@@ -108,18 +116,22 @@ def test_given_database_is_kept_and_continued(start: StartDaemon, tmp_path: Path
         first.shutdown()
     assert path.is_file()
 
-    with start(path) as second:
+    with start(path) as second, closing(second.connect()) as connection:
         assert second.database_path == path
         assert second.session_id == 2
         assert second.start_revision > 0
         assert second.start_log_id == 3
-        assert not second.poll()  # Only this daemon's changes.
+        assert not read_changes(connection, second.start_revision, second.start_log_id)  # Only new changes.
 
         second_run = second.add(deck)
 
         assert second_run == first_run + 1
-        assert [info.run_id for info in second.database.get_runs(session_id=1)] == [first_run]
-        assert [info.run_id for info in second.wait(TIMEOUT).runs] == [second_run]
+        assert [row["run_id"] for row in connection.execute("SELECT run_id FROM runs WHERE session_id = 1")] == [
+            first_run,
+        ]
+        assert second.wait_for_change(second.start_revision, TIMEOUT) is True
+        changes = read_changes(connection, second.start_revision, second.start_log_id)
+        assert [info.run_id for info in changes.runs] == [second_run]
 
 
 @requires_trnrund
@@ -128,7 +140,7 @@ def test_database_in_use_fails_with_trnrund_message(start: StartDaemon, tmp_path
     path = tmp_path / "runs.sqlite3"
     _ = start(path)
 
-    with pytest.raises(RuntimeError, match="in use by another trnrund"):
+    with pytest.raises(DaemonExitedError, match="in use by another trnrund"):
         _ = start(path)
 
 
@@ -141,12 +153,12 @@ def test_context_manager_interrupts_unfinished_runs(start: StartDaemon, tmp_path
         run_id = daemon.add(deck)
         _ = wait_until(daemon, run_id, running)
 
-    with Database(path) as database:
-        info = database.get_run(run_id)
+    with closing(connect(path)) as connection:
+        info = fetch_run(connection, run_id)
 
     assert info is not None
     assert info.is_finished
-    assert info.status == StatusEvent(SimulationStatus.CANCELLED, "Interrupted")
+    assert (info.status, info.status_message) == (SimulationStatus.CANCELLED, "Interrupted")
     assert info.error == "Interrupted: the client disconnected"
 
 
@@ -161,13 +173,13 @@ def test_added_run_is_followed_to_success(start: StartDaemon, tmp_path: Path) ->
 
     info = wait_until(daemon, run_id, finished)
 
-    assert info.succeeded
-    assert (info.exit_code, info.error) == (0, "")
+    assert info.succeeded is True
+    assert (info.exit_code, info.error) == (0, None)
     assert info.label == "baseline"
     assert info.session_id == daemon.session_id
     assert info.trnrun_args == ["--pollMs:10"]
     assert info.deck_file == tmp_path / "model.dck"
-    assert info.status == StatusEvent(SimulationStatus.DONE)
+    assert (info.status, info.status_message) == (SimulationStatus.DONE, "")  # TRNRun sent an empty message.
     assert info.config is not None
     assert info.config.stop == 10.0
     assert info.progress is not None
@@ -176,7 +188,9 @@ def test_added_run_is_followed_to_success(start: StartDaemon, tmp_path: Path) ->
     assert info.submitted_at is not None
     assert info.started_at is not None
     assert info.finished_at is not None
-    logs = daemon.database.get_logs(run_id)
+    with closing(daemon.connect()) as connection:
+        rows = connection.execute("SELECT * FROM logs WHERE run_id = ? ORDER BY log_id", (run_id,)).fetchall()
+    logs = [parse_log(row) for row in rows]
     assert [(log.severity, log.message) for log in logs] == [
         ("Notice", "first"),
         ("Warning", "second"),
@@ -186,23 +200,29 @@ def test_added_run_is_followed_to_success(start: StartDaemon, tmp_path: Path) ->
 
 
 @requires_trnrund
-def test_poll_and_wait_return_every_change_once(start: StartDaemon, tmp_path: Path) -> None:
+def test_wait_for_change_and_read_changes_return_every_change_once(start: StartDaemon, tmp_path: Path) -> None:
     """Hand out each saved change once, ending with the finished run and all its logs."""
     daemon = start()
     run_id = daemon.add(write_deck(tmp_path / "model.dck"))
     runs: list[SimulationInfo] = []
     log_ids: list[int] = []
+    revision, log_id = daemon.start_revision, daemon.start_log_id
     deadline = time.monotonic() + TIMEOUT
-    while not (runs and runs[-1].is_finished) and time.monotonic() < deadline:
-        changes = daemon.wait(0.5)
-        runs.extend(changes.runs)
-        log_ids.extend(log.log_id for log in changes.logs)
+    with closing(daemon.connect()) as connection:
+        while not (runs and runs[-1].is_finished) and time.monotonic() < deadline:
+            if daemon.wait_for_change(revision, 0.5):
+                changes = read_changes(connection, revision, log_id)
+                revision, log_id = changes.revision, changes.log_id
+                runs.extend(changes.runs)
+                log_ids.extend(log.log_id for log in changes.logs)
+
+        assert not read_changes(connection, revision, log_id)
 
     assert runs[-1].run_id == run_id
     assert runs[-1].is_finished
     assert [info.revision for info in runs] == sorted({info.revision for info in runs})
     assert log_ids == [1, 2, 3]
-    assert not daemon.poll()
+    assert daemon.wait_for_change(revision, 0.1) is False
 
 
 @requires_trnrund
@@ -213,9 +233,9 @@ def test_failed_run_is_reported(start: StartDaemon, tmp_path: Path) -> None:
 
     info = wait_until(daemon, run_id, finished)
 
-    assert not info.succeeded
+    assert info.succeeded is False
     assert info.exit_code == 1
-    assert info.status == StatusEvent(SimulationStatus.ERROR, "Fake failure")
+    assert (info.status, info.status_message) == (SimulationStatus.ERROR, "Fake failure")
 
 
 @requires_trnrund
@@ -226,9 +246,9 @@ def test_run_without_terminal_status_is_an_error(start: StartDaemon, tmp_path: P
 
     info = wait_until(daemon, run_id, finished)
 
-    assert not info.succeeded
+    assert info.succeeded is False
     assert info.exit_code == 0
-    assert info.status == StatusEvent(SimulationStatus.ERROR, "TRNRun exited without a terminal status")
+    assert (info.status, info.status_message) == (SimulationStatus.ERROR, "TRNRun exited without a terminal status")
 
 
 @requires_trnrund
@@ -244,7 +264,7 @@ def test_relative_deck_resolves_from_the_working_directory(
 
     run_id = daemon.add("model.dck")
 
-    info = daemon.database.get_run(run_id)
+    info = get_run(daemon, run_id)
     assert info is not None
     assert info.deck_file == tmp_path / "model.dck"
 
@@ -275,7 +295,7 @@ def test_every_simulation_setting_is_accepted(start: StartDaemon, tmp_path: Path
 
     run_id = daemon.add(write_deck(tmp_path / "model.dck"), settings)
 
-    info = daemon.database.get_run(run_id)
+    info = get_run(daemon, run_id)
     assert info is not None
     assert info.trnrun_args == settings.to_cli_args()
 
@@ -304,10 +324,11 @@ def test_invalid_run_is_rejected(
         _ = write_deck(tmp_path / name)
     daemon = start()
 
-    with pytest.raises(ValueError, match=message):
+    with pytest.raises(RequestRejectedError, match=message):
         _ = daemon.add(tmp_path / deck_name, args)
 
-    assert daemon.database.get_runs() == []
+    with closing(daemon.connect()) as connection:
+        assert connection.execute("SELECT count(*) FROM runs").fetchone()[0] == 0
 
 
 # -----------------------------------------------------------------
@@ -324,19 +345,19 @@ def test_cancel_queued_and_running_runs(start: StartDaemon, tmp_path: Path) -> N
 
     daemon.cancel(queued_id)
 
-    queued = daemon.database.get_run(queued_id)
+    queued = get_run(daemon, queued_id)
     assert queued is not None
     assert queued.is_finished
     assert queued.started_at is None
-    assert queued.status == StatusEvent(SimulationStatus.CANCELLED, "Not started")
+    assert (queued.status, queued.status_message) == (SimulationStatus.CANCELLED, "Not started")
     assert queued.error == "Not started: cancelled by the client"
 
     daemon.cancel(running_id)
     cancelled = wait_until(daemon, running_id, finished)
 
-    assert cancelled.status == StatusEvent(SimulationStatus.CANCELLED, "Interrupted")
+    assert (cancelled.status, cancelled.status_message) == (SimulationStatus.CANCELLED, "Interrupted")
     assert cancelled.error == "Interrupted: cancelled by the client"
-    assert not cancelled.succeeded
+    assert cancelled.succeeded is False
 
 
 @requires_trnrund
@@ -348,7 +369,7 @@ def test_cancel_leaves_a_finished_run_unchanged(start: StartDaemon, tmp_path: Pa
 
     daemon.cancel(run_id)
 
-    assert daemon.database.get_run(run_id) == before
+    assert get_run(daemon, run_id) == before
 
 
 @requires_trnrund
@@ -356,7 +377,7 @@ def test_cancel_unknown_run_is_rejected(start: StartDaemon) -> None:
     """Reject a run ID trnrund never assigned."""
     daemon = start()
 
-    with pytest.raises(ValueError, match="999"):
+    with pytest.raises(RequestRejectedError, match="999"):
         daemon.cancel(999)
 
 
@@ -375,14 +396,13 @@ def test_shutdown_waits_for_running_runs_and_cancels_queued_ones(start: StartDae
 
     daemon.shutdown(timeout=TIMEOUT)
 
-    done = daemon.database.get_run(running_id)
-    queued = daemon.database.get_run(queued_id)
+    done = get_run(daemon, running_id)
+    queued = get_run(daemon, queued_id)
     assert done is not None
-    assert done.succeeded
+    assert done.succeeded is True
     assert queued is not None
-    assert queued.status == StatusEvent(SimulationStatus.CANCELLED, "Not started")
+    assert (queued.status, queued.status_message) == (SimulationStatus.CANCELLED, "Not started")
     assert queued.error == "Not started: the daemon shut down"
-    assert daemon.exit_error() is None
 
 
 @requires_trnrund
@@ -394,9 +414,9 @@ def test_shutdown_cancel_running_kills_running_runs(start: StartDaemon, tmp_path
 
     daemon.shutdown(cancel_running=True, timeout=TIMEOUT)
 
-    info = daemon.database.get_run(run_id)
+    info = get_run(daemon, run_id)
     assert info is not None
-    assert info.status == StatusEvent(SimulationStatus.CANCELLED, "Interrupted")
+    assert (info.status, info.status_message) == (SimulationStatus.CANCELLED, "Interrupted")
 
 
 @requires_trnrund
@@ -408,7 +428,7 @@ def test_shutdown_timeout_interrupts_running_runs(start: StartDaemon, tmp_path: 
 
     daemon.shutdown(timeout=0.2)
 
-    info = daemon.database.get_run(run_id)
+    info = get_run(daemon, run_id)
     assert info is not None
     assert info.is_finished
     assert info.error == "Interrupted: the client disconnected"
@@ -416,18 +436,20 @@ def test_shutdown_timeout_interrupts_running_runs(start: StartDaemon, tmp_path: 
 
 @requires_trnrund
 def test_after_shutdown_reads_work_and_requests_fail(start: StartDaemon, tmp_path: Path) -> None:
-    """Keep the database readable, stop blocking in wait(), and refuse new requests."""
+    """Keep the database readable, stop blocking in wait_for_change(), and refuse new requests."""
     daemon = start()
     run_id = daemon.add(write_deck(tmp_path / "model.dck"))
     daemon.shutdown(timeout=TIMEOUT)
 
     started = time.monotonic()
-    changes = daemon.wait()
+    assert daemon.wait_for_change(daemon.start_revision) is True
+    with closing(daemon.connect()) as connection:
+        changes = read_changes(connection, daemon.start_revision, daemon.start_log_id)
+    assert daemon.wait_for_change(changes.revision) is False
 
     assert time.monotonic() - started < 5.0
     assert [info.run_id for info in changes.runs] == [run_id]
-    assert daemon.exit_error() is None
-    with pytest.raises(RuntimeError, match="trnrund is closed"):
+    with pytest.raises(ClosedError, match="trnrund is closed"):
         _ = daemon.add(tmp_path / "model.dck")
 
 
@@ -435,17 +457,16 @@ def test_after_shutdown_reads_work_and_requests_fail(start: StartDaemon, tmp_pat
 # Following changes
 # -----------------------------------------------------------------
 @requires_trnrund
-def test_wait_times_out_with_no_changes(start: StartDaemon) -> None:
-    """Return an empty Changes when nothing is saved within the timeout."""
+def test_wait_for_change_times_out_with_no_changes(start: StartDaemon) -> None:
+    """Return False when nothing is saved within the timeout."""
     daemon = start()
 
-    assert not daemon.wait(0.1)
-    assert daemon.wait_for_change(daemon.database.revision, 0.1) is False
+    assert daemon.wait_for_change(daemon.start_revision, 0.1) is False
 
 
 @requires_trnrund
 def test_wait_for_change_announces_saved_revisions(start: StartDaemon, tmp_path: Path) -> None:
-    """Wake readers with their own database once a later revision is saved."""
+    """Wake a reader once a later revision is saved."""
     daemon = start()
     _ = daemon.add(write_deck(tmp_path / "model.dck"))
 
@@ -453,15 +474,36 @@ def test_wait_for_change_announces_saved_revisions(start: StartDaemon, tmp_path:
 
 
 @requires_trnrund
+def test_wait_for_change_after_close_does_not_block(start: StartDaemon, tmp_path: Path) -> None:
+    """Know the final revision even once a temporary database is deleted."""
+    daemon = start()
+    run_id = daemon.add(write_deck(tmp_path / "model.dck"))
+    _ = wait_until(daemon, run_id, finished)
+    with closing(daemon.connect()) as connection:
+        final = read_changes(connection).revision
+
+    daemon.close()
+
+    assert not daemon.database_path.exists()
+    assert daemon.wait_for_change(0, TIMEOUT) is True
+    assert daemon.wait_for_change(final, TIMEOUT) is False
+
+
+@requires_trnrund
 def test_crash_is_raised_after_its_changes(start: StartDaemon, tmp_path: Path) -> None:
-    """Return what a crashed trnrund saved, then raise its exit instead of hanging."""
+    """Announce what a killed trnrund saved, then raise its exit instead of hanging."""
     daemon = start()
     run_id = daemon.add(write_deck(tmp_path / "gate.dck", gated=True))
     _ = wait_until(daemon, run_id, running)
-    daemon._process._popen.kill()
 
-    with pytest.raises(RuntimeError, match="trnrund exited with code 1"):  # noqa: PT012 - drains first
-        for _ in range(100):
-            _ = daemon.wait(0.5)
+    revision = daemon.start_revision
+    with closing(daemon.connect()) as connection:  # Opened before the crash, as a reader would be.
+        daemon._process._popen.kill()
+        with pytest.raises(DaemonExitedError, match="trnrund exited with code 1") as raised:  # noqa: PT012 - drains first
+            for _ in range(100):
+                if daemon.wait_for_change(revision, 0.5):
+                    revision = read_changes(connection, revision).revision
+        final = latest_revision(connection)
 
-    assert isinstance(daemon.exit_error(), RuntimeError)
+    assert raised.value.exit_code == 1
+    assert revision == final  # Every saved change was read before the error.
