@@ -2,10 +2,8 @@
 ##
 ## Workers take work from one shared channel and report to the scheduler inbox.
 ## The pool does not track capacity; the scheduler submits at most one run per
-## worker. Shutdown finishes submitted work, then stops every worker.
-##
-## The work channel remains open to avoid a Nim 2.2 ORC crash when closing
-## channels that transported moved strings, so start a pool only once.
+## worker. Shutdown finishes submitted work, stops every worker, then closes the
+## work channel. The scheduler inbox is not the pool's to close.
 
 import ./[messages, threadstart, trnrun]
 
@@ -61,9 +59,12 @@ proc submit*(pool: var WorkerPool, work: Work) =
   pool.work.send(work)
 
 proc shutdown*(pool: var WorkerPool) =
-  ## Finishes submitted work, then stops and joins every worker. Safe to repeat.
+  ## Finishes submitted work, stops and joins every worker, then closes the work channel.
+  if pool.threads.len == 0:
+    return
   for _ in pool.threads:
     pool.work.send(Work(kind: wkStop))
   for thread in pool.threads.mitems:
     joinThread(thread)
   pool.threads.setLen(0)
+  pool.work.close()

@@ -9,8 +9,9 @@
 ## finished run frees its slot for the next queued run as its exit is applied.
 ##
 ## Close the scheduler with `close` once `isDone`, so every worker is joined,
-## or `abandon` it right before the process exits. The inbox is never closed,
-## to avoid the Nim 2.2 ORC crash described in `workerpool`.
+## or `abandon` it right before the process exits. The inbox is never closed:
+## the stdin reader, the writer, and the workers left running by `abandon` may
+## post to it until the process exits.
 ##
 ## The database is the record of every run; the scheduler only keeps in memory
 ## the runs waiting for a slot and those running, which a new daemon never

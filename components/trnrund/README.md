@@ -297,6 +297,3 @@ through real TRNSYS; adjust its configuration for your installation.
 - Startup and fatal diagnostics go to stderr; stdout is reserved for replies
   and notifications. Exit codes are `0` for normal exit, `1` for fatal
   failures, and `2` for invalid options or startup validation errors.
-
-Channels intentionally remain open because of the documented Nim 2.2 ORC
-channel-close workaround.
