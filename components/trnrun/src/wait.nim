@@ -83,12 +83,6 @@ proc poll(
   ## Polls `condition` with backoff until true or `timeoutMs` ends (0 = never); rechecks on exit.
   result = false
 
-  if initialIntervalMs <= 0:
-    raise newException(ValueError, "initialIntervalMs must be positive")
-  if maxIntervalMs < initialIntervalMs:
-    raise newException(ValueError, "maxIntervalMs must be >= initialIntervalMs")
-  if backoff <= 1.0:
-    raise newException(ValueError, "backoff must be > 1.0")
   if timeoutMs < 0:
     raise newException(ValueError, "timeoutMs must be >= 0")
 
@@ -107,11 +101,7 @@ proc poll(
     if infinite:
       waitMs = delay.int
     else:
-      let now = getMonoTime()
-      if now >= deadline:
-        return false
-
-      let remaining = (deadline - now).inMilliseconds.int
+      let remaining = (deadline - getMonoTime()).inMilliseconds.int
       if remaining <= 0:
         return false
 
@@ -192,6 +182,7 @@ proc waitGui(
 proc collectCallback(hwnd: Handle, lParam: LPARAM): int32 {.stdcall.} =
   ## EnumWindows callback collecting every visible, titled window matching pid and class.
   let data = cast[ptr CollectData](lParam)
+  # Load-bearing: matching on class alone stopped decks without a plot from minimizing.
   if matchesGuiWindow(hwnd, data.pid, data.guiClasses) and
       isWindowVisible(hwnd) != 0 and
       getWindowTextLengthW(hwnd) > 0:

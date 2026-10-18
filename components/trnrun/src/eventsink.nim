@@ -17,12 +17,6 @@ type
   JsonlWriter* = ref object ## Writer that owns an open JSON Lines output file.
     file: File
 
-proc openJsonlWriter*(path: string): JsonlWriter =
-  ## Opens `path` for unbuffered output, truncating it; raises `IOError` if it cannot be opened.
-  new(result)
-  if not open(result.file, path, fmWrite, bufSize = 0):
-    raise newException(IOError, "Could not open JSONL file '" & path & "'")
-
 proc close*(writer: JsonlWriter) =
   ## Closes the owned output file; a `nil` or already closed writer is a no-op.
   if writer == nil or writer.file == nil:

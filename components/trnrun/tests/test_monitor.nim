@@ -233,7 +233,7 @@ suite "simulation monitor":
     check collector.events.len == 4
     check state.lastProgressChange == lastAdvance
 
-  test "filters log events by severity and reports fatal entries":
+  test "filters log events by severity and keeps draining after a fatal entry":
     let path = getTempDir() / "trnrun_monitor_poll.log"
     removeIfExists(path)
     defer: removeIfExists(path)
@@ -242,10 +242,10 @@ suite "simulation monitor":
       path,
       "*** Notice at time : 0\n" &
       "Message : notice\n" &
-      "*** Warning at time : 1\n" &
-      "Message : warning\n" &
-      "*** Fatal at time : 2\n" &
-      "Message : fatal\n",
+      "*** Fatal at time : 1\n" &
+      "Message : fatal\n" &
+      "*** Warning at time : 2\n" &
+      "Message : warning\n",
     )
 
     let collector = newEventCollector()
@@ -258,8 +258,8 @@ suite "simulation monitor":
 
     check state.pollLog()
     check collector.events.len == 2
-    check collector.events[0].logData.severity == sevWarning
-    check collector.events[1].logData.severity == sevFatal
+    check collector.events[0].logData.severity == sevFatal
+    check collector.events[1].logData.severity == sevWarning
 
   test "evaluates timeout and stall thresholds":
     let start = getMonoTime()

@@ -72,6 +72,11 @@ proc captureStdout(
   result = readFile(path)
 
 
+proc openJsonlWriter(path: string): JsonlWriter =
+  result = newJsonlWriter()
+  doAssert result.attachEventFile(path)
+
+
 template withTemporaryFile(path: string, body: untyped) =
   try:
     if fileExists(path):
@@ -103,14 +108,13 @@ suite "JSONL event sinks":
       writer.close()
       writer.close()
 
-  test "raises IOError when the output directory does not exist":
+  test "reports failure when the output directory does not exist":
     let missingDirectory = getTempDir() / "trnrun_eventsink_missing_directory"
     let path = missingDirectory / "events.jsonl"
     if dirExists(missingDirectory):
       removeDir(missingDirectory)
 
-    expect IOError:
-      discard openJsonlWriter(path)
+    check not newJsonlWriter().attachEventFile(path)
 
   test "writes numbered JSON lines to stdout and the mirror file":
     let

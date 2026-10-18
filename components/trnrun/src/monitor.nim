@@ -220,6 +220,9 @@ proc readNewLines(offset: var int64, path: string): seq[string] =
 # Iterator
 iterator readLog(offset: var int64, path: string): LogEvent =
   ## Yields log entries appended since the last call with the same `offset`.
+  # shortcut: assumes TRNSYS writes each entry in one go; a read landing mid-entry
+  # drops that entry's message lines. Hold the last entry back one poll if LOG
+  # events ever show up without their message.
   for blockLines in logBlocks(readNewLines(offset, path)):
     let parsed = parseLogBlock(blockLines)
     if parsed.isSome:
@@ -304,14 +307,14 @@ proc pollTmp(state: var MonitorState) =
 
 proc pollLog(state: var MonitorState, emitLogs: bool = true): bool =
   ## Drains new log entries, emitting those at or above `severity` if `emitLogs`; true on `sevFatal`.
+  result = false
   for entry in readLog(state.logOffset, state.logFile):
     if emitLogs and entry.severity >= state.severity:
       state.eventSink(SimulationEvent(kind: eventLog, logData: entry))
 
+    # Keep draining: the offset is already past this chunk, so a later entry would be lost.
     if entry.severity == sevFatal:
-      return true
-
-  return false
+      result = true
 
 proc tick(state: var MonitorState): bool =
   ## Polls TMP before log output and returns `true` if the log contains `sevFatal`.
@@ -377,12 +380,6 @@ proc monitor*(
     lastProgressChange: monitorStartTime,
   )
 
-  if not watchLog and not watchTmp and state.watchTimeoutMs == 0:
-    discard process.waitForExit()
-    if state.pollLog(emitLogs = false):
-      return simFatal
-    return simDone
-
   while process.running:
     if state.tick():
       return simFatal
@@ -411,12 +408,11 @@ proc monitor*(
     if process.waitForExitNonDestructive(pollMs):
       break
 
-  if state.tick():
+  # Final drain.
+  if state.watchTmp:
+    state.pollTmp()
+  if state.pollLog(emitLogs = watchLog):
     return simFatal
-
-  if not watchLog:
-    if state.pollLog(emitLogs = false):
-      return simFatal
 
   if state.watchTmp and state.lastSnapshot.isSome:
     let snapshot = state.lastSnapshot.get()
