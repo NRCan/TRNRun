@@ -151,10 +151,10 @@ proc runTests() =
         statusDone,
       ]
       check collector.events[0].kind == eventSetting
-      check collector.events[0].settingData.trnexePath ==
+      check collector.events[0].settingData.settings.trnexePath ==
         getAppFilename().absolutePath().normalizedPath()
-      check collector.events[0].settingData.detectTimeoutMs == 0
-      check collector.events[0].settingData.pollMs == 1
+      check collector.events[0].settingData.settings.detectTimeoutMs == 0
+      check collector.events[0].settingData.settings.pollMs == 1
       check collector.events.anyIt(it.kind == eventConfig)
       check collector.events.anyIt(it.kind == eventProgress)
 
@@ -209,7 +209,7 @@ proc runTests() =
       check outcome == simFatal
       check collector.events.terminalStatuses()[^1] == statusError
       check collector.events.anyIt(
-        it.kind == eventLog and it.logData.severity == Fatal
+        it.kind == eventLog and it.logData.severity == sevFatal
       )
 
     test "kills the process after a monitoring timeout when configured":

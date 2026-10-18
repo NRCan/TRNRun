@@ -2,7 +2,8 @@
 ##
 ## Owns the option vocabulary: the accepted GUI visibility spellings and the
 ## mapping from CLI keys onto `RunnerSettings`. Adding a setting means touching
-## this module and `settings`, and nothing else.
+## this module, the `RunnerSettings` field in `events`, its default in
+## `settings`, and the help text in `trnrun`.
 
 import std/strutils
 import ./[events, settings]
@@ -32,6 +33,12 @@ proc parseGuiVisibility(value: string): TrnexeGuiVisibility =
   else:
     raise newException(ValueError, "Invalid guiVisibility: " & value)
 
+proc parseMs(key, value: string, minimum: int = 0): int =
+  ## Parses a millisecond count; raises `ValueError` if malformed or below `minimum`.
+  result = parseInt(value)
+  if result < minimum:
+    raise newException(ValueError, "Invalid " & key & ": must be >= " & $minimum & ", got " & value)
+
 proc applyOption*(input: var CliInput, key, value: string): bool =
   ## Applies one option, returning false for an unknown `key`; raises `ValueError` on a bad value.
   case key
@@ -50,19 +57,19 @@ proc applyOption*(input: var CliInput, key, value: string): bool =
   of "waitForTmp":
     input.settings.waitForTmp = parseBool(value)
   of "detectTimeout":
-    input.settings.detectTimeoutMs = parseInt(value)
+    input.settings.detectTimeoutMs = parseMs(key, value)
   of "extraDelay":
-    input.settings.extraDelayMs = parseInt(value)
+    input.settings.extraDelayMs = parseMs(key, value)
   of "watchLog":
     input.settings.watchLog = parseBool(value)
   of "watchTmp":
     input.settings.watchTmp = parseBool(value)
   of "watchTimeout":
-    input.settings.watchTimeoutMs = parseInt(value)
+    input.settings.watchTimeoutMs = parseMs(key, value)
   of "stallTimeout":
-    input.settings.stallTimeoutMs = parseInt(value)
+    input.settings.stallTimeoutMs = parseMs(key, value)
   of "pollMs":
-    input.settings.pollMs = parseInt(value)
+    input.settings.pollMs = parseMs(key, value, minimum = 1)
   of "clean":
     input.settings.cleanOnSuccess = parseBool(value)
   of "killOnTimeout":

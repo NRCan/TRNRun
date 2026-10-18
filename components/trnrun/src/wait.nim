@@ -209,7 +209,7 @@ proc minimizeGui*(
     process: Process,
     guiClasses: openArray[string] = DefaultGuiClasses,
     timeoutMs: int = 10_000,
-): bool {.discardable.} =
+): bool =
   ## Minimizes every matching window without stealing focus; false if none appears in time.
   let classes = @guiClasses # openArray can't be captured by the closure below.
 

@@ -36,16 +36,16 @@ proc newJsonlWriter*(): JsonlWriter =
   ## Returns a writer that ignores writes until `attachEventFile` gives it a file.
   new(result)
 
-proc attachEventFile*(writer: JsonlWriter, deckFile: string, writeEvents: var bool) =
-  ## Opens the deck's `.jsonl` file into `writer`, clearing `writeEvents` if it cannot be opened.
-  if writer == nil or not writeEvents:
-    return
+proc attachEventFile*(writer: JsonlWriter, deckFile: string): bool =
+  ## Opens the deck's `.jsonl` file into `writer`; reports on stderr and returns false on failure.
+  if writer == nil:
+    return false
 
   let path = deckFile.changeFileExt("jsonl")
   if open(writer.file, path, fmWrite, bufSize = 0):
-    return
+    return true
 
-  writeEvents = false
+  result = false
   try:
     stderr.writeLine("[JsonlWriter] Could not open event file (logging disabled): ", path)
   except IOError:

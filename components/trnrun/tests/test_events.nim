@@ -28,23 +28,25 @@ suite "simulation event JSON serialization":
       kind: eventSetting,
       settingData: SettingEvent(
         timestamp: fixedTimestamp(),
-        trnexePath: "C:\\TRNSYS18\\Exe\\TrnEXE64.exe",
-        guiVisibility: "hidden",
-        waitForGui: true,
-        waitForLst: true,
-        waitForTmp: false,
-        detectTimeoutMs: 300_000,
-        extraDelayMs: 25,
-        watchLog: true,
-        watchTmp: false,
-        watchTimeoutMs: 60_000,
-        stallTimeoutMs: 30_000,
-        pollMs: 100,
-        cleanOnSuccess: true,
-        killOnTimeout: true,
-        killOnStall: false,
-        severity: Notice,
-        writeEvents: true,
+        settings: RunnerSettings(
+          trnexePath: "C:\\TRNSYS18\\Exe\\TrnEXE64.exe",
+          guiVisibility: guiHidden,
+          waitForGui: true,
+          waitForLst: true,
+          waitForTmp: false,
+          detectTimeoutMs: 300_000,
+          extraDelayMs: 25,
+          watchLog: true,
+          watchTmp: false,
+          watchTimeoutMs: 60_000,
+          stallTimeoutMs: 30_000,
+          pollMs: 100,
+          cleanOnSuccess: true,
+          killOnTimeout: true,
+          killOnStall: false,
+          severity: sevNotice,
+          writeEvents: true,
+        ),
       ),
     )
 
@@ -161,7 +163,7 @@ suite "simulation event JSON serialization":
       kind: eventLog,
       logData: LogEvent(
         timestamp: fixedTimestamp(),
-        severity: Warning,
+        severity: sevWarning,
         time: 24.126,
         unitId: some(5),
         typeId: some(139),
@@ -184,7 +186,7 @@ suite "simulation event JSON serialization":
     }
 
   test "omits absent log fields instead of emitting null values":
-    check logEventWithSeverity(Notice).toJson() == %*{
+    check logEventWithSeverity(sevNotice).toJson() == %*{
       "kind": "LOG",
       "timestamp": "2026-06-19T19:37:13",
       "severity": "Notice",
@@ -193,9 +195,9 @@ suite "simulation event JSON serialization":
 
   test "serializes every log severity using its wire value":
     let cases = [
-      (Notice, "Notice"),
-      (Warning, "Warning"),
-      (Fatal, "Fatal"),
+      (sevNotice, "Notice"),
+      (sevWarning, "Warning"),
+      (sevFatal, "Fatal"),
     ]
 
     for (severity, wireValue) in cases:

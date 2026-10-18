@@ -53,7 +53,7 @@ suite "CLI options":
         cleanOnSuccess: true,
         killOnTimeout: true,
         killOnStall: true,
-        severity: Warning,
+        severity: sevWarning,
         writeEvents: true,
       ),
     )
@@ -92,5 +92,11 @@ suite "CLI options":
       discard input.applyOption("watchLog", "maybe")
     expect ValueError:
       discard input.applyOption("pollMs", "not-a-number")
+    expect ValueError:
+      discard input.applyOption("pollMs", "0")
+    expect ValueError:
+      discard input.applyOption("detectTimeout", "-1")
+    expect ValueError:
+      discard input.applyOption("stallTimeout", "-5")
     expect ValueError:
       discard input.applyOption("severity", "Debug")

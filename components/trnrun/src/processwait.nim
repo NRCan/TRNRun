@@ -9,11 +9,8 @@ when not defined(windows):
 
 import std/[oserrors, osproc, winlean]
 
-proc waitForExitNonDestructive*(process: Process, timeoutMs: int): bool =
+proc waitForExitNonDestructive*(process: Process, timeoutMs: Natural): bool =
   ## Returns true if `process` exits within `timeoutMs` (0 polls, not "no limit"); never kills it.
-  if timeoutMs < 0:
-    raise newException(ValueError, "timeoutMs must be non-negative")
-
   # Load-bearing, not a fast path: osproc sets `exitFlag` before releasing
   # `fProcessHandle` (and zeroes it in `close`), so `running` is always false
   # once the PID becomes recyclable. Returning here is what keeps the

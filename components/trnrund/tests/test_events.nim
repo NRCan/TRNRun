@@ -83,8 +83,7 @@ suite "TRNRun event parsing":
 
   test "SettingEvent holds exactly the SETTING event TRNRun builds":
     # Fails when TRNRun adds, renames, or retypes an option this module does not mirror.
-    let sent = trnrunEvents.toJson(trnrunSettings.settingEvent(
-      trnrunSettings.DefaultRunnerSettings, r"C:\TRNSYS18\Exe\TrnEXE64.exe"))
+    let sent = trnrunEvents.toJson(trnrunSettings.settingEvent(trnrunSettings.DefaultRunnerSettings))
     let parsed = parseLine($sent)
     check parsed.kind == ekSetting
     let expected = sent.copy()

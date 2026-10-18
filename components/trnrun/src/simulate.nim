@@ -38,7 +38,7 @@ proc runSimulation*(
     eventSink(statusEvent(simFatal.status, message = "Orphan guard unavailable: " & error.msg))
     return simFatal
 
-  eventSink(settingEvent(settings, settings.trnexePath))
+  eventSink(settingEvent(settings))
   eventSink(statusEvent(statusPending))
 
   var
@@ -175,7 +175,8 @@ proc simulate*(
     eventSink = stdoutEventSink(jsonlOutput, runId)
   try:
     try:
-      jsonlOutput.attachEventFile(validateDeck(deckFile), settings.writeEvents)
+      if settings.writeEvents:
+        settings.writeEvents = jsonlOutput.attachEventFile(validateDeck(deckFile))
     except IOError, ValueError:
       discard # runSimulation re-validates and reports this as a terminal event.
 

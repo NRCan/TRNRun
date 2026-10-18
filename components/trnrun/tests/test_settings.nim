@@ -25,7 +25,7 @@ suite "runner settings":
       cleanOnSuccess: false,
       killOnTimeout: false,
       killOnStall: false,
-      severity: Notice,
+      severity: sevNotice,
       writeEvents: false,
     )
 
@@ -76,7 +76,7 @@ suite "runner settings":
     settings.watchLog = false
     settings.cleanOnSuccess = true
     settings.killOnTimeout = true
-    settings.severity = Fatal
+    settings.severity = sevFatal
     settings.writeEvents = true
     settings.detectTimeoutMs = -1
 
@@ -135,7 +135,7 @@ suite "runner settings":
 
   test "converts every setting to a setting event":
     let settings = RunnerSettings(
-      trnexePath: "configured-path-is-not-emitted.exe",
+      trnexePath: r"C:\Resolved\TrnEXE64.exe",
       guiVisibility: guiMinimizedAuto,
       waitForGui: false,
       waitForLst: true,
@@ -150,33 +150,11 @@ suite "runner settings":
       cleanOnSuccess: true,
       killOnTimeout: true,
       killOnStall: true,
-      severity: Warning,
+      severity: sevWarning,
       writeEvents: true,
     )
 
-    let event = settings.settingEvent(
-      r"C:\Resolved\TrnEXE64.exe",
-      fixedTimestamp(),
-    )
+    let event = settings.settingEvent(fixedTimestamp())
 
     check event.kind == eventSetting
-    check event.settingData == SettingEvent(
-      timestamp: fixedTimestamp(),
-      trnexePath: r"C:\Resolved\TrnEXE64.exe",
-      guiVisibility: "minimizedAuto",
-      waitForGui: false,
-      waitForLst: true,
-      waitForTmp: true,
-      detectTimeoutMs: 123_456,
-      extraDelayMs: 25,
-      watchLog: false,
-      watchTmp: true,
-      watchTimeoutMs: 60_000,
-      stallTimeoutMs: 30_000,
-      pollMs: 50,
-      cleanOnSuccess: true,
-      killOnTimeout: true,
-      killOnStall: true,
-      severity: Warning,
-      writeEvents: true,
-    )
+    check event.settingData == SettingEvent(timestamp: fixedTimestamp(), settings: settings)
