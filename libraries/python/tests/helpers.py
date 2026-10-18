@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from trnrun.daemon import DEFAULT_TRNRUND
+from trnrun.core.daemon import DEFAULT_TRNRUND
 
 # -----------------------------------------------------------------
 # Executables

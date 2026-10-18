@@ -19,8 +19,7 @@ proc runTrnrun*(
     runnerArgs: openArray[string],
     output: var OutputSink,
 ): Option[int] =
-  ## Runs one child synchronously and returns its exit code when launched.
-  ## Validation and launch failures emit a terminal error and return `none`.
+  ## Runs one child, forwarding its output; returns its exit code, or `none` if it never launched.
 
   var process: Process = nil
   try:

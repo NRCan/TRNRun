@@ -2,7 +2,6 @@
 
 import std/os
 
-
 const SidecarExtensions = [
   ".tmp", # Temporary progress file
   ".log", # Simulation log containing notices, warnings, and fatal errors

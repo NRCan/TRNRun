@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("TRNRun.BatchExample")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+311d1eafd5690eca4d0992e5ec6a165b3764965a")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+d766dc99f3d76e47a5646b85b990eff348473807")]
 [assembly: System.Reflection.AssemblyProductAttribute("TRNRun.BatchExample")]
 [assembly: System.Reflection.AssemblyTitleAttribute("TRNRun.BatchExample")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

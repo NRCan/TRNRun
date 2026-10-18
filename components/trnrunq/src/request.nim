@@ -14,21 +14,17 @@ type RunRequest* = object
   runnerArgs*: seq[string] ## Extra arguments forwarded to the runner.
 
 proc requireString(node: JsonNode, key: string): string =
-  ## Returns `key` from `node`.
-  ##
-  ## Raises `ValueError` if the key is absent or is not a JSON string.
+  ## Returns string field `key`; raises `ValueError` if it is absent or not a JSON string.
   result = ""
   if not node.hasKey(key) or node[key].kind != JString:
     raise newException(ValueError, "'" & key & "' must be a string")
   result = node[key].getStr()
 
 proc parseRequest*(line: string): RunRequest =
-  ## Parses one stdin line into a request.
+  ## Parses one stdin line into a request; raises `ValueError` for any malformed line.
   ##
-  ## Validates shape only: field presence, JSON types, and a non-empty `runId`.
-  ## Paths are resolved and checked later, on the worker thread that runs the
-  ## request, so a queue accepting a request is not a claim that it can run.
-  ## Raises `ValueError` for any malformed line.
+  ## Checks shape only (fields, JSON types, non-empty `runId`); paths are validated later
+  ## on the worker, so accepting a request does not claim it can run.
   result = default(RunRequest)
   let node = parseJson(line)
   if node.kind != JObject:

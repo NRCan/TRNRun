@@ -159,7 +159,7 @@ database has three tables. `runs` holds one row per run:
 | `label` | text | The `label` it was added with, or `NULL` |
 | `revision` | integer | Grows with every save; see polling below |
 | `state` | text | `QUEUED`, `RUNNING`, or `FINISHED` |
-| `trnrun_status`, `trnrun_message` | text | TRNRun's latest `STATUS`, such as `DONE`; not `state` |
+| `trnrun_status`, `trnrun_message` | text | TRNRun's latest `STATUS`; not `state`. `PENDING`, `LAUNCHING`, or `RUNNING` while it runs, then `DONE`, `CANCELLED`, `ERROR`, `TIMEOUT`, or `STALLED` |
 | `percent`, `sim_time`, `elapsed_ms`, `eta_ms` | real | TRNRun's latest `PROGRESS` |
 | `notices`, `warnings`, `fatals` | integer | Log entries so far, by severity |
 | `succeeded` | integer | `1` if it finished with `DONE`, exit code 0, and no error, else `0`; `NULL` until `FINISHED` |
@@ -190,7 +190,8 @@ knows, one key per TRNRun option; its keys change only with the schema version.
 `started_at`.
 
 `PRAGMA user_version` returns the schema version, currently `3`. It changes
-whenever this layout does. A daemon refuses a database of another version, and
+whenever this layout does, so the tables, columns, and values documented here
+are the interface clients can rely on. A daemon refuses a database of another version, and
 there is no migration: point it at a new file. A client can check the version
 once after opening.
 
@@ -207,8 +208,10 @@ FROM runs WHERE finished_at IS NOT NULL;
 
 ### Polling
 
-Every save gets the next `revision`, a counter that only grows, and a run's
-logs are saved together with its row. To follow changes, remember the largest
+Every save gets the next `revision`, a counter that only grows but can skip
+numbers, so always compare with `>`. A run's logs are saved together with its
+row, and each one gives the run a new `revision`, so a new revision also
+announces new logs. To follow changes, remember the largest
 `revision` and `log_id` seen, and ask only for what came after them. Read both
 in one transaction to get a consistent view:
 
@@ -249,7 +252,8 @@ and leave its `-wal` and `-shm` files beside it; the daemon refuses to start
 where WAL is unavailable, such as on a network share.
 
 Runs and logs stay in the database after the daemon exits, and the next daemon
-on the same file continues its run numbers in a new session. To start from an
+on the same file continues its run numbers, revisions, and log IDs in a new
+session, so the positions a client remembered stay valid. To start from an
 empty history, use a new database file.
 
 Only one daemon at a time can use a database: it holds a `.lock` file beside

@@ -1,22 +1,16 @@
 ## Implements the TRNRun command-line interface.
 ##
-## Command-line entry point for launching and configuring TRNSYS
-## simulations through the TRNRun execution engine. It acts as a thin
-## wrapper around `simulate`, exposing its parameters via CLI flags, with
-## an optional native file picker when no deck file is supplied.
-##
-## Option parsing itself lives in `cli`; this module owns executable metadata,
-## drives the parser, resolves the deck, and reports the outcome.
+## A thin wrapper around `simulate` that exposes its settings as CLI flags and
+## opens a native file picker when no deck file is supplied. Option parsing lives
+## in `cli`; this module drives it, resolves the deck, and reports the outcome.
 
 import std/parseopt
-import ./cli
-import ./eventsink
-import ./filedialog
-import ./simulate
-import ./status
+import ./[cli, eventsink, filedialog, simulate, status]
 
-const NimblePkgVersion {.strdefine.} = "unknown"
-const HelpText = """trnrun - launch and monitor TRNSYS simulations
+const
+  NimblePkgVersion {.strdefine.} = "unknown"
+  HelpText = """
+trnrun - launch and monitor TRNSYS simulations
 Usage:
   trnrun [deckFile] [options]     # no deckFile -> opens a file picker
 
@@ -45,22 +39,16 @@ Usage:
 Exit codes: 0 done  1 fatal  2 usage error  124 timeout  125 stalled  130 cancelled"""
 
 proc reportOutcome(outcome: SimResult, message: string, runId: string = ""): int =
-  ## Emits one structured terminal status for command paths that cannot enter
-  ## `simulate`, then returns the matching process exit code.
+  ## Emits a terminal status for paths that never reach `simulate`; returns its exit code.
   let eventSink = stdoutEventSink(runId = runId)
   eventSink(statusEvent(outcome.status, message = message))
   return outcome.exitCode()
 
-
 proc main(): int =
-  ## Collects user input from the command line and runs one simulation.
+  ## Parses the command line and runs one simulation, returning the process exit code.
   ##
-  ## Returns the process exit code: 0 done, 1 fatal, 2 usage or validation
-  ## error, 124 timeout, 125 stalled, or 130 cancelled.
-  ##
-  ## This procedure does not call `quit`, ensuring its `finally` cleanup can
-  ## run. Command failures that occur before `simulate` emit a
-  ## structured terminal status through `reportOutcome`.
+  ## Never calls `quit`, so `finally` cleanup still runs; failures before `simulate`
+  ## emit a terminal status through `reportOutcome`.
   var input = DefaultCliInput
 
   var parser = initOptParser()
@@ -80,20 +68,12 @@ proc main(): int =
       else:
         try:
           if not input.applyOption(parser.key, parser.val):
-            return reportOutcome(
-              simInvalid,
-              "Unknown option: " & parser.key,
-              input.runId,
-            )
+            return reportOutcome(simInvalid, "Unknown option: " & parser.key, input.runId)
         except CatchableError:
           return reportOutcome(simInvalid, getCurrentExceptionMsg(), input.runId)
     of cmdArgument:
       if input.deckFile != "":
-        return reportOutcome(
-          simInvalid,
-          "Unexpected argument: " & parser.key,
-          input.runId,
-        )
+        return reportOutcome(simInvalid, "Unexpected argument: " & parser.key, input.runId)
       input.deckFile = parser.key
 
   if input.deckFile == "":
@@ -101,11 +81,7 @@ proc main(): int =
     if input.deckFile == "":
       return reportOutcome(simCancelled, "No file selected", input.runId)
 
-  return exitCode(simulate(
-    deckFile = input.deckFile,
-    settings = input.settings,
-    runId = input.runId,
-  ))
+  return simulate(input.deckFile, input.settings, input.runId).exitCode()
 
 when isMainModule:
   let code =

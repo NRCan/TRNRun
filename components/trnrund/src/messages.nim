@@ -21,8 +21,7 @@ type
     of wkRead:
       runId*: int
       output*: Handle
-        ## Read end of TRNRun's merged stdout and stderr. Owned by the
-        ## scheduler's `Process`, which it closes only after applying `mkExited`.
+        ## Read end of TRNRun's merged output; the scheduler closes it after applying `mkExited`.
       process*: Handle
         ## A handle on TRNRun the worker owns and closes, to wait for its exit.
     of wkStop:

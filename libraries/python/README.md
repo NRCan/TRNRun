@@ -139,7 +139,7 @@ with Daemon("runs.sqlite3", max_concurrent=4) as daemon, closing(daemon.connect(
     revision = daemon.start_revision  # Only this daemon's changes.
     finished = False
     while not finished:
-        daemon.wait_for_change(revision)  # Blocks; raises DaemonExitedError if trnrund crashed.
+        daemon.wait_for_changes(revision)  # Blocks; raises DaemonExitedError if trnrund crashed.
         for row in db.execute("SELECT * FROM runs WHERE revision > ? ORDER BY revision", (revision,)):
             revision = row["revision"]
             finished |= row["run_id"] == run_id and row["state"] == "FINISHED"
@@ -159,12 +159,12 @@ trnrun_path=..., request_timeout=60.0)`:
 - `close()`, also called when leaving a `with` block, interrupts unfinished
   runs and deletes a temporary database.
 - `connect()` opens the database read-only, with rows readable by column name.
-- `wait_for_change(after_revision, timeout=None) -> bool` blocks until
-  trnrund announces a revision after `after_revision`. It returns `False` on
-  timeout, or at once after `shutdown()`/`close()` once nothing newer was
-  announced. Once trnrund has crashed, it returns `True` while announced
-  changes remain, then raises `DaemonExitedError`, so a loop like the one
-  above never hangs.
+- `wait_for_changes(after_revision, timeout=None) -> bool` blocks until
+  trnrund saves a revision after `after_revision`, and returns `False` only
+  on timeout. It returns at once if a newer revision was already announced, so
+  a change saved while you were querying is never missed. Once trnrund has exited and nothing newer was saved, it raises
+  `ClosedError` after `shutdown()`/`close()` and `DaemonExitedError` after a
+  crash, so a loop like the one above never hangs.
 - `database_path`, `session_id`, `start_revision`, and `start_log_id` come
   from trnrund's `ready` reply.
 

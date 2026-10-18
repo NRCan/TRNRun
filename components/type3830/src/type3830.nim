@@ -31,6 +31,7 @@ var
   simulationStep: cdouble
 
 proc discardTimingFile() =
+  ## Closes the timing file, ignoring errors.
   if timingFile != nil:
     try:
       timingFile.close()
@@ -39,6 +40,7 @@ proc discardTimingFile() =
     timingFile = nil
 
 proc writeTimingRecord(time: cdouble; closeAfter: bool = false): bool =
+  ## Rewrites the timing record for `time`; false after reporting a TRNSYS fatal on failure.
   result = false
 
   if timingFile == nil:
@@ -62,6 +64,7 @@ proc writeTimingRecord(time: cdouble; closeAfter: bool = false): bool =
     trnsysFatal(431, "Type3830 file operation failed: " & errorMessage)
 
 proc TYPE3830() {.cdecl, exportc: "TYPE3830", dynlib.} =
+  ## TRNSYS entry point, called by the kernel at each simulation phase.
   # ------------------------------------------------------------
   # VERSION
   # ------------------------------------------------------------

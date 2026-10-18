@@ -21,8 +21,7 @@ import ./threadstart
 
 type
   WriteLines* = proc(lines: seq[string]): bool {.nimcall, gcsafe, raises: [].}
-    ## Writes lines to the client and flushes them; false once it is gone.
-    ## Runs on the writer thread, with synchronous I/O that `stop` can cancel.
+    ## Writes and flushes lines (writer thread, cancellable by `stop`); false once the client left.
 
   Pending = object
     ## What the scheduler handed over that is not written yet.

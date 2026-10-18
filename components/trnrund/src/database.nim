@@ -14,10 +14,7 @@ import ./events
 
 type
   SimulationState* = enum
-    ## Lifecycle of a run, independent of TRNRun `STATUS`.
-    ##
-    ## `QUEUED → RUNNING → FINISHED`. A run whose TRNRun fails to launch, or
-    ## that is cancelled while queued, goes from `QUEUED` to `FINISHED`.
+    ## Run lifecycle, separate from `STATUS`; failed launches and queued cancels skip `RUNNING`.
     ssQueued = "QUEUED" ## Submitted, waiting for a free slot.
     ssRunning = "RUNNING" ## The TRNRun process started.
     ssFinished = "FINISHED" ## Completed or failed; see `succeeded`.

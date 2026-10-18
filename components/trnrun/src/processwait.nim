@@ -10,11 +10,7 @@ when not defined(windows):
 import std/[oserrors, osproc, winlean]
 
 proc waitForExitNonDestructive*(process: Process, timeoutMs: int): bool =
-  ## Returns true if `process` exits within `timeoutMs`, without terminating it.
-  ##
-  ## `timeoutMs = 0` polls and returns immediately, following the Win32
-  ## `WaitForSingleObject` convention. Callers above this layer - `wait.poll`,
-  ## `waitReady`, the monitor timeouts - use `0` to mean "no limit" instead.
+  ## Returns true if `process` exits within `timeoutMs` (0 polls, not "no limit"); never kills it.
   if timeoutMs < 0:
     raise newException(ValueError, "timeoutMs must be non-negative")
 

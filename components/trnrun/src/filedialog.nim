@@ -39,16 +39,11 @@ type OPENFILENAMEW {.pure.} = object
 
 proc getOpenFileNameW(p: ptr OPENFILENAMEW): int32
   {.importc: "GetOpenFileNameW", dynlib: "comdlg32", stdcall.}
+  ## Shows the Win32 open-file dialog; returns 0 on cancel or error.
 
 # Public API
-proc openFileDialog*(
-    title: string = "Open File", filter: string = "All Files\0*.*\0"
-): string =
-  ## Shows the native Windows file picker.
-  ##
-  ## `filter` is a `\0`-delimited sequence of Win32 display-name and pattern
-  ## pairs, for example `"Text Files\0*.txt\0All Files\0*.*\0"`.
-  ## Returns the selected absolute path, or `""` if the user cancels.
+proc openFileDialog*(title: string = "Open File", filter: string = "All Files\0*.*\0"): string =
+  ## Shows the file picker with `\0`-delimited name/pattern `filter` pairs; returns `""` on cancel.
   var fileBuffer = newWideCString(FileBufferChars)
   let
     filterBuffer = newWideCString(filter & "\0")

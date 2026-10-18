@@ -8,7 +8,7 @@ license = "MIT"
 srcDir = "src"
 
 # Dependencies
-requires "nim >= 2.2.10"
+requires "nim >= 2.2.12"
 
 # Config
 type

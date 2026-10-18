@@ -5,27 +5,19 @@
 ## this module and `settings`, and nothing else.
 
 import std/strutils
-import ./events
-import ./settings
+import ./[events, settings]
 
 type
   CliInput* = object
     ## User input gathered from the command line.
-    deckFile*: string
-    runId*: string
+    deckFile*, runId*: string
     settings*: RunnerSettings
 
-const DefaultCliInput* = CliInput(
-    deckFile: "",
-    runId: "",
-    settings: DefaultRunnerSettings,
-  )
+const DefaultCliInput* = CliInput(settings: DefaultRunnerSettings)
   ## Starting point for parsing: no deck selected, stock settings.
 
-
 proc parseGuiVisibility(value: string): TrnexeGuiVisibility =
-  ## Parses a CLI visibility string into a `TrnexeGuiVisibility`; raises
-  ## `ValueError` on unknown input.
+  ## Parses a case-insensitive visibility spelling; raises `ValueError` on unknown input.
   case value.toLowerAscii()
   of "keep", "keepopen":
     guiKeepOpen
@@ -41,10 +33,7 @@ proc parseGuiVisibility(value: string): TrnexeGuiVisibility =
     raise newException(ValueError, "Invalid guiVisibility: " & value)
 
 proc applyOption*(input: var CliInput, key, value: string): bool =
-  ## Applies one CLI option, returning false when `key` is unknown.
-  ##
-  ## Raises `ValueError` when `value` does not parse for a known key, letting
-  ## the caller's error boundary report it.
+  ## Applies one option, returning false for an unknown `key`; raises `ValueError` on a bad value.
   case key
   of "deckFile":
     input.deckFile = value

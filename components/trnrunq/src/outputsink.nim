@@ -11,10 +11,7 @@ type OutputSink* = object
 
 
 proc initOutputSink*(sink: var OutputSink) =
-  ## Prepares `sink` for use. Call once, before any worker starts.
-  ##
-  ## Takes a `var` rather than returning a value because the underlying lock
-  ## must not be copied or moved once initialized.
+  ## Initializes `sink` in place, since its lock must not move; call before any worker starts.
   initLock(sink.lock)
 
 proc deinitOutputSink*(sink: var OutputSink) =
@@ -22,13 +19,9 @@ proc deinitOutputSink*(sink: var OutputSink) =
   deinitLock(sink.lock)
 
 proc emit*(sink: var OutputSink, line: string) {.gcsafe.} =
-  ## Writes one complete line to stdout and flushes it.
-  ##
-  ## A wrapper that dies closes queue stdin too, so stdin EOF is what ends this
-  ## process; the job object then terminates every child. Broken-pipe detection
-  ## cannot be layered on top of this write: `flushFile` discards the C `fflush`
-  ## result, so a dead reader never surfaces as an `IOError` here. The handler
-  ## below only stops a stdio error from being swallowed by the calling worker.
+  ## Writes one line to stdout under the lock and flushes it; exits the process on a stdio error.
+  # A dead reader never raises here (`flushFile` drops the `fflush` result); stdin EOF ends
+  # the queue instead. The handler only keeps a stdio error from being swallowed by a worker.
   var failed = false
 
   acquire(sink.lock)

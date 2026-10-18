@@ -1,17 +1,17 @@
 {
   "format": 1,
   "restore": {
-    "C:\\Users\\alexl\\Documents\\Project\\Coding\\NRCan\\TRNRun_V6\\TRNRun\\libraries\\dotnet\\examples\\TRNRun.Example\\TRNRun.Example.csproj": {}
+    "C:\\Users\\alexl\\Documents\\Project\\Coding\\NRCan\\TRNRun_V6\\TRNRun\\libraries\\dotnetv2\\examples\\TRNRun.Example\\TRNRun.Example.csproj": {}
   },
   "projects": {
-    "C:\\Users\\alexl\\Documents\\Project\\Coding\\NRCan\\TRNRun_V6\\TRNRun\\libraries\\dotnet\\examples\\TRNRun.Example\\TRNRun.Example.csproj": {
+    "C:\\Users\\alexl\\Documents\\Project\\Coding\\NRCan\\TRNRun_V6\\TRNRun\\libraries\\dotnetv2\\examples\\TRNRun.Example\\TRNRun.Example.csproj": {
       "version": "1.0.0",
       "restore": {
-        "projectUniqueName": "C:\\Users\\alexl\\Documents\\Project\\Coding\\NRCan\\TRNRun_V6\\TRNRun\\libraries\\dotnet\\examples\\TRNRun.Example\\TRNRun.Example.csproj",
+        "projectUniqueName": "C:\\Users\\alexl\\Documents\\Project\\Coding\\NRCan\\TRNRun_V6\\TRNRun\\libraries\\dotnetv2\\examples\\TRNRun.Example\\TRNRun.Example.csproj",
         "projectName": "TRNRun.Example",
-        "projectPath": "C:\\Users\\alexl\\Documents\\Project\\Coding\\NRCan\\TRNRun_V6\\TRNRun\\libraries\\dotnet\\examples\\TRNRun.Example\\TRNRun.Example.csproj",
+        "projectPath": "C:\\Users\\alexl\\Documents\\Project\\Coding\\NRCan\\TRNRun_V6\\TRNRun\\libraries\\dotnetv2\\examples\\TRNRun.Example\\TRNRun.Example.csproj",
         "packagesPath": "C:\\Users\\alexl\\.nuget\\packages\\",
-        "outputPath": "C:\\Users\\alexl\\Documents\\Project\\Coding\\NRCan\\TRNRun_V6\\TRNRun\\libraries\\dotnet\\examples\\TRNRun.Example\\obj\\",
+        "outputPath": "C:\\Users\\alexl\\Documents\\Project\\Coding\\NRCan\\TRNRun_V6\\TRNRun\\libraries\\dotnetv2\\examples\\TRNRun.Example\\obj\\",
         "projectStyle": "PackageReference",
         "configFilePaths": [
           "C:\\Users\\alexl\\AppData\\Roaming\\NuGet\\NuGet.Config"
@@ -27,8 +27,8 @@
             "framework": "net10.0-windows7.0",
             "targetAlias": "net10.0-windows",
             "projectReferences": {
-              "C:\\Users\\alexl\\Documents\\Project\\Coding\\NRCan\\TRNRun_V6\\TRNRun\\libraries\\dotnet\\src\\TRNRun\\TRNRun.csproj": {
-                "projectPath": "C:\\Users\\alexl\\Documents\\Project\\Coding\\NRCan\\TRNRun_V6\\TRNRun\\libraries\\dotnet\\src\\TRNRun\\TRNRun.csproj"
+              "C:\\Users\\alexl\\Documents\\Project\\Coding\\NRCan\\TRNRun_V6\\TRNRun\\libraries\\dotnetv2\\src\\TRNRun\\TRNRun.csproj": {
+                "projectPath": "C:\\Users\\alexl\\Documents\\Project\\Coding\\NRCan\\TRNRun_V6\\TRNRun\\libraries\\dotnetv2\\src\\TRNRun\\TRNRun.csproj"
               }
             }
           }
@@ -349,14 +349,14 @@
         }
       }
     },
-    "C:\\Users\\alexl\\Documents\\Project\\Coding\\NRCan\\TRNRun_V6\\TRNRun\\libraries\\dotnet\\src\\TRNRun\\TRNRun.csproj": {
-      "version": "0.6.1",
+    "C:\\Users\\alexl\\Documents\\Project\\Coding\\NRCan\\TRNRun_V6\\TRNRun\\libraries\\dotnetv2\\src\\TRNRun\\TRNRun.csproj": {
+      "version": "0.7.0",
       "restore": {
-        "projectUniqueName": "C:\\Users\\alexl\\Documents\\Project\\Coding\\NRCan\\TRNRun_V6\\TRNRun\\libraries\\dotnet\\src\\TRNRun\\TRNRun.csproj",
+        "projectUniqueName": "C:\\Users\\alexl\\Documents\\Project\\Coding\\NRCan\\TRNRun_V6\\TRNRun\\libraries\\dotnetv2\\src\\TRNRun\\TRNRun.csproj",
         "projectName": "TRNRun",
-        "projectPath": "C:\\Users\\alexl\\Documents\\Project\\Coding\\NRCan\\TRNRun_V6\\TRNRun\\libraries\\dotnet\\src\\TRNRun\\TRNRun.csproj",
+        "projectPath": "C:\\Users\\alexl\\Documents\\Project\\Coding\\NRCan\\TRNRun_V6\\TRNRun\\libraries\\dotnetv2\\src\\TRNRun\\TRNRun.csproj",
         "packagesPath": "C:\\Users\\alexl\\.nuget\\packages\\",
-        "outputPath": "C:\\Users\\alexl\\Documents\\Project\\Coding\\NRCan\\TRNRun_V6\\TRNRun\\libraries\\dotnet\\src\\TRNRun\\obj\\",
+        "outputPath": "C:\\Users\\alexl\\Documents\\Project\\Coding\\NRCan\\TRNRun_V6\\TRNRun\\libraries\\dotnetv2\\src\\TRNRun\\obj\\",
         "projectStyle": "PackageReference",
         "configFilePaths": [
           "C:\\Users\\alexl\\AppData\\Roaming\\NuGet\\NuGet.Config"
@@ -391,6 +391,12 @@
         "net10.0-windows": {
           "framework": "net10.0-windows7.0",
           "targetAlias": "net10.0-windows",
+          "dependencies": {
+            "Microsoft.Data.Sqlite": {
+              "target": "Package",
+              "version": "[10.0.13, )"
+            }
+          },
           "imports": [
             "net461",
             "net462",

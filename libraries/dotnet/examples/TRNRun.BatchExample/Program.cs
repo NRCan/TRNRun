@@ -1,68 +1,77 @@
+// Example: running every deck in a directory and keeping the results in a database.
+//
+// Usage: TRNRun.BatchExample <deck-directory> <TrnEXE64.exe> [maxConcurrent] [database.sqlite3]
+// maxConcurrent defaults to 4; the database defaults to runs.sqlite3 in the deck directory.
+// A reused database keeps its earlier runs; this batch is its own session.
+
+using Microsoft.Data.Sqlite;
 using TRNRun;
 
-int maxConcurrent = 4;
-if (args.Length is < 2 or > 3 ||
-    (args.Length == 3 && (!int.TryParse(args[2], out maxConcurrent) || maxConcurrent < 1)))
+if (args.Length is < 2 or > 4 || (args.Length >= 3 && !int.TryParse(args[2], out _)))
 {
-    Console.Error.WriteLine("Usage: TRNRun.BatchExample <deck-directory> <TrnEXE64.exe> [maxConcurrent]");
+    Console.Error.WriteLine("Usage: TRNRun.BatchExample <deck-directory> <TrnEXE64.exe> [maxConcurrent] [database.sqlite3]");
     return 2;
 }
 
-string directory = Path.GetFullPath(args[0]);
-if (!Directory.Exists(directory))
-{
-    Console.Error.WriteLine($"Deck directory does not exist: {directory}");
-    return 2;
-}
-
-string[] decks = Directory.GetFiles(directory, "*.dck")
-    .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
-    .ToArray();
+string[] decks = Directory.GetFiles(args[0], "*.dck");
 if (decks.Length == 0)
 {
-    Console.Error.WriteLine($"No .dck files found in {directory}");
+    Console.Error.WriteLine($"No .dck files in {Path.GetFullPath(args[0])}");
     return 2;
 }
 
-var config = new SimulationConfig
-{
-    TrnExePath = Path.GetFullPath(args[1])
-};
-using var manager = new SimulationManager(maxConcurrent: maxConcurrent);
+int maxConcurrent = args.Length >= 3 ? int.Parse(args[2]) : 4;
+string databasePath = args.Length == 4 ? args[3] : Path.Combine(args[0], "runs.sqlite3");
+var settings = new SimulationSettings { TrnexePath = args[1] };
 
+// The blocking members suit a console batch; see TRNRun.Example for the asynchronous ones.
+using Daemon daemon = Daemon.Start(new DaemonOptions { DatabasePath = databasePath, MaxConcurrent = maxConcurrent });
+using SqliteConnection connection = daemon.OpenDatabase();
 foreach (string deck in decks)
 {
-    Simulation simulation = manager.Add(deck, config, blocking: false);
-    Console.WriteLine($"Submitted {simulation.Id}: {simulation.DeckPath}");
+    daemon.Add(deck, settings, label: Path.GetFileNameWithoutExtension(deck));
 }
 
-// Submitted includes pending acceptance, in submission order.
-var submitted = manager.Submitted;
-Console.WriteLine($"Submitted {submitted.Count} simulations");
+Console.WriteLine($"Running {decks.Length} decks, {maxConcurrent} at a time, in {daemon.DatabasePath} (session {daemon.SessionId})");
 
-// Follow observes live state without replay; slow consumers may see coalesced updates.
-// The queue reader continues even if this loop pauses or stops early.
-foreach (Simulation simulation in manager.Follow())
+// A finished run never changes again, so each one is read as finished once.
+ChangePosition position = daemon.StartPosition;
+var failed = new List<SimulationInfo>();
+int finished = 0;
+while (finished < decks.Length)
 {
-    SimulationSnapshot snapshot = simulation.Snapshot();
-    Console.WriteLine($"{snapshot.Id}: {snapshot.Status}; accepted: {snapshot.IsAccepted}; finished: {snapshot.IsFinished}");
-}
-
-// Wait covers all submitted runs, including pending acceptance, before disposal.
-manager.Wait();
-foreach (Simulation simulation in submitted)
-{
-    SimulationSnapshot snapshot = simulation.Snapshot();
-    Console.WriteLine($"Final {snapshot.Id}: {snapshot.Status}; succeeded: {snapshot.Succeeded}");
-    if (!snapshot.Succeeded)
+    daemon.WaitForChanges(position.Revision);
+    Changes changes = connection.ReadChanges(position);
+    position = changes.Next;
+    foreach (SimulationInfo run in changes.Runs.Where(run => run.IsFinished))
     {
-        Console.Error.WriteLine($"Failed: {snapshot.DeckPath} ({snapshot.Status})");
-        foreach (var log in simulation.Logs)
+        finished++;
+        if (run.Succeeded != true)
         {
-            Console.Error.WriteLine(log);
+            failed.Add(run);
         }
+
+        string outcome = run.Succeeded == true ? "ok" : $"FAILED ({run.Status}) {run.Error}";
+        Console.WriteLine($"[{finished}/{decks.Length}] {run.Label}: {outcome}");
     }
 }
 
-Console.WriteLine($"{manager.Succeeded.Count} succeeded, {manager.Failed.Count} failed");
-return manager.Failed.Count == 0 ? 0 : 1;
+daemon.Shutdown();
+Console.WriteLine($"{decks.Length - failed.Count} succeeded, {failed.Count} failed");
+
+// The database answers any later question in plain SQL; here, why each failed run failed.
+using SqliteCommand command = connection.CreateCommand();
+command.CommandText = "SELECT * FROM logs WHERE run_id = $run AND severity = 'Fatal' ORDER BY log_id";
+SqliteParameter runParameter = command.Parameters.Add("$run", SqliteType.Integer);
+foreach (SimulationInfo run in failed)
+{
+    runParameter.Value = run.RunId;
+    using SqliteDataReader reader = command.ExecuteReader();
+    while (reader.Read())
+    {
+        LogEvent log = reader.GetLogEvent();
+        Console.WriteLine($"  {run.Label} at {log.Time} h: {log.Message}");
+    }
+}
+
+return failed.Count == 0 ? 0 : 1;

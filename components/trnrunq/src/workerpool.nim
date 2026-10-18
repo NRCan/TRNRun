@@ -33,8 +33,7 @@ type
     psStopped
 
   WorkerPool* = object
-    ## Owned by one supervisor thread. Its address must remain stable while
-    ## workers are running because each worker receives `ptr WorkerPool`.
+    ## Supervisor-owned pool; its address must stay fixed while workers hold `ptr WorkerPool`.
     work: Channel[Work]
 
     output: OutputSink
@@ -121,8 +120,7 @@ proc start*(pool: var WorkerPool, maxConcurrent: int) =
 
 
 proc submit*(pool: var WorkerPool, request: RunRequest) =
-  ## Hands off one request, blocking while the channel is full.
-  ## The receiving worker emits `ACCEPTED` before any runner output.
+  ## Hands one request to a worker, blocking while the channel is full; `ValueError` if not running.
   if pool.state != psRunning:
     raise newException(ValueError, "worker pool is not running")
 
@@ -130,15 +128,13 @@ proc submit*(pool: var WorkerPool, request: RunRequest) =
 
 
 proc shutdown*(pool: var WorkerPool) =
-  ## Drains submitted work and releases worker resources.
-  ##
-  ## Safe before `start` and after an earlier shutdown. The channel deliberately
-  ## remains open because closing it triggers a Nim 2.2 ORC failure.
+  ## Drains submitted work and releases worker resources; a no-op unless running.
   if pool.state != psRunning:
     return
 
   pool.state = psStopped
 
+  # The channel stays open: closing it triggers a Nim 2.2 ORC failure.
   stopWorkers(pool)
 
   pool.output.deinitOutputSink()

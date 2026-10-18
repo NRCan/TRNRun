@@ -13,14 +13,15 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute(("Natural Resources Canada / Ressources naturelles Canada;CanmetENERGY in Varennes " +
     "/ CanmetÉNERGIE à Varennes;Alex Lachance"))]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
-[assembly: System.Reflection.AssemblyDescriptionAttribute(("Run, monitor, and orchestrate TRNSYS simulations on Windows using the bundled nat" +
-    "ive TRNRun runners."))]
-[assembly: System.Reflection.AssemblyFileVersionAttribute("0.6.1.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("0.6.1+311d1eafd5690eca4d0992e5ec6a165b3764965a")]
+[assembly: System.Reflection.AssemblyDescriptionAttribute(("Run TRNSYS simulations through the trnrund daemon and follow them in its SQLite d" +
+    "atabase."))]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("0.7.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("0.7.0+d766dc99f3d76e47a5646b85b990eff348473807")]
 [assembly: System.Reflection.AssemblyProductAttribute("TRNRun")]
 [assembly: System.Reflection.AssemblyTitleAttribute("TRNRun")]
-[assembly: System.Reflection.AssemblyVersionAttribute("0.6.1.0")]
+[assembly: System.Reflection.AssemblyVersionAttribute("0.7.0.0")]
 [assembly: System.Reflection.AssemblyMetadataAttribute("RepositoryUrl", "https://github.com/NRCan/TRNRun")]
+[assembly: System.Runtime.CompilerServices.InternalsVisibleTo("TRNRun.Tests")]
 [assembly: System.Runtime.Versioning.TargetPlatformAttribute("Windows7.0")]
 [assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("Windows7.0")]
 

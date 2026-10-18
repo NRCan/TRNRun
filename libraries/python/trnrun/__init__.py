@@ -1,25 +1,40 @@
 """Run batches of TRNSYS simulations and follow their progress.
 
-``SimulationManager`` runs decks and shows their progress. Applications with
-their own GUI use ``Daemon`` to submit runs and ``read_changes`` to read what
-changed into ``SimulationInfo`` and ``LogEvent`` records; every name they need
-is importable from here.
+For scripts and notebooks: ``SimulationManager`` starts the daemon, keeps a
+``Simulation`` handle per run in sync from a background thread, and shows
+their progress with a ``ProgressDisplay``, or any ``Display``.
+
+Applications with their own GUI use ``Daemon`` to submit runs and
+``read_changes`` to read what changed into ``SimulationInfo`` and ``LogEvent``
+records. Those live in ``trnrun.core``; every name either needs is importable
+from here.
 """
 
-from .batch import Simulation, SimulationManager
-from .daemon import Daemon
-from .database import connect, read_changes
-from .errors import (
+from trnrun.core import (
+    Changes,
     ClosedError,
+    ConfigEvent,
+    Daemon,
     DaemonExitedError,
+    LogEvent,
+    LogSeverity,
+    ProgressEvent,
     RequestRejectedError,
     SchemaVersionError,
+    SimulationInfo,
+    SimulationSettings,
+    SimulationState,
+    SimulationStatus,
     SyncError,
     TrnrunError,
+    connect,
+    parse_log,
+    parse_run,
+    read_changes,
 )
-from .events import ConfigEvent, LogEvent, LogSeverity, ProgressEvent, SimulationStatus
-from .runs import Changes, SimulationInfo, SimulationState, parse_log, parse_run
-from .settings import SimulationSettings
+from trnrun.display import Display, ProgressDisplay
+from trnrun.manager import SimulationManager
+from trnrun.simulation import Simulation
 
 __version__ = "0.7.0"
 __all__ = [
@@ -28,8 +43,10 @@ __all__ = [
     "ConfigEvent",
     "Daemon",
     "DaemonExitedError",
+    "Display",
     "LogEvent",
     "LogSeverity",
+    "ProgressDisplay",
     "ProgressEvent",
     "RequestRejectedError",
     "SchemaVersionError",

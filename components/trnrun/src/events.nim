@@ -12,18 +12,15 @@ var
   eventTimeFormatInitialized {.threadvar.}: bool
 
 proc getEventTimeFormat(): TimeFormat {.gcsafe.} =
-  ## Reuses a parsed timestamp format without sharing GC-managed state between
-  ## threads.
+  ## Returns this thread's cached timestamp format, parsing it on first use.
   if not eventTimeFormatInitialized:
     eventTimeFormat = initTimeFormat(EventTimestampFormat)
     eventTimeFormatInitialized = true
   eventTimeFormat
 
 proc formatEventTimestamp(timestamp: DateTime): string {.gcsafe.} =
+  ## Formats `timestamp` in the wire format.
   timestamp.format(getEventTimeFormat())
-
-proc parseEventTimestamp(value: string): DateTime {.gcsafe.} =
-  value.parse(getEventTimeFormat())
 
 type
   SimStatus* = enum
@@ -92,8 +89,7 @@ type
     information*: Option[string]
 
   SimulationEventKind* = enum
-    ## Discriminant for a structured simulation event. Values are JSON `kind`
-    ## tags.
+    ## Discriminant for a structured simulation event; values are JSON `kind` tags.
     eventSetting = "SETTING"
     eventStatus = "STATUS"
     eventConfig = "CONFIG"
@@ -119,6 +115,7 @@ proc addIfSome[T](node: JsonNode, key: string, value: Option[T]) =
     node[key] = %value.get()
 
 proc `%`(event: SettingEvent): JsonNode =
+  ## Serializes the applied runner settings.
   result = newJObject()
   result["kind"] = %($eventSetting)
   result["timestamp"] = %event.timestamp.formatEventTimestamp()
@@ -141,6 +138,7 @@ proc `%`(event: SettingEvent): JsonNode =
   result["writeEvents"] = %event.writeEvents
 
 proc `%`(event: StatusEvent): JsonNode =
+  ## Serializes a lifecycle transition.
   result = newJObject()
   result["kind"] = %($eventStatus)
   result["timestamp"] = %event.timestamp.formatEventTimestamp()
@@ -148,6 +146,7 @@ proc `%`(event: StatusEvent): JsonNode =
   result["message"] = %event.message
 
 proc `%`(event: ConfigEvent): JsonNode =
+  ## Serializes the fixed simulation parameters.
   result = newJObject()
   result["kind"] = %($eventConfig)
   result["timestamp"] = %event.timestamp.formatEventTimestamp()
@@ -179,6 +178,7 @@ proc `%`(event: LogEvent): JsonNode =
   result.addIfSome("information", event.information)
 
 proc `%`(event: SimulationEvent): JsonNode =
+  ## Dispatches to the serializer for the active event kind.
   case event.kind
   of eventSetting:
     %event.settingData

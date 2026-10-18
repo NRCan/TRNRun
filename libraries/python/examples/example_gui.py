@@ -6,7 +6,7 @@ progress, the selected run's details, and a log of every TRNSYS message. Decks
 can be added and runs cancelled while the batch runs.
 
 It does not use ``SimulationManager``: the application owns its widgets, its
-timer, and its database connection. Each tick asks ``Daemon.wait_for_change``
+timer, and its database connection. Each tick asks ``Daemon.wait_for_changes``
 without blocking whether anything was saved, and reads it with
 ``read_changes``. For a GUI that would rather let a background thread keep
 handles up to date, see ``SimulationManager(display=False)`` in the README.
@@ -24,6 +24,7 @@ from tkinter import filedialog, messagebox, ttk
 from typing import Literal
 
 from trnrun import (
+    ClosedError,
     Daemon,
     DaemonExitedError,
     LogEvent,
@@ -287,8 +288,11 @@ class Dashboard:
     def tick(self) -> None:
         """Read what changed, redraw it, and schedule the next tick."""
         try:
-            changed = self.daemon.wait_for_change(self.revision, timeout=0)
-        except DaemonExitedError as error:  # trnrund exited, and everything it saved was read.
+            changed = self.daemon.wait_for_changes(self.revision, timeout=0)
+        except ClosedError:  # trnrund exited cleanly, and everything it saved was read.
+            self.following = False
+            return
+        except DaemonExitedError as error:  # trnrund crashed, and everything it saved was read.
             self.following = False
             self.footer["text"] = f"trnrund stopped: {error}"
             _ = messagebox.showerror("TRNRun", str(error), parent=self.root)
