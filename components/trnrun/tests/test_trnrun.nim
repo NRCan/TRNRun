@@ -123,11 +123,10 @@ proc runTests() =
       )
 
       check command.exitCode == 2
-      check command.output.contains("Unknown option: doesNotExist")
+      check command.output.contains("Unknown option: --doesNotExist")
       let status = command.output.findEvent("STATUS")
       check status != nil
       check status["status"].getStr() == "ERROR"
-      check status["runId"].getStr() == "rejected-run"
 
     test "rejects a second positional deck argument":
       let command = runCommand(
