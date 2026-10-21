@@ -36,7 +36,7 @@ from trnrun.display import Display, ProgressDisplay
 from trnrun.manager import SimulationManager
 from trnrun.simulation import Simulation
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 __all__ = [
     "Changes",
     "ClosedError",

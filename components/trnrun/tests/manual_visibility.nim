@@ -1,5 +1,6 @@
-## Runs one deck once per `guiVisibility` mode, to check each window mode by eye.
+## Runs each deck once per `guiVisibility` mode, to check each window mode by eye.
 ##
+## The first set of runs uses a deck without plots, the second one with plots.
 ## Runs are sequential because they share the deck's sidecar files. `keepOpen`
 ## and `minimized` leave the TRNSYS window open: close it to start the next run.
 ##
@@ -12,7 +13,7 @@ import std/[monotimes, os, osproc, strutils, terminal, times]
 
 # Manual-run configuration. Edit these values to try a different runner setup.
 const
-  DeckFilename = "test_slow_wo_plot_w_tracking.dck"
+  DeckFilenames = ["test_slow_wo_plot_w_tracking.dck", "test_slow_w_plot_w_tracking.dck"]
   TrnexePath = r"C:\TRNSYS18\Exe\TrnEXE64.exe"
   GuiVisibilities = ["keepOpen", "autoClose", "minimized", "minimizedAuto", "hidden"]
   WaitForGui = true
@@ -69,7 +70,11 @@ proc runMode(executable, runnerRoot, deckFile, guiVisibility: string): bool =
     "--writeEvents=" & $WriteEvents,
   ]
 
-  styledWriteLine(stdout, fgCyan, "Running with guiVisibility=" & guiVisibility)
+  styledWriteLine(
+    stdout,
+    fgCyan,
+    "Running " & deckFile.extractFilename() & " with guiVisibility=" & guiVisibility,
+  )
   echo ""
 
   let startedAt: MonoTime = getMonoTime()
@@ -93,7 +98,7 @@ proc runMode(executable, runnerRoot, deckFile, guiVisibility: string): bool =
       process.close()
 
   let summary =
-    "guiVisibility=" & guiVisibility & "  Exit code: " & $exitCode & " (" &
+    deckFile.extractFilename() & "  guiVisibility=" & guiVisibility & "  Exit code: " & $exitCode & " (" &
     exitMeaning(exitCode) & ")  Duration: " &
     formatSeconds((getMonoTime() - startedAt).inMilliseconds) & "s"
 
@@ -106,7 +111,7 @@ proc runMode(executable, runnerRoot, deckFile, guiVisibility: string): bool =
   return false
 
 proc main(): int =
-  ## Runs every visibility mode in turn; returns 1 if any run failed.
+  ## Runs every deck in every visibility mode in turn; returns 1 if any run failed.
   if paramCount() > 0:
     stderr.writeLine(
       "manual_visibility does not accept arguments; run: " &
@@ -118,26 +123,32 @@ proc main(): int =
     testsDirectory = currentSourcePath().parentDir()
     runnerRoot = testsDirectory.parentDir()
     executable = runnerRoot / "build" / "trnrun.exe"
-    deckFile = (testsDirectory / "dck" / DeckFilename).absolutePath().normalizedPath()
+    runCount = DeckFilenames.len * GuiVisibilities.len
 
   if not fileExists(executable):
     styledWriteLine(stdout, fgRed, "ERROR: Executable not found at " & executable)
     return 1
-  if not fileExists(deckFile):
-    styledWriteLine(stdout, fgRed, "ERROR: Deck file not found at " & deckFile)
-    return 1
+
+  var deckFiles: seq[string] = @[]
+  for deckFilename in DeckFilenames:
+    let deckFile = (testsDirectory / "dck" / deckFilename).absolutePath().normalizedPath()
+    if not fileExists(deckFile):
+      styledWriteLine(stdout, fgRed, "ERROR: Deck file not found at " & deckFile)
+      return 1
+    deckFiles.add(deckFile)
 
   var failures: int = 0
-  for guiVisibility in GuiVisibilities:
-    if not runMode(executable, runnerRoot, deckFile, guiVisibility):
-      inc failures
-    echo ""
+  for deckFile in deckFiles:
+    for guiVisibility in GuiVisibilities:
+      if not runMode(executable, runnerRoot, deckFile, guiVisibility):
+        inc failures
+      echo ""
 
   if failures == 0:
-    styledWriteLine(stdout, fgGreen, "PASS - All " & $GuiVisibilities.len & " modes done")
+    styledWriteLine(stdout, fgGreen, "PASS - All " & $runCount & " runs done")
     return 0
 
-  let summary = $failures & " of " & $GuiVisibilities.len & " modes failed"
+  let summary = $failures & " of " & $runCount & " runs failed"
   styledWriteLine(stdout, fgRed, "FAIL - " & summary)
   return 1
 

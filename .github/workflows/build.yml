@@ -22,7 +22,7 @@ jobs:
           python-version: "3.12"
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           enable-cache: true
           cache-dependency-glob: libraries/python/uv.lock
@@ -35,12 +35,12 @@ jobs:
       - name: Set up Nim
         uses: jiro4989/setup-nim-action@v2
         with:
-          nim-version: "2.2.10"
+          nim-version: "2.2.12"
 
       - name: Set up Zig
         uses: mlugg/setup-zig@v2
         with:
-          version: "0.16.0"
+          version: "0.17.0"
 
       - name: Set up just
         uses: extractions/setup-just@v4

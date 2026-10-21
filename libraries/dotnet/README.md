@@ -187,7 +187,7 @@ using (SqliteDataReader reader = fatals.ExecuteReader())
 
 // Wall-clock duration in seconds of each run that started and finished.
 using SqliteCommand durations = connection.CreateCommand();
-durations.CommandText = "SELECT run_id, (julianday(finished_at) - julianday(started_at)) * 86400"
+durations.CommandText = "SELECT run_id, ROUND((julianday(finished_at) - julianday(started_at)) * 86400, 3)"
     + " FROM runs WHERE finished_at IS NOT NULL AND started_at IS NOT NULL";
 using (SqliteDataReader reader = durations.ExecuteReader())
 {
@@ -297,6 +297,6 @@ Microsoft.Data.Sqlite brings its own native SQLite, `e_sqlite3.dll`, which
 
 Before packing, `packaging/Validate-NativeExecutables.ps1` checks that both
 executables are win-x64 and that their `--version` equals the package
-`Version` in `src/TRNRun/TRNRun.csproj`, currently `0.7.0`, following the
+`Version` in `src/TRNRun/TRNRun.csproj`, currently `0.8.0`, following the
 Python `hatch_build.py` convention. Keep it aligned with both `.nimble`
 versions.

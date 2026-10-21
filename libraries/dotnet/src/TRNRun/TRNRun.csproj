@@ -3,7 +3,7 @@
     <IsPackable>true</IsPackable>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <PackageId>TRNRun</PackageId>
-    <Version>0.7.0</Version>
+    <Version>0.8.0</Version>
     <Authors>Natural Resources Canada / Ressources naturelles Canada;CanmetENERGY in Varennes / CanmetÉNERGIE à Varennes;Alex Lachance</Authors>
     <Description>Run TRNSYS simulations through the trnrund daemon and follow them in its SQLite database.</Description>
     <PackageTags>TRNSYS;simulation;Windows</PackageTags>

@@ -295,7 +295,7 @@ public partial class MainWindow : Window
         {
             // The window is closing.
         }
-        catch (TrnrunException error)
+        catch (Exception error) when (error is TrnrunException or SqliteException or InvalidDataException)
         {
             _clock.Stop();
             SessionText.Text = "trnrund stopped.";

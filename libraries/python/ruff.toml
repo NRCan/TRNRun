@@ -58,7 +58,8 @@ ignore = [
     "TC001",   # typing-only-first-party-import
     "TC002",   # typing-only-third-party-import
     "TC003",   # typing-only-standard-library-import
-    "ANN401"   # any-type
+    "ANN401",  # any-type
+    "CPY001"   # Copyright
 ]
 fixable = ["ALL"]
 unfixable = []
