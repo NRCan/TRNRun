@@ -1,36 +1,22 @@
 using System.Data;
 using System.Globalization;
 using System.Text.Json;
-using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
 using Microsoft.Data.Sqlite;
 
 namespace TRNRun;
 
 /// <summary>Opens a trnrund database read-only, with or without a daemon, and reads its rows as typed records.</summary>
-/// <remarks>
-/// The connections are Microsoft.Data.Sqlite's, so any other question about the runs is plain
-/// SQL on the <c>runs</c> and <c>logs</c> tables. The extension methods here read their rows:
-/// <c>connection.ReadChanges(position)</c>, <c>reader.GetSimulationInfo()</c> and
-/// <c>reader.GetLogEvent()</c>.
-/// </remarks>
+/// <remarks>Anything else is plain SQL on the <c>runs</c> and <c>logs</c> tables.</remarks>
 public static class TrnrunDatabase
 {
     /// <summary>The trnrund schema version this package reads.</summary>
     public const int SchemaVersion = 3;
 
-    // -----------------------------------------------------------------
-    // Reading
-    // -----------------------------------------------------------------
-
-    /// <summary>Opens an existing trnrund database read-only; a relative path resolves from the current working directory.</summary>
-    /// <remarks>
-    /// Connection pooling is off, so disposing the connection releases the file. Open it while
-    /// trnrund runs: right after trnrund is killed, a new connection can fail with
-    /// <c>disk I/O error</c>, while an open one keeps reading.
-    /// </remarks>
+    /// <summary>Opens an existing trnrund database read-only, unpooled so disposing releases the file.</summary>
+    /// <remarks>Open it while trnrund runs: right after a kill, a new connection can fail with <c>disk I/O error</c>.</remarks>
     /// <exception cref="SqliteException">The database cannot be opened, such as when it does not exist.</exception>
-    /// <exception cref="SchemaVersionException">Its schema version is not <see cref="SchemaVersion"/>; it is closed first.</exception>
+    /// <exception cref="SchemaVersionException">Its schema version is not <see cref="SchemaVersion"/>.</exception>
     public static SqliteConnection Open(string path)
     {
         var builder = new SqliteConnectionStringBuilder
@@ -66,10 +52,8 @@ public static class TrnrunDatabase
         }
     }
 
-    /// <summary>Returns the runs and logs saved after <paramref name="after"/>, read in one transaction.</summary>
-    /// <param name="connection">An open connection to a trnrund database.</param>
-    /// <param name="after">Where the previous read stopped; the default reads the whole history.</param>
-    /// <remarks>Pass the returned <see cref="Changes.Next"/> to the next call. Call it outside any transaction of your own.</remarks>
+    /// <summary>Returns the runs and logs saved after <paramref name="after"/>, by default the whole history, read in one transaction.</summary>
+    /// <remarks>Call it outside any transaction of your own.</remarks>
     /// <exception cref="InvalidDataException">A row holds a value this package does not know.</exception>
     public static Changes ReadChanges(this SqliteConnection connection, ChangePosition after = default)
     {
@@ -104,11 +88,7 @@ public static class TrnrunDatabase
         }
     }
 
-    // -----------------------------------------------------------------
-    // Row Parsers
-    // -----------------------------------------------------------------
-
-    /// <summary>Reads the current row of a <c>SELECT *</c> on <c>runs</c>; an event TRNRun has not reported yet becomes <see langword="null"/>.</summary>
+    /// <summary>Reads the current row of a <c>SELECT *</c> on <c>runs</c>.</summary>
     /// <exception cref="InvalidDataException">The row holds a value this package does not know, such as a newer state.</exception>
     public static SimulationInfo GetSimulationInfo(this IDataRecord row)
     {
@@ -134,8 +114,8 @@ public static class TrnrunDatabase
                 : new ProgressEvent(
                     Required(Double(row, "sim_time"), "sim_time"),
                     percent.Value,
-                    Required(Double(row, "elapsed_ms"), "elapsed_ms"),
-                    Required(Double(row, "eta_ms"), "eta_ms")),
+                    Milliseconds(row, "elapsed_ms"),
+                    Milliseconds(row, "eta_ms")),
             Config = stop is null
                 ? null
                 : new ConfigEvent(Required(Double(row, "start_time"), "start_time"), stop.Value, Required(Double(row, "time_step"), "time_step")),
@@ -146,7 +126,7 @@ public static class TrnrunDatabase
             Succeeded = Int64(row, "succeeded") is { } succeeded ? succeeded != 0 : null,
             ExitCode = Int64(row, "exit_code") is { } exitCode ? (int)exitCode : null,
             Error = Text(row, "error"),
-            SubmittedAt = ParseTimestamp(Text(row, "submitted_at")),
+            SubmittedAt = Required(ParseTimestamp(Text(row, "submitted_at")), "submitted_at"),
             StartedAt = ParseTimestamp(Text(row, "started_at")),
             FinishedAt = ParseTimestamp(Text(row, "finished_at")),
         };
@@ -176,6 +156,29 @@ public static class TrnrunDatabase
         SimulationState.Running => "RUNNING",
         SimulationState.Finished => "FINISHED",
         _ => throw new ArgumentOutOfRangeException(nameof(state), state, "Unknown simulation state."),
+    };
+
+    /// <summary>Returns the name TRNRun saves for a status, such as <c>DONE</c>, to compare with the <c>trnrun_status</c> column.</summary>
+    public static string ToDatabaseName(this SimulationStatus status) => status switch
+    {
+        SimulationStatus.Pending => "PENDING",
+        SimulationStatus.Launching => "LAUNCHING",
+        SimulationStatus.Running => "RUNNING",
+        SimulationStatus.Done => "DONE",
+        SimulationStatus.Cancelled => "CANCELLED",
+        SimulationStatus.Error => "ERROR",
+        SimulationStatus.Timeout => "TIMEOUT",
+        SimulationStatus.Stalled => "STALLED",
+        _ => throw new ArgumentOutOfRangeException(nameof(status), status, "Unknown TRNRun status."),
+    };
+
+    /// <summary>Returns the name TRNSYS saves for a severity, such as <c>Fatal</c>, to compare with the <c>severity</c> column.</summary>
+    public static string ToDatabaseName(this LogSeverity severity) => severity switch
+    {
+        LogSeverity.Notice => "Notice",
+        LogSeverity.Warning => "Warning",
+        LogSeverity.Fatal => "Fatal",
+        _ => throw new ArgumentOutOfRangeException(nameof(severity), severity, "Unknown log severity."),
     };
 
     /// <summary>Parses a saved state name.</summary>
@@ -259,9 +262,13 @@ public static class TrnrunDatabase
     /// <summary>Returns a text column that trnrund never leaves NULL.</summary>
     private static string Required(string? value, string column) =>
         value ?? throw new InvalidDataException($"Column '{column}' is unexpectedly NULL.");
-}
 
-/// <summary>Reads saved JSON without reflection, keeping the library trim- and AOT-safe.</summary>
-[JsonSerializable(typeof(string[]))]
-[JsonSerializable(typeof(Dictionary<string, JsonElement>))]
-internal sealed partial class RecordJsonContext : JsonSerializerContext;
+    /// <summary>Returns a milliseconds column that trnrund never leaves NULL as a duration.</summary>
+    private static TimeSpan Milliseconds(IDataRecord row, string column)
+    {
+        double milliseconds = Required(Double(row, column), column);
+        return double.IsFinite(milliseconds)
+            ? TimeSpan.FromMilliseconds(milliseconds)
+            : throw new InvalidDataException(string.Create(CultureInfo.InvariantCulture, $"Column '{column}' holds {milliseconds}, not a duration."));
+    }
+}

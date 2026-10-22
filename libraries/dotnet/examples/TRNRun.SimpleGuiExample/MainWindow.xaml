@@ -1,0 +1,34 @@
+<Window x:Class="TRNRun.SimpleGuiExample.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="TRNRun" Width="1000" Height="600"
+        Loaded="OnLoaded" Closing="OnClosing">
+  <DockPanel Margin="8">
+    <Button DockPanel.Dock="Top" HorizontalAlignment="Left" Padding="12,4" Margin="0,0,0,8"
+            Content="Add decks…" Click="OnAddDecks" />
+
+    <!-- Logs of every run, all columns generated from LogEvent. -->
+    <DataGrid DockPanel.Dock="Bottom" Height="200" Margin="0,8,0,0" ItemsSource="{Binding Logs}" IsReadOnly="True" />
+
+    <!-- Each row is the latest SimulationInfo trnrund saved for that run. -->
+    <DataGrid ItemsSource="{Binding Runs}" AutoGenerateColumns="False" IsReadOnly="True">
+      <DataGrid.Columns>
+        <DataGridTextColumn Header="#" Binding="{Binding RunId}" />
+        <DataGridTextColumn Header="Deck" Binding="{Binding Label}" Width="2*" />
+        <DataGridTextColumn Header="State" Binding="{Binding State}" />
+        <DataGridTextColumn Header="Status" Binding="{Binding Status}" />
+        <DataGridTextColumn Header="Progress" Binding="{Binding Progress.Percent, StringFormat=P0}" />
+        <DataGridTextColumn Header="Warnings" Binding="{Binding Warnings}" />
+        <DataGridTextColumn Header="Fatals" Binding="{Binding Fatals}" />
+        <DataGridTextColumn Header="Error" Binding="{Binding Error}" Width="3*" />
+        <DataGridTemplateColumn>
+          <DataGridTemplateColumn.CellTemplate>
+            <DataTemplate>
+              <Button Content="Cancel" Click="OnCancel" />
+            </DataTemplate>
+          </DataGridTemplateColumn.CellTemplate>
+        </DataGridTemplateColumn>
+      </DataGrid.Columns>
+    </DataGrid>
+  </DockPanel>
+</Window>

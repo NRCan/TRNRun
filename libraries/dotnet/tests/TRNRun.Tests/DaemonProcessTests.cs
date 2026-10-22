@@ -34,10 +34,6 @@ public sealed class DaemonProcessTests : IDisposable
     private static void Exit(DaemonProcess process, int code = 0) =>
         process.Request("exit", writer => writer.WriteNumber("code", code));
 
-    // -----------------------------------------------------------------
-    // Starting
-    // -----------------------------------------------------------------
-
     /// <summary>Explain how to get trnrund when its executable is missing.</summary>
     [Fact]
     public void MissingExecutableNamesIt()
@@ -63,10 +59,6 @@ public sealed class DaemonProcessTests : IDisposable
             ["--database:runs.sqlite3", "--maxConcurrent:2"],
             reply.GetProperty("args").EnumerateArray().Select(arg => arg.GetString()));
     }
-
-    // -----------------------------------------------------------------
-    // Requests
-    // -----------------------------------------------------------------
 
     /// <summary>Number each request and return the reply that repeats its id.</summary>
     [Fact]
@@ -148,10 +140,6 @@ public sealed class DaemonProcessTests : IDisposable
         Assert.Equal(Enumerable.Range(1, 40).Select(id => (long)id), ids.Order());
     }
 
-    // -----------------------------------------------------------------
-    // Change notifications
-    // -----------------------------------------------------------------
-
     /// <summary>Return true once trnrund announces a revision after the one given.</summary>
     [Fact]
     public void WaitForChangesWakesOnALaterRevision()
@@ -216,10 +204,6 @@ public sealed class DaemonProcessTests : IDisposable
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => process.WaitForChangesAsync(0, cancel.Token));
     }
 
-    // -----------------------------------------------------------------
-    // Exit
-    // -----------------------------------------------------------------
-
     /// <summary>Throw DaemonExitedException with the exit code and stderr, for every later request and wait.</summary>
     [Fact]
     public void CrashIsReportedWithItsDiagnostics()
@@ -259,15 +243,15 @@ public sealed class DaemonProcessTests : IDisposable
         Assert.Contains("code 3", Assert.Throws<DaemonExitedException>(() => process.WaitForChanges(4, TimeSpan.Zero)).Message);
     }
 
-    /// <summary>Throw ClosedException for a clean exit not yet waited for, as right after a shutdown request.</summary>
+    /// <summary>Throw DaemonClosedException for a clean exit not yet waited for, as right after a shutdown request.</summary>
     [Fact]
     public void UnexpectedExitWithCode0IsAClose()
     {
         DaemonProcess process = Start();
         Exit(process);
 
-        Assert.Equal("trnrund is closed", Assert.Throws<ClosedException>(() => process.WaitForChanges(0, TimeSpan.FromSeconds(5))).Message);
-        Assert.Equal("trnrund is closed", Assert.Throws<ClosedException>(() => process.Request("ready")).Message);
+        Assert.Equal("trnrund is closed", Assert.Throws<DaemonClosedException>(() => process.WaitForChanges(0, TimeSpan.FromSeconds(5))).Message);
+        Assert.Equal("trnrund is closed", Assert.Throws<DaemonClosedException>(() => process.Request("ready")).Message);
     }
 
     /// <summary>Throw DaemonExitedException for a failed exit nobody waited for.</summary>
@@ -289,8 +273,8 @@ public sealed class DaemonProcessTests : IDisposable
         Exit(process);
 
         Assert.True(process.Wait(TimeSpan.FromSeconds(10)));
-        Assert.Throws<ClosedException>(() => process.WaitForChanges(0, TimeSpan.Zero));
-        Assert.Equal("trnrund is closed", Assert.Throws<ClosedException>(() => process.Request("ready")).Message);
+        Assert.Throws<DaemonClosedException>(() => process.WaitForChanges(0, TimeSpan.Zero));
+        Assert.Equal("trnrund is closed", Assert.Throws<DaemonClosedException>(() => process.Request("ready")).Message);
     }
 
     /// <summary>Treat an exit after WaitAsync() as expected, and close the process.</summary>
@@ -303,7 +287,7 @@ public sealed class DaemonProcessTests : IDisposable
         await process.WaitAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
 
         Assert.Equal(0, process.ExitCode);
-        Assert.Throws<ClosedException>(() => process.Request("ready"));
+        Assert.Throws<DaemonClosedException>(() => process.Request("ready"));
     }
 
     /// <summary>Throw the exit code and diagnostics of a failed exit from WaitAsync().</summary>
@@ -363,8 +347,8 @@ public sealed class DaemonProcessTests : IDisposable
         process.Close();
 
         Assert.Equal(0, process.ExitCode);
-        Assert.Throws<ClosedException>(() => process.WaitForChanges(0, TimeSpan.Zero));
-        Assert.Equal("trnrund is closed", Assert.Throws<ClosedException>(() => process.Request("ready")).Message);
+        Assert.Throws<DaemonClosedException>(() => process.WaitForChanges(0, TimeSpan.Zero));
+        Assert.Equal("trnrund is closed", Assert.Throws<DaemonClosedException>(() => process.Request("ready")).Message);
     }
 
     /// <summary>Let concurrent closes, blocking and not, wait for the same one closing.</summary>
@@ -377,7 +361,7 @@ public sealed class DaemonProcessTests : IDisposable
         await Task.WhenAll(process.CloseAsync(), process.CloseAsync(), Task.Run(process.Close)).WaitAsync(TimeSpan.FromSeconds(30));
 
         Assert.NotNull(process.ExitCode);
-        Assert.Throws<ClosedException>(() => process.Request("ready"));
+        Assert.Throws<DaemonClosedException>(() => process.Request("ready"));
     }
 
     /// <summary>Close a daemon that already exited without throwing.</summary>
@@ -389,7 +373,7 @@ public sealed class DaemonProcessTests : IDisposable
 
         process.Close();
 
-        Assert.Throws<ClosedException>(() => process.WaitForChanges(0, TimeSpan.Zero)); // Closed: its crash is no longer reported.
+        Assert.Throws<DaemonClosedException>(() => process.WaitForChanges(0, TimeSpan.Zero)); // Closed: its crash is no longer reported.
     }
 
     /// <summary>Kill a daemon still running after its close grace period, so closing never hangs.</summary>
@@ -402,6 +386,6 @@ public sealed class DaemonProcessTests : IDisposable
         process.Close();
 
         Assert.NotEqual(0, process.ExitCode); // Killed, not exited.
-        Assert.Throws<ClosedException>(() => process.WaitForChanges(0, TimeSpan.FromSeconds(5))); // Its stdout ended.
+        Assert.Throws<DaemonClosedException>(() => process.WaitForChanges(0, TimeSpan.FromSeconds(5))); // Its stdout ended.
     }
 }

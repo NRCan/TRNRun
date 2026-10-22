@@ -5,7 +5,6 @@
 // Ctrl+C stops waiting and interrupts the run.
 
 using System.Globalization;
-using Microsoft.Data.Sqlite;
 using TRNRun;
 
 if (args.Length is < 2 or > 3 || (args.Length == 3 && args[2] != "--progress"))
@@ -24,21 +23,16 @@ Console.CancelKeyPress += (_, e) =>
 
 var settings = new SimulationSettings { TrnexePath = args[1], WatchTmp = args.Length == 3 };
 
-// Disposal interrupts unfinished runs; wait for this one inside the block. The connection is
-// disposed first, before the daemon deletes its temporary database.
+// Disposal interrupts unfinished runs; wait for this one inside the block.
 await using Daemon daemon = await Daemon.StartAsync(new DaemonOptions { MaxConcurrent = 1 }, cancel.Token);
-using SqliteConnection connection = daemon.OpenDatabase();
 long runId = await daemon.AddAsync(args[0], settings, cancellationToken: cancel.Token);
 
-ChangePosition position = daemon.StartPosition;
 SimulationInfo? finished = null;
 try
 {
-    while (finished is null)
+    // Throws if trnrund crashed.
+    await foreach (Changes changes in daemon.FollowAsync(cancel.Token))
     {
-        await daemon.WaitForChangesAsync(position.Revision, cancel.Token); // Throws if trnrund crashed.
-        Changes changes = connection.ReadChanges(position);
-        position = changes.Next;
         foreach (SimulationInfo run in changes.Runs.Where(run => run.RunId == runId))
         {
             if (run.Progress is { } progress)
@@ -56,11 +50,22 @@ try
         {
             Console.WriteLine($"{log.Severity} at {log.Time} h: {log.Message}");
         }
+
+        if (finished is not null)
+        {
+            break;
+        }
     }
 }
 catch (OperationCanceledException)
 {
     Console.WriteLine("Cancelled; interrupting the run.");
+    return 1;
+}
+
+if (finished is null)
+{
+    Console.Error.WriteLine("trnrund closed before the run finished.");
     return 1;
 }
 

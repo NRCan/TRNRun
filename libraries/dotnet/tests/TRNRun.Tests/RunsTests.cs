@@ -2,87 +2,6 @@ using Microsoft.Data.Sqlite;
 
 namespace TRNRun.Tests;
 
-/// <summary>Tests for the records in Records.cs.</summary>
-public sealed class RecordsTests
-{
-    /// <summary>Keep the enum in TRNRun's STATUS order.</summary>
-    [Fact]
-    public void SimulationStatusValuesAreTheRunnerStatuses() =>
-        Assert.Equal(
-            ["Pending", "Launching", "Running", "Done", "Cancelled", "Error", "Timeout", "Stalled"],
-            Enum.GetNames<SimulationStatus>());
-
-    /// <summary>Name each state as trnrund saves it, for queries on the state column.</summary>
-    [Fact]
-    public void StateNamesAreTheDaemonNames() =>
-        Assert.Equal(["QUEUED", "RUNNING", "FINISHED"], Enum.GetValues<SimulationState>().Select(state => state.ToDatabaseName()));
-
-    /// <summary>Report a run finished only once the daemon finished it.</summary>
-    [Theory]
-    [InlineData(SimulationState.Queued, false)]
-    [InlineData(SimulationState.Running, false)]
-    [InlineData(SimulationState.Finished, true)]
-    public void SimulationInfoIsFinishedOnlyWhenFinished(SimulationState state, bool finished) =>
-        Assert.Equal(finished, new SimulationInfo { RunId = 1, State = state, DeckFile = "model.dck" }.IsFinished);
-
-    /// <summary>Start with no events, no counts and no outcome.</summary>
-    [Fact]
-    public void SimulationInfoDefaultsDescribeAFreshRun()
-    {
-        var info = new SimulationInfo { RunId = 1, State = SimulationState.Queued, DeckFile = "model.dck" };
-
-        Assert.Equal((null, null, null, null, null), (info.Status, info.StatusMessage, info.Progress, info.Config, info.Setting));
-        Assert.Equal((0, 0, 0), (info.Notices, info.Warnings, info.Fatals));
-        Assert.Equal((null, null, null), (info.Succeeded, info.ExitCode, info.Error));
-        Assert.Empty(info.TrnrunArgs);
-    }
-
-    /// <summary>Let callers skip empty reads.</summary>
-    [Fact]
-    public void ChangesAreEmptyOnlyWhenNothingChanged()
-    {
-        Assert.True(new Changes([], [], default).IsEmpty);
-        Assert.False(new Changes([new SimulationInfo { RunId = 1, State = SimulationState.Queued, DeckFile = "model.dck" }], [], new(1, 0)).IsEmpty);
-        Assert.False(new Changes([], [new LogEvent(1, 1, LogSeverity.Notice, 0.0)], new(0, 1)).IsEmpty);
-    }
-
-    /// <summary>Give every exception the standard constructors, and describe an exit from its code and diagnostics.</summary>
-    [Fact]
-    public void ExceptionsHaveTheStandardConstructors()
-    {
-        var inner = new InvalidOperationException("inner");
-
-        Assert.Same(inner, new RequestRejectedException("outer", inner).InnerException);
-        Assert.Same(inner, new ClosedException("outer", inner).InnerException);
-        Assert.Same(inner, new SchemaVersionException("outer", inner).InnerException);
-        Assert.Same(inner, new DaemonExitedException("outer", inner).InnerException);
-        Assert.IsAssignableFrom<TrnrunException>(new DaemonExitedException());
-        Assert.Equal(("custom", null, ""), (new DaemonExitedException("custom").Message, new DaemonExitedException("custom").ExitCode, new DaemonExitedException("custom").Diagnostics));
-        Assert.Equal("trnrund exited with code 2: bye", new DaemonExitedException(2, "bye").Message);
-        Assert.Equal("trnrund closed its output but did not exit", new DaemonExitedException(null, "").Message);
-    }
-
-    /// <summary>Require only the severity and time TRNSYS always attaches.</summary>
-    [Fact]
-    public void LogEventOptionalPropertiesDefaultToNull()
-    {
-        var log = new LogEvent(LogId: 1, RunId: 2, Severity: LogSeverity.Notice, Time: 0.5);
-
-        Assert.Equal((null, null, null, null, null), (log.UnitId, log.TypeId, log.MessageCode, log.Message, log.Information));
-    }
-
-    /// <summary>Let equal events deduplicate and compare equal.</summary>
-    [Fact]
-    public void EventsCompareAndHashByValue()
-    {
-        var first = new ProgressEvent(Time: 1.0, Percent: 0.5, ElapsedMs: 10.0, EtaMs: 10.0);
-        var second = new ProgressEvent(Time: 1.0, Percent: 0.5, ElapsedMs: 10.0, EtaMs: 10.0);
-
-        Assert.Equal(first, second);
-        Assert.Single(new HashSet<ProgressEvent> { first, second });
-    }
-}
-
 /// <summary>Tests for <see cref="TrnrunDatabase.GetSimulationInfo"/> and <see cref="TrnrunDatabase.GetLogEvent"/>.</summary>
 public sealed class RunsTests : IDisposable
 {
@@ -104,10 +23,6 @@ public sealed class RunsTests : IDisposable
 
     /// <summary>Returns a run's row parsed.</summary>
     private SimulationInfo Parse(long runId) => TestDatabase.FetchRun(_connection, runId)!;
-
-    // -----------------------------------------------------------------
-    // ParseRun
-    // -----------------------------------------------------------------
 
     /// <summary>Turn a run TRNRun has not reported on into null events and an empty outcome.</summary>
     [Fact]
@@ -158,7 +73,7 @@ public sealed class RunsTests : IDisposable
         Assert.Equal(SimulationState.Finished, info.State);
         Assert.Equal(4, info.SessionId);
         Assert.Equal((SimulationStatus.Done, "All good"), (info.Status, info.StatusMessage));
-        Assert.Equal(new ProgressEvent(Time: 8_760.0, Percent: 1.0, ElapsedMs: 1_500.0, EtaMs: 0.0), info.Progress);
+        Assert.Equal(new ProgressEvent(Time: 8_760.0, Percent: 1.0, Elapsed: TimeSpan.FromMilliseconds(1_500), Eta: TimeSpan.Zero), info.Progress);
         Assert.Equal(new ConfigEvent(Start: 0.0, Stop: 8_760.0, Step: 1.0), info.Config);
         Assert.NotNull(info.Setting);
         Assert.Equal(TestDatabase.Setting.Keys.Order(), info.Setting.Keys.Order());
@@ -252,9 +167,16 @@ public sealed class RunsTests : IDisposable
         Assert.Throws<InvalidDataException>(() => Parse(runId));
     }
 
-    // -----------------------------------------------------------------
-    // ParseLog
-    // -----------------------------------------------------------------
+    /// <summary>Report a duration that is not a number of milliseconds as invalid data, not an overflow.</summary>
+    [Fact]
+    public void ParseRunRejectsAnInfiniteDuration()
+    {
+        long runId = TestDatabase.InsertRun(
+            _connection, ("percent", 0.5), ("sim_time", 1.0), ("elapsed_ms", 1.0), ("eta_ms", double.PositiveInfinity));
+
+        var error = Assert.Throws<InvalidDataException>(() => Parse(runId));
+        Assert.Contains("eta_ms", error.Message);
+    }
 
     /// <summary>Read each column into its LogEvent property.</summary>
     [Fact]

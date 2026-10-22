@@ -24,10 +24,6 @@ public sealed class TrnrunDatabaseTests : IDisposable
         _temp.Dispose();
     }
 
-    // -----------------------------------------------------------------
-    // Open
-    // -----------------------------------------------------------------
-
     /// <summary>Never create a database: trnrund owns it.</summary>
     [Fact]
     public void OpenMissingDatabaseFails()
@@ -59,10 +55,6 @@ public sealed class TrnrunDatabaseTests : IDisposable
             () => TestDatabase.Execute(_reader, "INSERT INTO sessions (started_at) VALUES ('now')"));
         Assert.Contains("readonly", error.Message);
     }
-
-    // -----------------------------------------------------------------
-    // ReadChanges
-    // -----------------------------------------------------------------
 
     /// <summary>Return the position to read after, so nothing is returned twice.</summary>
     [Fact]

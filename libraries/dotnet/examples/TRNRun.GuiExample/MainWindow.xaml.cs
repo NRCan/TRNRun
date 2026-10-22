@@ -1,9 +1,5 @@
 // Example: a window that runs decks through trnrund and shows their progress and logs live.
-//
 // Usage: TRNRun.GuiExample [deck.dck | deck-directory]...
-// Decks given on the command line are added once the window opens, with the default settings.
-// trnrund starts with the first deck added, so the database and concurrency chosen then stay
-// until the window closes. Closing it interrupts unfinished runs, after asking.
 
 using System.Collections.ObjectModel;
 using System.ComponentModel;
@@ -19,12 +15,7 @@ using Microsoft.Win32;
 
 namespace TRNRun.GuiExample;
 
-/// <summary>Adds decks to one trnrund, then shows its runs and logs as it saves them.</summary>
-/// <remarks>
-/// A loop on the UI thread awaits the daemon's changes and reads them through the window's own
-/// connection; each await resumes on the UI thread, so it updates the rows directly. Every call
-/// to the daemon is awaited, so none blocks the window.
-/// </remarks>
+/// <summary>Adds decks to one trnrund, then shows its runs and logs as it saves them; every daemon call is awaited on the UI thread.</summary>
 public partial class MainWindow : Window
 {
     private readonly Dictionary<long, RunRow> _rows = [];
@@ -35,10 +26,7 @@ public partial class MainWindow : Window
     private readonly CancellationTokenSource _closing = new();
     private HashSet<long> _selected = [];
     private Daemon? _daemon;
-    private SqliteConnection? _connection;
     private Task? _following;
-    // Where the next read of the database starts.
-    private ChangePosition _position;
     private bool _adding;
     private bool _stopping;
 
@@ -70,10 +58,6 @@ public partial class MainWindow : Window
 
     /// <summary>This session's log entries, oldest first; the log table filters them.</summary>
     public ObservableCollection<LogRow> Logs { get; } = [];
-
-    // -----------------------------------------------------------------
-    // Adding decks
-    // -----------------------------------------------------------------
 
     /// <summary>Adds the decks and deck directories given on the command line, if any.</summary>
     private async void OnLoaded(object sender, RoutedEventArgs e)
@@ -133,7 +117,6 @@ public partial class MainWindow : Window
     }
 
     /// <summary>Starts trnrund if needed, then submits each deck; reports the decks it refused.</summary>
-    /// <remarks>The rows appear once the queued runs are read from the database.</remarks>
     private async Task AddAsync(IEnumerable<string> paths)
     {
         string[] decks = paths.ToArray();
@@ -201,8 +184,7 @@ public partial class MainWindow : Window
         };
     }
 
-    /// <summary>Starts trnrund with the chosen database and concurrency, which then stay fixed, and starts following it.</summary>
-    /// <returns>The daemon, or <see langword="null"/> after reporting why it did not start.</returns>
+    /// <summary>Starts and follows trnrund with the chosen database and concurrency, or returns <see langword="null"/> after reporting why not.</summary>
     private async Task<Daemon?> StartDaemonAsync()
     {
         string database = DatabaseBox.Text.Trim();
@@ -212,7 +194,7 @@ public partial class MainWindow : Window
             MaxConcurrent = (int)MaxConcurrentBox.SelectedItem,
         };
         SessionText.Text = "Starting trnrund…";
-        Daemon? daemon = null;
+        Daemon daemon;
         try
         {
             if (options.DatabasePath is not null)
@@ -222,15 +204,9 @@ public partial class MainWindow : Window
             }
 
             daemon = await Daemon.StartAsync(options, _closing.Token);
-            _connection = daemon.OpenDatabase();
         }
-        catch (Exception error) when (error is TrnrunException or SqliteException or IOException or UnauthorizedAccessException or TimeoutException)
+        catch (Exception error) when (error is TrnrunException or IOException or UnauthorizedAccessException or TimeoutException)
         {
-            if (daemon is not null)
-            {
-                await daemon.DisposeAsync();
-            }
-
             SessionText.Text = "trnrund is not running.";
             ShowError("Could not start trnrund", error.Message);
             return null;
@@ -240,9 +216,7 @@ public partial class MainWindow : Window
         BrowseDatabaseButton.IsEnabled = false;
         MaxConcurrentBox.IsEnabled = false;
         SessionText.Text = $"Session {daemon.SessionId} · {daemon.DatabasePath}";
-        // Only this session's runs are shown, even in a reused database.
-        _position = daemon.StartPosition;
-        _following = FollowAsync(daemon, _connection, _closing.Token);
+        _following = FollowAsync(daemon, _closing.Token);
         _clock.Start();
         return daemon;
     }
@@ -274,22 +248,20 @@ public partial class MainWindow : Window
         AddFolderButton.IsEnabled = !adding;
     }
 
-    // -----------------------------------------------------------------
-    // Following the runs
-    // -----------------------------------------------------------------
-
     /// <summary>Shows what trnrund saves, as it saves it, until the window closes or trnrund stops.</summary>
-    private async Task FollowAsync(Daemon daemon, SqliteConnection connection, CancellationToken cancellationToken)
+    private async Task FollowAsync(Daemon daemon, CancellationToken cancellationToken)
     {
         try
         {
-            while (true)
+            // Only this session's runs are shown, even in a reused database.
+            await foreach (Changes changes in daemon.FollowAsync(cancellationToken))
             {
-                // Throws once trnrund ended and everything it saved was read.
-                await daemon.WaitForChangesAsync(_position.Revision, cancellationToken);
-                Show(connection.ReadChanges(_position));
+                Show(changes);
                 UpdateSummary();
             }
+
+            _clock.Stop();
+            SessionText.Text = "trnrund stopped.";
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -315,7 +287,6 @@ public partial class MainWindow : Window
     /// <summary>Adds or updates the changed runs' rows and appends the new log entries.</summary>
     private void Show(Changes changes)
     {
-        _position = changes.Next;
         foreach (SimulationInfo run in changes.Runs)
         {
             if (_rows.TryGetValue(run.RunId, out RunRow? row))
@@ -390,10 +361,6 @@ public partial class MainWindow : Window
         }
     }
 
-    // -----------------------------------------------------------------
-    // Cancelling
-    // -----------------------------------------------------------------
-
     /// <summary>Cancels the selected runs that have not finished.</summary>
     private async void OnCancelSelected(object sender, RoutedEventArgs e) =>
         await CancelAsync(RunsGrid.SelectedItems.Cast<RunRow>());
@@ -433,10 +400,6 @@ public partial class MainWindow : Window
             ShowError("Could not cancel", error.Message);
         }
     }
-
-    // -----------------------------------------------------------------
-    // Settings and closing
-    // -----------------------------------------------------------------
 
     /// <summary>Picks the TRNSYS executable.</summary>
     private void OnBrowseTrnexe(object sender, RoutedEventArgs e)
@@ -495,15 +458,13 @@ public partial class MainWindow : Window
         IsEnabled = false;
         SessionText.Text = "Stopping trnrund…";
 
-        // Stop reading first; then the connection closes, before the daemon deletes a temporary database.
+        // Stop following first, which closes its connection, so the daemon can delete a temporary database.
         await _closing.CancelAsync();
         if (_following is not null)
         {
             await _following;
         }
 
-        _connection?.Dispose();
-        _connection = null;
         Daemon daemon = _daemon!;
         _daemon = null;
         await daemon.DisposeAsync();

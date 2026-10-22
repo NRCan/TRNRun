@@ -73,10 +73,6 @@ public sealed class DaemonTests : IDisposable
     /// <summary>Whether the run is running.</summary>
     internal static bool Running(SimulationInfo info) => info.State == SimulationState.Running;
 
-    // -----------------------------------------------------------------
-    // Reply fields
-    // -----------------------------------------------------------------
-
     /// <summary>Read reply fields that have the expected type.</summary>
     [Fact]
     public void ReplyFieldsOfTheExpectedType()
@@ -99,10 +95,6 @@ public sealed class DaemonTests : IDisposable
         var error = Assert.Throws<TrnrunException>(() => Daemon.ReplyInt64(reply.RootElement, "runId"));
         Assert.Contains("trnrund reply has no integer 'runId'", error.Message);
     }
-
-    // -----------------------------------------------------------------
-    // Starting and closing
-    // -----------------------------------------------------------------
 
     /// <summary>Default to the executables bundled beside the application, and a temporary database.</summary>
     [Fact]
@@ -223,19 +215,15 @@ public sealed class DaemonTests : IDisposable
 
     /// <summary>Wake a waiter blocked when the daemon is disposed, rather than leave it hanging.</summary>
     [Fact]
-    public async Task DisposeWakesAWaiterWithClosedException()
+    public async Task DisposeWakesAWaiterWithDaemonClosedException()
     {
         Daemon daemon = Start();
         Task waiting = daemon.WaitForChangesAsync(daemon.StartPosition.Revision);
 
         daemon.Dispose();
 
-        await Assert.ThrowsAsync<ClosedException>(() => waiting.WaitAsync(Timeout));
+        await Assert.ThrowsAsync<DaemonClosedException>(() => waiting.WaitAsync(Timeout));
     }
-
-    // -----------------------------------------------------------------
-    // Asynchronous use
-    // -----------------------------------------------------------------
 
     /// <summary>Start, add, follow, shut down and dispose without blocking.</summary>
     [Fact]
@@ -244,23 +232,77 @@ public sealed class DaemonTests : IDisposable
         await using Daemon daemon = await Daemon.StartAsync(Options());
         using SqliteConnection connection = daemon.OpenDatabase();
 
-        long runId = await daemon.AddAsync(Decks.Write(_temp.File("model.dck")), new SimulationSettings { PollMs = 10 }, label: "async");
+        long runId = await daemon.AddAsync(
+            Decks.Write(_temp.File("model.dck")), new SimulationSettings { PollInterval = TimeSpan.FromMilliseconds(10) }, label: "async");
 
         ChangePosition position = daemon.StartPosition;
         SimulationInfo? finished = null;
         using var timeout = new CancellationTokenSource(Timeout);
-        while (finished is null)
+        await foreach (Changes changes in daemon.FollowAsync(connection, position, timeout.Token))
         {
-            await daemon.WaitForChangesAsync(position.Revision, timeout.Token);
-            Changes changes = connection.ReadChanges(position);
             position = changes.Next;
             finished = changes.Runs.FirstOrDefault(run => run.RunId == runId && run.IsFinished);
+            if (finished is not null)
+            {
+                break;
+            }
         }
 
         await daemon.ShutdownAsync(cancellationToken: timeout.Token);
 
+        Assert.NotNull(finished);
         Assert.Equal((true, "async", 3), (finished.Succeeded, finished.Label, finished.Notices + finished.Warnings + finished.Fatals));
-        await Assert.ThrowsAsync<ClosedException>(() => daemon.WaitForChangesAsync(position.Revision));
+        int later = 0;
+        await foreach (Changes _ in daemon.FollowAsync(connection, position))
+        {
+            later++;
+        }
+
+        Assert.Equal(0, later); // Ends once trnrund closed, with nothing newer.
+        await Assert.ThrowsAsync<DaemonClosedException>(() => daemon.WaitForChangesAsync(position.Revision));
+    }
+
+    /// <summary>Yield every change once, then end after a shutdown.</summary>
+    [Fact]
+    public void FollowEndsAfterShutdownWithEveryChange()
+    {
+        Daemon daemon = Start();
+        long runId = daemon.Add(Decks.Write(_temp.File("model.dck")));
+        WaitUntil(daemon, runId, Finished);
+        daemon.Shutdown(Timeout);
+
+        using SqliteConnection connection = daemon.OpenDatabase();
+        Changes[] changes = daemon.Follow(connection, daemon.StartPosition).ToArray();
+
+        Assert.True(changes.SelectMany(change => change.Runs).Last(run => run.RunId == runId).IsFinished);
+        Assert.Equal([1, 2, 3], changes.SelectMany(change => change.Logs).Select(log => log.LogId));
+        Assert.True(connection.ReadChanges(changes[^1].Next).IsEmpty);
+    }
+
+    /// <summary>Follow from the start position through the daemon's own connection, released when the loop ends.</summary>
+    [Fact]
+    public async Task FollowAsyncWithoutConnectionReleasesItsOwn()
+    {
+        string databasePath = _temp.File("runs.sqlite3");
+        Daemon daemon = Start(databasePath);
+        long runId = await daemon.AddAsync(Decks.Write(_temp.File("model.dck")));
+
+        SimulationInfo? finished = null;
+        using var timeout = new CancellationTokenSource(Timeout);
+        await foreach (Changes changes in daemon.FollowAsync(timeout.Token))
+        {
+            finished = changes.Runs.FirstOrDefault(run => run.RunId == runId && run.IsFinished);
+            if (finished is not null)
+            {
+                break;
+            }
+        }
+
+        daemon.Shutdown(Timeout);
+
+        Assert.True(finished?.Succeeded);
+        Assert.Equal(3, daemon.Follow().SelectMany(change => change.Logs).Count());
+        File.Delete(databasePath); // Fails if a connection were still open.
     }
 
     /// <summary>Cancel a queued run without blocking.</summary>
@@ -305,10 +347,6 @@ public sealed class DaemonTests : IDisposable
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => Daemon.StartAsync(Options(), cancel.Token));
     }
 
-    // -----------------------------------------------------------------
-    // Adding runs
-    // -----------------------------------------------------------------
-
     /// <summary>Report a run's events, logs and outcome as trnrund saves them.</summary>
     [Fact]
     public void AddedRunIsFollowedToSuccess()
@@ -328,8 +366,7 @@ public sealed class DaemonTests : IDisposable
         Assert.Equal(10.0, info.Config?.Stop);
         Assert.Equal(1.0, info.Progress?.Percent);
         Assert.Equal((1, 1, 1), (info.Notices, info.Warnings, info.Fatals));
-        Assert.NotNull(info.SubmittedAt);
-        Assert.NotNull(info.StartedAt);
+        Assert.True(info.SubmittedAt <= info.StartedAt);
         Assert.NotNull(info.FinishedAt);
         using SqliteConnection connection = daemon.OpenDatabase();
         LogEvent[] logs = connection.ReadChanges().Logs.Where(log => log.RunId == runId).ToArray();
@@ -412,13 +449,13 @@ public sealed class DaemonTests : IDisposable
             WaitForGui = false,
             WaitForLst = false,
             WaitForTmp = false,
-            DetectTimeoutMs = 1_000,
-            ExtraDelayMs = 0,
-            PollMs = 10,
+            DetectTimeout = TimeSpan.FromSeconds(1),
+            ExtraDelay = TimeSpan.Zero,
+            PollInterval = TimeSpan.FromMilliseconds(10),
             WatchLog = true,
             WatchTmp = true,
-            WatchTimeoutMs = 5_000,
-            StallTimeoutMs = 3_000,
+            WatchTimeout = TimeSpan.FromSeconds(5),
+            StallTimeout = TimeSpan.FromSeconds(3),
             CleanOnSuccess = false,
             KillOnTimeout = true,
             KillOnStall = true,
@@ -471,10 +508,6 @@ public sealed class DaemonTests : IDisposable
         Assert.Equal(0L, TestDatabase.Execute(connection, "SELECT count(*) FROM runs"));
     }
 
-    // -----------------------------------------------------------------
-    // Cancelling
-    // -----------------------------------------------------------------
-
     /// <summary>Finish a queued run on return, and a running one once it is killed.</summary>
     [Fact]
     public void CancelQueuedAndRunningRuns()
@@ -526,10 +559,6 @@ public sealed class DaemonTests : IDisposable
         var error = Assert.Throws<RequestRejectedException>(() => daemon.Cancel(999));
         Assert.Contains("999", error.Message);
     }
-
-    // -----------------------------------------------------------------
-    // Shutting down
-    // -----------------------------------------------------------------
 
     /// <summary>Let a running run finish, never start a queued one, then exit cleanly.</summary>
     [Fact]
@@ -597,16 +626,12 @@ public sealed class DaemonTests : IDisposable
             changes = connection.ReadChanges(daemon.StartPosition);
         }
 
-        Assert.Equal("trnrund is closed", Assert.Throws<ClosedException>(() => daemon.WaitForChanges(changes.Next.Revision)).Message);
+        Assert.Equal("trnrund is closed", Assert.Throws<DaemonClosedException>(() => daemon.WaitForChanges(changes.Next.Revision)).Message);
 
         Assert.True(elapsed.Elapsed < TimeSpan.FromSeconds(5));
         Assert.Equal([runId], changes.Runs.Select(info => info.RunId));
-        Assert.Equal("trnrund is closed", Assert.Throws<ClosedException>(() => daemon.Add(_temp.File("model.dck"))).Message);
+        Assert.Equal("trnrund is closed", Assert.Throws<DaemonClosedException>(() => daemon.Add(_temp.File("model.dck"))).Message);
     }
-
-    // -----------------------------------------------------------------
-    // Following changes
-    // -----------------------------------------------------------------
 
     /// <summary>Return false when nothing is saved within the timeout.</summary>
     [Fact]

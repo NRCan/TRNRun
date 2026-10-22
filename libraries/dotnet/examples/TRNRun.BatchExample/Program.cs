@@ -35,14 +35,10 @@ foreach (string deck in decks)
 Console.WriteLine($"Running {decks.Length} decks, {maxConcurrent} at a time, in {daemon.DatabasePath} (session {daemon.SessionId})");
 
 // A finished run never changes again, so each one is read as finished once.
-ChangePosition position = daemon.StartPosition;
 var failed = new List<SimulationInfo>();
 int finished = 0;
-while (finished < decks.Length)
+foreach (Changes changes in daemon.Follow(connection, daemon.StartPosition))
 {
-    daemon.WaitForChanges(position.Revision);
-    Changes changes = connection.ReadChanges(position);
-    position = changes.Next;
     foreach (SimulationInfo run in changes.Runs.Where(run => run.IsFinished))
     {
         finished++;
@@ -54,6 +50,11 @@ while (finished < decks.Length)
         string outcome = run.Succeeded == true ? "ok" : $"FAILED ({run.Status}) {run.Error}";
         Console.WriteLine($"[{finished}/{decks.Length}] {run.Label}: {outcome}");
     }
+
+    if (finished == decks.Length)
+    {
+        break;
+    }
 }
 
 daemon.Shutdown();
@@ -61,7 +62,8 @@ Console.WriteLine($"{decks.Length - failed.Count} succeeded, {failed.Count} fail
 
 // The database answers any later question in plain SQL; here, why each failed run failed.
 using SqliteCommand command = connection.CreateCommand();
-command.CommandText = "SELECT * FROM logs WHERE run_id = $run AND severity = 'Fatal' ORDER BY log_id";
+command.CommandText = "SELECT * FROM logs WHERE run_id = $run AND severity = $severity ORDER BY log_id";
+command.Parameters.AddWithValue("$severity", LogSeverity.Fatal.ToDatabaseName());
 SqliteParameter runParameter = command.Parameters.Add("$run", SqliteType.Integer);
 foreach (SimulationInfo run in failed)
 {

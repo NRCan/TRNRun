@@ -8,10 +8,6 @@ public sealed class SettingsTests : IDisposable
     /// <summary>Deletes the temporary directory.</summary>
     public void Dispose() => _temp.Dispose();
 
-    // -----------------------------------------------------------------
-    // SimulationSettings
-    // -----------------------------------------------------------------
-
     /// <summary>Keep TRNRun's own defaults when no property is set.</summary>
     [Fact]
     public void DefaultSimulationSettingsPassNothing() =>
@@ -30,13 +26,13 @@ public sealed class SettingsTests : IDisposable
             WaitForGui = false,
             WaitForLst = false,
             WaitForTmp = true,
-            DetectTimeoutMs = 1_234,
-            ExtraDelayMs = 25,
-            PollMs = 50,
+            DetectTimeout = TimeSpan.FromMilliseconds(1_234),
+            ExtraDelay = TimeSpan.FromMilliseconds(25),
+            PollInterval = TimeSpan.FromMilliseconds(50),
             WatchLog = false,
             WatchTmp = true,
-            WatchTimeoutMs = 5_000,
-            StallTimeoutMs = 3_000,
+            WatchTimeout = TimeSpan.FromSeconds(5),
+            StallTimeout = TimeSpan.FromSeconds(3),
             CleanOnSuccess = true,
             KillOnTimeout = true,
             KillOnStall = true,
@@ -72,7 +68,21 @@ public sealed class SettingsTests : IDisposable
     public void SimulationSettingsPassOnlyThePropertiesSet() =>
         Assert.Equal(
             ["--pollMs:10", "--severity:Fatal"],
-            new SimulationSettings { PollMs = 10, Severity = LogSeverity.Fatal }.ToCliArgs());
+            new SimulationSettings { PollInterval = TimeSpan.FromMilliseconds(10), Severity = LogSeverity.Fatal }.ToCliArgs());
+
+    /// <summary>Pass an infinite timeout as TRNRun's unlimited, and round a partial millisecond up rather than to unlimited.</summary>
+    [Fact]
+    public void DurationsPassWholeMilliseconds() =>
+        Assert.Equal(
+            ["--detectTimeout:0", "--extraDelay:-1", "--pollMs:1", "--watchTimeout:0", "--stallTimeout:1"],
+            new SimulationSettings
+            {
+                DetectTimeout = Timeout.InfiniteTimeSpan,
+                ExtraDelay = Timeout.InfiniteTimeSpan, // Not a timeout, so left for trnrund to reject.
+                PollInterval = TimeSpan.FromTicks(1),
+                WatchTimeout = TimeSpan.Zero,
+                StallTimeout = TimeSpan.FromMicroseconds(500),
+            }.ToCliArgs());
 
     /// <summary>Name every window behavior as TRNRun's parser does.</summary>
     [Theory]
@@ -92,12 +102,16 @@ public sealed class SettingsTests : IDisposable
         Assert.Throws<ArgumentOutOfRangeException>(() => new SimulationSettings { Severity = (LogSeverity)99 }.ToCliArgs());
     }
 
-    /// <summary>Keep every option TRNRun reports applying settable, under the same name.</summary>
+    /// <summary>Keep every option TRNRun reports applying settable, under the same name less its <c>Ms</c> unit.</summary>
     [Fact]
     public void EveryReportedSettingIsSettable()
     {
         string[] settable = typeof(SimulationSettings).GetProperties().Select(property => property.Name).Order().ToArray();
-        string[] reported = TestDatabase.Setting.Keys.Select(key => char.ToUpperInvariant(key[0]) + key[1..]).Order().ToArray();
+        string[] reported = TestDatabase.Setting.Keys
+            .Select(key => key == "pollMs" ? "pollInterval" : key.EndsWith("Ms", StringComparison.Ordinal) ? key[..^2] : key)
+            .Select(key => char.ToUpperInvariant(key[0]) + key[1..])
+            .Order()
+            .ToArray();
 
         Assert.Equal(reported, settable);
     }
@@ -119,7 +133,7 @@ public sealed class SettingsTests : IDisposable
     [Fact]
     public void SettingsAreImmutableRecords()
     {
-        var original = new SimulationSettings { PollMs = 10 };
+        var original = new SimulationSettings { PollInterval = TimeSpan.FromMilliseconds(10) };
         SimulationSettings changed = original with { WatchTmp = true };
 
         Assert.Equal(["--pollMs:10"], original.ToCliArgs());

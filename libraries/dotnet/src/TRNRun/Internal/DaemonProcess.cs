@@ -9,62 +9,45 @@ using System.Threading.Channels;
 
 namespace TRNRun.Internal;
 
-/// <summary>A running trnrund, read by a background thread.</summary>
+/// <summary>A running trnrund, whose stdout a background thread routes to requests and change waiters.</summary>
 /// <remarks>
-/// The thread sorts each stdout line: replies go to the waiting request, matched by <c>id</c>,
-/// and <c>changed</c> notifications wake <see cref="WaitForChanges"/> and
-/// <see cref="WaitForChangesAsync"/>. trnrund's stdout ends only after its final changes are
-/// saved, so the end of stdout is how a crashed daemon is noticed. The thread then records the
-/// exit before waking waiters, so they never wait for it themselves. stderr is captured rather
-/// than shown: trnrund writes to it only before a fatal exit, and that text is added to the
-/// <see cref="DaemonExitedException"/> reporting the exit. Requests are serialized, so any thread
-/// may send one. Every await resumes on the thread pool, so the synchronous members, which wait
-/// on the asynchronous ones, never deadlock on a caller's synchronization context.
+/// stdout ends only after trnrund's final saves, so its end is how an exit is noticed; the exit is
+/// recorded, with stderr, before waiters wake. Every await resumes on the thread pool, so the
+/// blocking members, built on the async ones, never deadlock on a caller's context.
 /// </remarks>
 internal sealed class DaemonProcess : IDisposable, IAsyncDisposable
 {
     /// <summary>How long to wait for trnrund to exit once its stdout ended.</summary>
     private static readonly TimeSpan ExitWait = TimeSpan.FromSeconds(10);
 
-    /// <summary>How long trnrund gets, by default, to save interrupted runs and exit once stdin is closed.</summary>
+    /// <summary>How long trnrund gets, by default, to exit once stdin is closed.</summary>
     internal static readonly TimeSpan DefaultCloseWait = TimeSpan.FromSeconds(10);
 
-    /// <summary>Keeps non-ASCII text, such as accented deck paths, as UTF-8 instead of escaping it.</summary>
+    /// <summary>Keeps non-ASCII text, such as accented deck paths, unescaped.</summary>
     private static readonly JsonWriterOptions WriterOptions = new() { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
 
     private readonly Process _process;
     private readonly StreamWriter _stdin;
     private readonly TimeSpan _requestTimeout;
     private readonly TimeSpan _closeWait;
-    // Completed by the reader thread once it recorded trnrund's exit.
     private readonly TaskCompletionSource _readerDone = new(TaskCreationOptions.RunContinuationsAsynchronously);
-    // Serializes requests, so replies arrive in the order they are awaited.
+    // One request at a time, so replies arrive in the order they are awaited.
     private readonly SemaphoreSlim _requestLock = new(1, 1);
     private long _nextId;
-    // Replies read from stdout; completed once stdout ends.
     private readonly Channel<JsonElement> _replies =
         Channel.CreateUnbounded<JsonElement>(new UnboundedChannelOptions { SingleReader = true, SingleWriter = true });
-    // Guards the fields below it; pulsed, and _signal completed, when any changes.
+    // Guards the fields below; pulsed, and _signal completed, on any change.
     private readonly object _changed = new();
     private TaskCompletionSource _signal = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private long _revision;
-    // Set once stdout ended and the exit below was recorded.
     private bool _ended;
-    // trnrund's exit code, or null if it closed stdout without exiting, and its stderr.
+    // Null if trnrund closed stdout without exiting.
     private int? _exitCode;
     private string _diagnostics = "";
     // Set once the caller ends the process, so its exit is not an error.
-    private bool _expectExit;
-    // Guards _closing, the one closing of the process, which later requests check.
-    private readonly Lock _closeLock = new();
     private Task? _closing;
 
-    /// <summary>Starts trnrund with <paramref name="args"/> without a console window; does not wait for it.</summary>
-    /// <param name="trnrundPath">trnrund executable.</param>
-    /// <param name="args">Unquoted command-line arguments.</param>
-    /// <param name="requestTimeout">How long a request waits for its reply by default.</param>
-    /// <param name="closeWait">How long <see cref="Close"/> lets trnrund exit before killing it.</param>
-    /// <exception cref="FileNotFoundException">The executable does not exist.</exception>
+    /// <summary>Starts trnrund without a console window or waiting for it; throws <see cref="FileNotFoundException"/> if missing.</summary>
     internal DaemonProcess(string trnrundPath, IEnumerable<string> args, TimeSpan requestTimeout, TimeSpan? closeWait = null)
     {
         _requestTimeout = requestTimeout;
@@ -108,10 +91,6 @@ internal sealed class DaemonProcess : IDisposable, IAsyncDisposable
     /// <summary>trnrund's exit code once <see cref="Close"/> has reaped it, else <see langword="null"/>.</summary>
     internal int? ExitCode { get; private set; }
 
-    // -----------------------------------------------------------------
-    // Reading stdout
-    // -----------------------------------------------------------------
-
     /// <summary>Dispatches every stdout line until it ends, records the exit, then wakes every waiter.</summary>
     private void Read()
     {
@@ -128,7 +107,7 @@ internal sealed class DaemonProcess : IDisposable, IAsyncDisposable
         }
         finally
         {
-            // Null if trnrund closed stdout without exiting; stderr is read only once it exited.
+            // stderr is read only once trnrund exited.
             int? exitCode = null;
             string diagnostics = "";
             try
@@ -196,28 +175,12 @@ internal sealed class DaemonProcess : IDisposable, IAsyncDisposable
         signal.TrySetResult();
     }
 
-    // -----------------------------------------------------------------
-    // Requests and notifications
-    // -----------------------------------------------------------------
-
-    /// <summary>Sends one request and returns its reply, blocking; see <see cref="RequestAsync"/>.</summary>
+    /// <summary>Blocking version of <see cref="RequestAsync"/>.</summary>
     internal JsonElement Request(string cmd, Action<Utf8JsonWriter>? writeFields = null, TimeSpan? timeout = null) =>
         RequestAsync(cmd, writeFields, timeout, CancellationToken.None).GetAwaiter().GetResult();
 
-    /// <summary>Sends one request and returns its reply.</summary>
-    /// <remarks>
-    /// A request that timed out or was cancelled is abandoned, though trnrund may still carry it
-    /// out; its late reply is skipped.
-    /// </remarks>
-    /// <param name="cmd">The request's <c>cmd</c>.</param>
-    /// <param name="writeFields">Writes the request's other fields, if any.</param>
-    /// <param name="timeout">How long to wait for the reply; by default the instance's request timeout.</param>
-    /// <param name="cancellationToken">Abandons the request.</param>
-    /// <exception cref="RequestRejectedException">trnrund rejected the request.</exception>
-    /// <exception cref="TimeoutException">No reply arrived within the timeout.</exception>
-    /// <exception cref="OperationCanceledException"><paramref name="cancellationToken"/> was cancelled.</exception>
-    /// <exception cref="ClosedException">trnrund was closed, or exited with code 0.</exception>
-    /// <exception cref="DaemonExitedException">trnrund exited otherwise.</exception>
+    /// <summary>Sends one request and returns its reply, or throws <see cref="RequestRejectedException"/> or <see cref="TimeoutException"/>.</summary>
+    /// <remarks>A timed-out or cancelled request is abandoned, though trnrund may still carry it out; its late reply is skipped.</remarks>
     internal async Task<JsonElement> RequestAsync(
         string cmd, Action<Utf8JsonWriter>? writeFields, TimeSpan? timeout, CancellationToken cancellationToken)
     {
@@ -228,7 +191,7 @@ internal sealed class DaemonProcess : IDisposable, IAsyncDisposable
         {
             if (Volatile.Read(ref _closing) is not null)
             {
-                throw new ClosedException("trnrund is closed");
+                throw new DaemonClosedException("trnrund is closed");
             }
 
             long requestId = ++_nextId;
@@ -285,11 +248,7 @@ internal sealed class DaemonProcess : IDisposable, IAsyncDisposable
         return reply;
     }
 
-    /// <summary>Blocks until trnrund announces a revision after <paramref name="afterRevision"/>.</summary>
-    /// <returns>True for a later revision; false if <paramref name="timeout"/> passes first, <see cref="Timeout.InfiniteTimeSpan"/> waiting indefinitely.</returns>
-    /// <remarks>Everything trnrund saved is readable once it throws. Safe from any thread.</remarks>
-    /// <exception cref="ClosedException">trnrund ended with nothing newer after a clean exit or <see cref="Close"/>.</exception>
-    /// <exception cref="DaemonExitedException">trnrund ended with nothing newer otherwise.</exception>
+    /// <summary>Blocks until trnrund announces a revision after <paramref name="afterRevision"/>, false on timeout; throws once it ended with nothing newer.</summary>
     internal bool WaitForChanges(long afterRevision, TimeSpan timeout)
     {
         var elapsed = Stopwatch.StartNew();
@@ -315,8 +274,7 @@ internal sealed class DaemonProcess : IDisposable, IAsyncDisposable
         throw ExitError();
     }
 
-    /// <summary>Waits until trnrund announces a revision after <paramref name="afterRevision"/>; see <see cref="WaitForChanges"/>.</summary>
-    /// <exception cref="OperationCanceledException"><paramref name="cancellationToken"/> was cancelled.</exception>
+    /// <summary>Async version of <see cref="WaitForChanges"/>, without the timeout.</summary>
     internal async Task WaitForChangesAsync(long afterRevision, CancellationToken cancellationToken)
     {
         while (true)
@@ -343,13 +301,7 @@ internal sealed class DaemonProcess : IDisposable, IAsyncDisposable
         throw ExitError();
     }
 
-    // -----------------------------------------------------------------
-    // Exit
-    // -----------------------------------------------------------------
-
-    /// <summary>Waits for trnrund to exit by itself, as after <c>shutdown</c>, then closes it.</summary>
-    /// <returns>False, leaving it running, if <paramref name="timeout"/> passes first.</returns>
-    /// <exception cref="DaemonExitedException">It exited with an error, reported with its diagnostics.</exception>
+    /// <summary>Waits for trnrund to exit by itself, as after <c>shutdown</c>, then closes it; false, leaving it running, on timeout.</summary>
     internal bool Wait(TimeSpan timeout)
     {
         if (!_process.WaitForExit(timeout))
@@ -363,9 +315,7 @@ internal sealed class DaemonProcess : IDisposable, IAsyncDisposable
         return true;
     }
 
-    /// <summary>Waits for trnrund to exit by itself, as after <c>shutdown</c>, then closes it.</summary>
-    /// <exception cref="OperationCanceledException"><paramref name="cancellationToken"/> was cancelled; trnrund is left running.</exception>
-    /// <exception cref="DaemonExitedException">It exited with an error, reported with its diagnostics.</exception>
+    /// <summary>Async version of <see cref="Wait"/>; cancelling leaves trnrund running.</summary>
     internal async Task WaitAsync(CancellationToken cancellationToken)
     {
         await _process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
@@ -374,7 +324,7 @@ internal sealed class DaemonProcess : IDisposable, IAsyncDisposable
         ThrowIfFailed(code);
     }
 
-    /// <summary>Throws the failure of a closed trnrund that exited with <paramref name="code"/>, if any.</summary>
+    /// <summary>Throws <see cref="DaemonExitedException"/>, with stderr, unless <paramref name="code"/> is 0.</summary>
     private void ThrowIfFailed(int code)
     {
         if (code != 0)
@@ -389,23 +339,14 @@ internal sealed class DaemonProcess : IDisposable, IAsyncDisposable
         }
     }
 
-    /// <summary>Closes stdin, which interrupts unfinished runs, and waits for trnrund to exit; see <see cref="CloseAsync"/>.</summary>
+    /// <summary>Blocking version of <see cref="CloseAsync"/>.</summary>
     internal void Close() => CloseAsync().GetAwaiter().GetResult();
 
-    /// <summary>Closes stdin, which interrupts unfinished runs, and waits for trnrund to exit.</summary>
-    /// <remarks>
-    /// A trnrund still running after the close wait is killed, and trnrund's own job object kills
-    /// its runs with it, so closing never hangs. Every call waits for the same closing, so it is
-    /// safe to call again, concurrently, after <see cref="Wait"/>, or after trnrund crashed.
-    /// </remarks>
+    /// <summary>Closes stdin, interrupting unfinished runs, and waits for trnrund to exit, killing it after the close wait.</summary>
+    /// <remarks>Every call awaits the same closing, so it is safe to repeat, concurrently or after a crash.</remarks>
     internal Task CloseAsync()
     {
         lock (_changed)
-        {
-            _expectExit = true;
-        }
-
-        lock (_closeLock)
         {
             return _closing ??= Task.Run(CloseCoreAsync);
         }
@@ -420,7 +361,8 @@ internal sealed class DaemonProcess : IDisposable, IAsyncDisposable
             _stdin.BaseStream.Dispose();
             _stdin.Dispose();
         }
-        catch (Exception error) when (error is IOException or ObjectDisposedException)
+        // InvalidOperationException: a request's write is still in flight; the pipe is closed regardless.
+        catch (Exception error) when (error is IOException or ObjectDisposedException or InvalidOperationException)
         {
         }
 
@@ -465,20 +407,16 @@ internal sealed class DaemonProcess : IDisposable, IAsyncDisposable
     /// <summary>Same as <see cref="CloseAsync"/>.</summary>
     public ValueTask DisposeAsync() => new(CloseAsync());
 
-    /// <summary>Returns why trnrund no longer answers, once the reader thread recorded its end.</summary>
+    /// <summary>Returns why trnrund no longer answers.</summary>
     private TrnrunException ExitError()
     {
         lock (_changed)
         {
-            return _exitCode == 0 || _expectExit
-                ? new ClosedException("trnrund is closed")
+            return _exitCode == 0 || _closing is not null
+                ? new DaemonClosedException("trnrund is closed")
                 : new DaemonExitedException(_exitCode, _diagnostics);
         }
     }
-
-    // -----------------------------------------------------------------
-    // Helpers
-    // -----------------------------------------------------------------
 
     /// <summary>Serializes one request line: its <c>id</c> and <c>cmd</c> first, then its other fields.</summary>
     private static string Serialize(long id, string cmd, Action<Utf8JsonWriter>? writeFields)

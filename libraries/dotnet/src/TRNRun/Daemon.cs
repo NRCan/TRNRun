@@ -1,22 +1,15 @@
 using System.Globalization;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using TRNRun.Internal;
 
 namespace TRNRun;
 
-/// <summary>A running trnrund: submit runs, and wait until its database changes.</summary>
+/// <summary>A running trnrund: submit runs, and follow its database as it changes.</summary>
 /// <remarks>
-/// <para>
-/// Start one with <see cref="Start"/> or <see cref="StartAsync"/>. trnrund saves every run and
-/// log to SQLite; read it with <see cref="OpenDatabase"/> and
-/// <see cref="TrnrunDatabase.ReadChanges"/> or plain SQL.
-/// </para>
-/// <para>
-/// Every member is thread-safe, and each one that waits for trnrund has an asynchronous
-/// version taking a <see cref="CancellationToken"/>. Disposing the daemon interrupts unfinished
-/// runs; afterwards its members throw <see cref="ObjectDisposedException"/>.
-/// </para>
+/// Every member is thread-safe. Once trnrund has shut down, requests throw <see cref="DaemonClosedException"/>;
+/// once it crashed, <see cref="DaemonExitedException"/>; once disposed, <see cref="ObjectDisposedException"/>.
 /// </remarks>
 public sealed class Daemon : IDisposable, IAsyncDisposable
 {
@@ -25,7 +18,6 @@ public sealed class Daemon : IDisposable, IAsyncDisposable
     private volatile bool _disposed;
 
     /// <summary>Wraps a started trnrund from its <c>ready</c> reply.</summary>
-    /// <exception cref="TrnrunException">The reply lacks a field.</exception>
     private Daemon(DaemonProcess process, DirectoryInfo? temporary, JsonElement ready)
     {
         _process = process;
@@ -41,21 +33,15 @@ public sealed class Daemon : IDisposable, IAsyncDisposable
     /// <summary>This daemon's session, recorded on every run it adds.</summary>
     public long SessionId { get; }
 
-    /// <summary>The latest revision and log ID when the daemon started; read after it to see only its changes.</summary>
+    /// <summary>Where the database stood when the daemon started; read after it to see only its changes.</summary>
     public ChangePosition StartPosition { get; }
 
     /// <summary>trnrund's process ID.</summary>
     internal int ProcessId => _process.ProcessId;
 
-    // -----------------------------------------------------------------
-    // Starting
-    // -----------------------------------------------------------------
-
-    /// <summary>Starts trnrund and waits until it is ready.</summary>
-    /// <param name="options">How to start it; by default with a temporary database and the bundled executables.</param>
+    /// <summary>Starts trnrund and waits until it is ready; by default with a temporary database and the bundled executables.</summary>
     /// <exception cref="FileNotFoundException">trnrund does not exist.</exception>
     /// <exception cref="DaemonExitedException">trnrund failed to start, with its message.</exception>
-    /// <exception cref="TimeoutException">trnrund did not answer within <see cref="DaemonOptions.RequestTimeout"/>.</exception>
     public static Daemon Start(DaemonOptions? options = null)
     {
         (DaemonProcess process, DirectoryInfo? temporary) = Launch(options ?? new DaemonOptions());
@@ -71,12 +57,7 @@ public sealed class Daemon : IDisposable, IAsyncDisposable
         }
     }
 
-    /// <summary>Starts trnrund and waits until it is ready, without blocking.</summary>
-    /// <param name="options">How to start it; by default with a temporary database and the bundled executables.</param>
-    /// <param name="cancellationToken">Stops waiting, closes trnrund, and throws <see cref="OperationCanceledException"/>.</param>
-    /// <exception cref="FileNotFoundException">trnrund does not exist.</exception>
-    /// <exception cref="DaemonExitedException">trnrund failed to start, with its message.</exception>
-    /// <exception cref="TimeoutException">trnrund did not answer within <see cref="DaemonOptions.RequestTimeout"/>.</exception>
+    /// <summary>Async version of <see cref="Start"/>; cancelling closes trnrund.</summary>
     public static async Task<Daemon> StartAsync(DaemonOptions? options = null, CancellationToken cancellationToken = default)
     {
         (DaemonProcess process, DirectoryInfo? temporary) = Launch(options ?? new DaemonOptions());
@@ -93,7 +74,7 @@ public sealed class Daemon : IDisposable, IAsyncDisposable
         }
     }
 
-    /// <summary>Starts the trnrund process for <paramref name="options"/>, with a temporary database directory if it names none.</summary>
+    /// <summary>Starts the trnrund process, with a temporary database directory if the options name none.</summary>
     private static (DaemonProcess Process, DirectoryInfo? Temporary) Launch(DaemonOptions options)
     {
         DirectoryInfo? temporary = null;
@@ -120,44 +101,22 @@ public sealed class Daemon : IDisposable, IAsyncDisposable
         }
     }
 
-    // -----------------------------------------------------------------
-    // Requests
-    // -----------------------------------------------------------------
-
-    /// <summary>Submits a deck and returns its run ID once saved, not finished.</summary>
-    /// <param name="deckFile">Deck to run; a relative one resolves from the current working directory, not the daemon's.</param>
-    /// <param name="trnrunArgs">Raw TRNRun options, such as <c>--watchTmp:true</c>.</param>
-    /// <param name="label">Optional tag saved with the run.</param>
+    /// <summary>Submits a deck, relative to the current directory, with raw TRNRun options; returns its run ID once saved, not finished.</summary>
     /// <exception cref="RequestRejectedException">trnrund refused the run, with its reason.</exception>
-    /// <exception cref="ClosedException">The daemon was shut down.</exception>
-    /// <exception cref="DaemonExitedException">trnrund exited.</exception>
-    /// <exception cref="ObjectDisposedException">The daemon was disposed.</exception>
     public long Add(string deckFile, IEnumerable<string>? trnrunArgs = null, string? label = null)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         return ReplyInt64(_process.Request("add", AddFields(deckFile, trnrunArgs, label)), "runId");
     }
 
-    /// <summary>Submits a deck with typed settings and returns its run ID once saved, not finished.</summary>
-    /// <param name="deckFile">Deck to run; a relative one resolves from the current working directory.</param>
-    /// <param name="settings">TRNRun options; see <see cref="SimulationSettings.ToCliArgs"/>.</param>
-    /// <param name="label">Optional tag saved with the run.</param>
-    /// <exception cref="FileNotFoundException">A set <see cref="SimulationSettings.TrnexePath"/> does not exist.</exception>
-    /// <exception cref="RequestRejectedException">trnrund refused the run, with its reason.</exception>
-    /// <exception cref="ClosedException">The daemon was shut down.</exception>
-    /// <exception cref="DaemonExitedException">trnrund exited.</exception>
-    /// <exception cref="ObjectDisposedException">The daemon was disposed.</exception>
+    /// <summary>Same as <see cref="Add(string, IEnumerable{string}?, string?)"/>, with typed settings.</summary>
     public long Add(string deckFile, SimulationSettings settings, string? label = null)
     {
         ArgumentNullException.ThrowIfNull(settings);
         return Add(deckFile, settings.ToCliArgs(), label);
     }
 
-    /// <summary>Submits a deck and returns its run ID once saved, without blocking; see <see cref="Add(string, IEnumerable{string}?, string?)"/>.</summary>
-    /// <param name="deckFile">Deck to run; a relative one resolves from the current working directory, not the daemon's.</param>
-    /// <param name="trnrunArgs">Raw TRNRun options, such as <c>--watchTmp:true</c>.</param>
-    /// <param name="label">Optional tag saved with the run.</param>
-    /// <param name="cancellationToken">Stops waiting for the reply; trnrund may still add the run.</param>
+    /// <summary>Async version of <see cref="Add(string, IEnumerable{string}?, string?)"/>; once cancelled, trnrund may still add the run.</summary>
     public async Task<long> AddAsync(
         string deckFile, IEnumerable<string>? trnrunArgs = null, string? label = null, CancellationToken cancellationToken = default)
     {
@@ -167,11 +126,7 @@ public sealed class Daemon : IDisposable, IAsyncDisposable
         return ReplyInt64(reply, "runId");
     }
 
-    /// <summary>Submits a deck with typed settings and returns its run ID once saved, without blocking; see <see cref="Add(string, SimulationSettings, string?)"/>.</summary>
-    /// <param name="deckFile">Deck to run; a relative one resolves from the current working directory.</param>
-    /// <param name="settings">TRNRun options; see <see cref="SimulationSettings.ToCliArgs"/>.</param>
-    /// <param name="label">Optional tag saved with the run.</param>
-    /// <param name="cancellationToken">Stops waiting for the reply; trnrund may still add the run.</param>
+    /// <summary>Async version of <see cref="Add(string, SimulationSettings, string?)"/>; once cancelled, trnrund may still add the run.</summary>
     public Task<long> AddAsync(
         string deckFile, SimulationSettings settings, string? label = null, CancellationToken cancellationToken = default)
     {
@@ -179,21 +134,15 @@ public sealed class Daemon : IDisposable, IAsyncDisposable
         return AddAsync(deckFile, settings.ToCliArgs(), label, cancellationToken);
     }
 
-    /// <summary>Stops a queued or running run, leaving a finished one unchanged.</summary>
-    /// <remarks>A queued run is finished and <c>CANCELLED</c> on return; a running one becomes so once its TRNRun is killed.</remarks>
+    /// <summary>Stops a queued run at once, or a running one once its TRNRun is killed; a finished one is left unchanged.</summary>
     /// <exception cref="RequestRejectedException">The run ID is unknown.</exception>
-    /// <exception cref="ClosedException">The daemon was shut down.</exception>
-    /// <exception cref="DaemonExitedException">trnrund exited.</exception>
-    /// <exception cref="ObjectDisposedException">The daemon was disposed.</exception>
     public void Cancel(long runId)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         _ = _process.Request("cancel", writer => writer.WriteNumber("runId", runId));
     }
 
-    /// <summary>Stops a queued or running run without blocking; see <see cref="Cancel"/>.</summary>
-    /// <param name="runId">Run to stop.</param>
-    /// <param name="cancellationToken">Stops waiting for the reply; trnrund may still cancel the run.</param>
+    /// <summary>Async version of <see cref="Cancel"/>; once cancelled, trnrund may still cancel the run.</summary>
     public async Task CancelAsync(long runId, CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -201,17 +150,10 @@ public sealed class Daemon : IDisposable, IAsyncDisposable
             .ConfigureAwait(false);
     }
 
-    /// <summary>Cancels queued runs, waits for running ones to finish, and waits for trnrund to exit.</summary>
-    /// <param name="cancelRunning">Cancel running runs too.</param>
-    /// <exception cref="DaemonExitedException">trnrund exited with an error.</exception>
-    /// <exception cref="ObjectDisposedException">The daemon was disposed.</exception>
+    /// <summary>Cancels queued runs, and running ones too with <paramref name="cancelRunning"/>, then waits for the rest and for trnrund to exit.</summary>
     public void Shutdown(bool cancelRunning = false) => Shutdown(Timeout.InfiniteTimeSpan, cancelRunning);
 
-    /// <summary>Cancels queued runs, waits up to <paramref name="timeout"/> for running ones, and waits for trnrund to exit.</summary>
-    /// <param name="timeout">Runs still running after this long are interrupted as by <see cref="Dispose"/>.</param>
-    /// <param name="cancelRunning">Cancel running runs too.</param>
-    /// <exception cref="DaemonExitedException">trnrund exited with an error.</exception>
-    /// <exception cref="ObjectDisposedException">The daemon was disposed.</exception>
+    /// <summary>Same as <see cref="Shutdown(bool)"/>, interrupting runs still running after <paramref name="timeout"/> as <see cref="Dispose"/> does.</summary>
     public void Shutdown(TimeSpan timeout, bool cancelRunning = false)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -222,14 +164,7 @@ public sealed class Daemon : IDisposable, IAsyncDisposable
         }
     }
 
-    /// <summary>Cancels queued runs, waits for running ones to finish, and waits for trnrund to exit, without blocking.</summary>
-    /// <param name="cancelRunning">Cancel running runs too.</param>
-    /// <param name="cancellationToken">
-    /// Stops waiting: trnrund is closed as by <see cref="Dispose"/>, interrupting running runs, and
-    /// <see cref="OperationCanceledException"/> is thrown.
-    /// </param>
-    /// <exception cref="DaemonExitedException">trnrund exited with an error.</exception>
-    /// <exception cref="ObjectDisposedException">The daemon was disposed.</exception>
+    /// <summary>Async version of <see cref="Shutdown(bool)"/>; cancelling interrupts running runs as <see cref="Dispose"/> does.</summary>
     public async Task ShutdownAsync(bool cancelRunning = false, CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -245,59 +180,92 @@ public sealed class Daemon : IDisposable, IAsyncDisposable
         }
     }
 
-    // -----------------------------------------------------------------
-    // Following changes
-    // -----------------------------------------------------------------
-
     /// <summary>Opens the daemon's database read-only; see <see cref="TrnrunDatabase.Open"/>.</summary>
-    /// <exception cref="ObjectDisposedException">The daemon was disposed.</exception>
     public SqliteConnection OpenDatabase()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         return TrnrunDatabase.Open(DatabasePath);
     }
 
-    /// <summary>Blocks until trnrund saves a revision after <paramref name="afterRevision"/>.</summary>
-    /// <remarks>
-    /// Returns at once if one was already announced, so a change saved while you were reading is
-    /// never missed. Everything trnrund saved is readable once it throws.
-    /// </remarks>
-    /// <exception cref="ClosedException">trnrund has exited with nothing newer, after a shutdown.</exception>
-    /// <exception cref="DaemonExitedException">trnrund has exited with nothing newer, after a crash.</exception>
-    /// <exception cref="ObjectDisposedException">The daemon was disposed.</exception>
+    /// <summary>Blocks until trnrund saves a revision after <paramref name="afterRevision"/>, at once if it already has; throws only once trnrund ended with nothing newer.</summary>
     public void WaitForChanges(long afterRevision) => WaitForChanges(afterRevision, Timeout.InfiniteTimeSpan);
 
-    /// <summary>Blocks until trnrund saves a revision after <paramref name="afterRevision"/>, or <paramref name="timeout"/> passes.</summary>
-    /// <returns>True once it has; false if <paramref name="timeout"/> passes first. <see cref="TimeSpan.Zero"/> never blocks.</returns>
-    /// <remarks>See <see cref="WaitForChanges(long)"/>.</remarks>
-    /// <exception cref="ClosedException">trnrund has exited with nothing newer, after a shutdown.</exception>
-    /// <exception cref="DaemonExitedException">trnrund has exited with nothing newer, after a crash.</exception>
-    /// <exception cref="ObjectDisposedException">The daemon was disposed.</exception>
+    /// <summary>Same as <see cref="WaitForChanges(long)"/>, returning false if <paramref name="timeout"/> passes first.</summary>
     public bool WaitForChanges(long afterRevision, TimeSpan timeout)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         return _process.WaitForChanges(afterRevision, timeout);
     }
 
-    /// <summary>Waits until trnrund saves a revision after <paramref name="afterRevision"/>, without blocking.</summary>
-    /// <remarks>See <see cref="WaitForChanges(long)"/>.</remarks>
-    /// <param name="afterRevision">The latest revision already read.</param>
-    /// <param name="cancellationToken">Stops waiting and throws <see cref="OperationCanceledException"/>.</param>
-    /// <exception cref="ClosedException">trnrund has exited with nothing newer, after a shutdown or disposal.</exception>
-    /// <exception cref="DaemonExitedException">trnrund has exited with nothing newer, after a crash.</exception>
-    /// <exception cref="ObjectDisposedException">The daemon was disposed before the call.</exception>
+    /// <summary>Async version of <see cref="WaitForChanges(long)"/>.</summary>
     public Task WaitForChangesAsync(long afterRevision, CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         return _process.WaitForChangesAsync(afterRevision, cancellationToken);
     }
 
-    // -----------------------------------------------------------------
-    // Closing
-    // -----------------------------------------------------------------
+    /// <summary>Yields each change saved after <paramref name="after"/>, read through <paramref name="connection"/>, until trnrund closes.</summary>
+    public IEnumerable<Changes> Follow(SqliteConnection connection, ChangePosition after)
+    {
+        while (true)
+        {
+            try
+            {
+                WaitForChanges(after.Revision);
+            }
+            catch (DaemonClosedException)
+            {
+                yield break;
+            }
 
-    /// <summary>Interrupts unfinished runs, stops trnrund, and deletes a temporary database; safe to call again.</summary>
-    /// <remarks>trnrund is killed, with its runs, if it has not exited 10 seconds after its stdin closes.</remarks>
+            Changes changes = connection.ReadChanges(after);
+            after = changes.Next;
+            yield return changes;
+        }
+    }
+
+    /// <summary>Async version of <see cref="Follow(SqliteConnection, ChangePosition)"/>.</summary>
+    public async IAsyncEnumerable<Changes> FollowAsync(
+        SqliteConnection connection, ChangePosition after, [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        while (true)
+        {
+            try
+            {
+                await WaitForChangesAsync(after.Revision, cancellationToken).ConfigureAwait(false);
+            }
+            catch (DaemonClosedException)
+            {
+                yield break;
+            }
+
+            Changes changes = connection.ReadChanges(after);
+            after = changes.Next;
+            yield return changes;
+        }
+    }
+
+    /// <summary>Yields this daemon's changes from <see cref="StartPosition"/>, through a connection of its own that closes when the loop ends.</summary>
+    public IEnumerable<Changes> Follow()
+    {
+        using SqliteConnection connection = OpenDatabase();
+        foreach (Changes changes in Follow(connection, StartPosition))
+        {
+            yield return changes;
+        }
+    }
+
+    /// <summary>Async version of <see cref="Follow()"/>.</summary>
+    public async IAsyncEnumerable<Changes> FollowAsync([EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        using SqliteConnection connection = OpenDatabase();
+        await foreach (Changes changes in FollowAsync(connection, StartPosition, cancellationToken).ConfigureAwait(false))
+        {
+            yield return changes;
+        }
+    }
+
+    /// <summary>Interrupts unfinished runs, stops trnrund (killing it after 10 s), and deletes a temporary database; safe to repeat.</summary>
     public void Dispose()
     {
         _disposed = true;
@@ -305,17 +273,13 @@ public sealed class Daemon : IDisposable, IAsyncDisposable
         DeleteTemporary(_temporary);
     }
 
-    /// <summary>Interrupts unfinished runs, stops trnrund, and deletes a temporary database, without blocking; see <see cref="Dispose"/>.</summary>
+    /// <summary>Async version of <see cref="Dispose"/>.</summary>
     public async ValueTask DisposeAsync()
     {
         _disposed = true;
         await _process.CloseAsync().ConfigureAwait(false);
         DeleteTemporary(_temporary);
     }
-
-    // -----------------------------------------------------------------
-    // Helpers
-    // -----------------------------------------------------------------
 
     /// <summary>Writes an <c>add</c> request's fields, with the deck made absolute now.</summary>
     private static Action<Utf8JsonWriter> AddFields(string deckFile, IEnumerable<string>? trnrunArgs, string? label)
@@ -343,15 +307,13 @@ public sealed class Daemon : IDisposable, IAsyncDisposable
     private static Action<Utf8JsonWriter> ShutdownFields(bool cancelRunning) =>
         writer => writer.WriteBoolean("cancelRunning", cancelRunning);
 
-    /// <summary>Returns a reply's text field.</summary>
-    /// <exception cref="TrnrunException">trnrund sent something else.</exception>
+    /// <summary>Returns a reply's text field, or throws <see cref="TrnrunException"/>.</summary>
     internal static string ReplyString(JsonElement reply, string key) =>
         reply.TryGetProperty(key, out JsonElement value) && value.ValueKind == JsonValueKind.String
             ? value.GetString()!
             : throw new TrnrunException($"trnrund reply has no string '{key}': {reply.GetRawText()}");
 
-    /// <summary>Returns a reply's integer field.</summary>
-    /// <exception cref="TrnrunException">trnrund sent something else.</exception>
+    /// <summary>Returns a reply's integer field, or throws <see cref="TrnrunException"/>.</summary>
     internal static long ReplyInt64(JsonElement reply, string key) =>
         DaemonProcess.TryGetInt64(reply, key, out long value)
             ? value
