@@ -488,5 +488,5 @@ They expect
   runs batches of simulations through a bounded pool of runners and merges
   their events into a single stream.
 - [TRNRun Daemon](https://github.com/NRCan/TRNRun/tree/main/components/trnrund):
-  runs simulations on behalf of a client application and records progress,
-  results, and logs in a SQLite database.
+  runs simulations on behalf of a client application and answers for their
+  progress, results, and logs over stdin and stdout.

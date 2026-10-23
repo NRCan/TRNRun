@@ -1,76 +1,60 @@
-"""Start trnrund, submit runs to it, and know when its database changed."""
+"""Start trnrund, submit runs to it, and ask for their state."""
 
-import sqlite3
+# pyright: reportAny=false, reportExplicitAny=false
+
 from collections.abc import Sequence
 from pathlib import Path
-from tempfile import TemporaryDirectory
 from types import TracebackType
-from typing import Self, cast
+from typing import Any, Literal, Self, cast
 
 from trnrun.core._process import DaemonProcess
-from trnrun.core.database import connect
+from trnrun.core.errors import ProtocolVersionError
+from trnrun.core.records import SimulationInfo, SimulationState, parse_run
 from trnrun.core.settings import SimulationSettings
 
 DEFAULT_TRNRUN = Path(__file__).parents[1] / "bin" / "trnrun.exe"
 DEFAULT_TRNRUND = Path(__file__).parents[1] / "bin" / "trnrund.exe"
-DEFAULT_REQUEST_TIMEOUT = 60.0
+PROTOCOL_VERSION = 2
+
+type StateName = SimulationState | Literal["QUEUED", "RUNNING", "FINISHED"]
 
 
 class Daemon:
-    """A running trnrund: submit runs, and wait until its database changes.
+    """A running trnrund: submit runs and ask for their state, on the caller's thread.
 
-    trnrund saves every run and log to SQLite; read it with ``connect()`` and
-    ``read_changes`` or plain SQL. Every method is thread-safe.
-
-    Attributes
-    ----------
-    database_path : Path
-        The database trnrund opened.
-    session_id : int
-        This daemon's session, recorded on every run it adds.
-    start_revision, start_log_id : int
-        Positions when the daemon started; read from them to see only its changes.
+    trnrund keeps every run and its logs in memory until ``release()``, and
+    ``get()`` reads one with all its logs; poll it to follow a run. Each
+    method sends one request and returns its reply; nothing runs in the
+    background. Every method is thread-safe: requests take turns, so an
+    ``add()`` that waits for its run holds the others back.
     """
 
     def __init__(
         self,
-        database_path: str | Path | None = None,
         *,
         max_concurrent: int | None = None,
         trnrund_path: str | Path = DEFAULT_TRNRUND,
         trnrun_path: str | Path = DEFAULT_TRNRUN,
-        request_timeout: float = DEFAULT_REQUEST_TIMEOUT,
     ) -> None:
-        """Start trnrund and wait until it is ready.
+        """Start trnrund and check that it speaks this package's protocol.
 
-        Without ``database_path`` the runs go to a temporary database that
-        ``close()`` deletes; an existing database keeps its runs, and new ones
-        continue their numbering. ``max_concurrent`` defaults to the CPU count
-        minus one. Raises DaemonExitedError if trnrund fails to start, and
-        TimeoutError for any request unanswered within ``request_timeout`` seconds.
+        ``max_concurrent`` defaults to the CPU count minus one. Raises
+        DaemonExitedError if trnrund fails to start, and ProtocolVersionError
+        if it speaks another protocol version.
         """
-        self._temporary: TemporaryDirectory[str] | None = None
-        if database_path is None:
-            self._temporary = TemporaryDirectory(prefix="trnrun-", ignore_cleanup_errors=True)
-            database_path = Path(self._temporary.name) / "runs.sqlite3"
-        args = [f"--trnrun:{Path(trnrun_path).absolute()}", f"--database:{Path(database_path).absolute()}"]
+        args = [f"--trnrun:{Path(trnrun_path).absolute()}"]
         if max_concurrent is not None:
             args.append(f"--maxConcurrent:{max_concurrent}")
-        process: DaemonProcess | None = None
+        process = DaemonProcess(trnrund_path, args)
         try:
-            process = DaemonProcess(trnrund_path, args, request_timeout=request_timeout)
-            ready = process.request({"cmd": "ready"})
+            version = process.request({"cmd": "ready"}).get("protocolVersion")
         except BaseException:
-            if process is not None:
-                process.close()
-            if self._temporary is not None:
-                self._temporary.cleanup()
+            process.close()
             raise
+        if version != PROTOCOL_VERSION:
+            process.close()
+            raise ProtocolVersionError(f"trnrund speaks protocol {version}; this package needs {PROTOCOL_VERSION}")
         self._process: DaemonProcess = process
-        self.database_path: Path = Path(cast("str", ready["databasePath"]))
-        self.session_id: int = cast("int", ready["sessionId"])
-        self.start_revision: int = cast("int", ready["revision"])
-        self.start_log_id: int = cast("int", ready["logId"])
 
     def add(
         self,
@@ -78,46 +62,51 @@ class Daemon:
         trnrun_args: Sequence[str] | SimulationSettings = (),
         *,
         label: str | None = None,
-    ) -> int:
-        """Submit a deck and return its run ID once saved, not finished; raise RequestRejectedError if refused."""
+        wait_for: StateName = SimulationState.QUEUED,
+    ) -> SimulationInfo:
+        """Submit a deck and return its run once it reaches ``wait_for`` or a later state.
+
+        The default ``QUEUED`` returns at once; ``RUNNING`` and ``FINISHED``
+        block this thread until the run gets there, and the returned run is
+        then its outcome. Raises ValueError for an unknown ``wait_for``, and
+        RequestRejectedError if trnrund refuses the run.
+        """
         args = trnrun_args.to_cli_args() if isinstance(trnrun_args, SimulationSettings) else list(trnrun_args)
-        request: dict[str, object] = {"cmd": "add", "deckFile": str(Path(deck_file).absolute()), "trnrunArgs": args}
+        request: dict[str, object] = {
+            "cmd": "add",
+            "deckFile": str(Path(deck_file).absolute()),
+            "trnrunArgs": args,
+            "waitFor": SimulationState(wait_for).value,
+        }
         if label is not None:
             request["label"] = label
-        return cast("int", self._process.request(request)["runId"])
+        return parse_run(cast("dict[str, Any]", self._process.request(request)["run"]))
+
+    def get(self, run_id: int) -> SimulationInfo:
+        """Return one run with all its logs; raise RequestRejectedError for an unknown or released run ID."""
+        return parse_run(cast("dict[str, Any]", self._process.request({"cmd": "get", "runId": run_id})["run"]))
+
+    def release(self, run_id: int) -> None:
+        """Delete a finished run and its logs from trnrund; an unknown or released ID is skipped.
+
+        Raises RequestRejectedError if the run has not finished.
+        """
+        _ = self._process.request({"cmd": "release", "runId": run_id})
 
     def cancel(self, run_id: int) -> None:
         """Stop a queued or running run, leaving a finished one unchanged; raise RequestRejectedError for an unknown ID."""
         _ = self._process.request({"cmd": "cancel", "runId": run_id})
 
-    def shutdown(self, *, cancel_running: bool = False, timeout: float | None = None) -> None:
-        """Cancel queued runs, let running ones finish, and wait for trnrund to exit.
+    def shutdown(self, *, cancel_running: bool = False) -> None:
+        """Cancel queued runs and refuse new ones; ``cancel_running`` also kills running ones.
 
-        ``cancel_running`` cancels running runs too; any still running after
-        ``timeout`` seconds are interrupted as by ``close()``. Raises
-        DaemonExitedError if trnrund exits with an error.
+        trnrund keeps answering, so the last results can still be read, until ``close()``.
         """
         _ = self._process.request({"cmd": "shutdown", "cancelRunning": cancel_running})
-        if not self._process.wait(timeout):
-            self._process.close()
-
-    def connect(self) -> sqlite3.Connection:
-        """Open the daemon's database read-only; see ``trnrun.core.database.connect``."""
-        return connect(self.database_path)
-
-    def wait_for_changes(self, after_revision: int, timeout: float | None = None) -> bool:
-        """Block until trnrund saves a revision after ``after_revision``; return False on timeout.
-
-        Once trnrund has exited with nothing newer, raises ClosedError after
-        ``shutdown()`` or ``close()``, and DaemonExitedError after a crash.
-        """
-        return self._process.wait_for_changes(after_revision, timeout)
 
     def close(self) -> None:
-        """Interrupt unfinished runs, stop trnrund, and delete a temporary database; safe to call again."""
+        """Stop trnrund, killing unfinished runs and dropping every run it held; safe to call again."""
         self._process.close()
-        if self._temporary is not None:
-            self._temporary.cleanup()
 
     def __enter__(self) -> Self:
         """Return this daemon for use in a with block."""

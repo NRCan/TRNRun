@@ -16,14 +16,13 @@ Options:
   -v, --version      Show version and exit
   --trnrun:PATH      TRNRun executable (default: trnrun.exe beside trnrund)
   --maxConcurrent:N  Simulations run at once (default: max(CPUs - 1, 1))
-  --database:PATH    SQLite database clients read (default: trnrund.sqlite3)
 
 Read one JSON request per stdin line and write one JSON reply per stdout line,
-in request order, among {"event":"changed","revision":N} notifications:
-  {"id":1,"cmd":"add","deckFile":"model.dck"}  ->  {"id":1,"ok":true,"runId":7}
-Commands: ready, add, cancel, shutdown. ready reports the database holding
-every run's state and logs. Closing stdin exits at once, saving unfinished runs
-as interrupted. See README.md for the protocol and the database layout.
+and nothing else:
+  {"id":1,"cmd":"add","deckFile":"model.dck"}  ->  {"id":1,"ok":true,"runId":7,...}
+Commands: ready, add, get, release, cancel, shutdown. Runs and their logs
+stay in memory until released. Closing stdin exits at once, killing running
+TRNRun. See README.md for the protocol.
 
 Exit codes: 0 ok  1 fatal  2 usage error"""
 
@@ -32,7 +31,6 @@ type
     ## Settings for a serving daemon; see `HelpText` for each option.
     trnrunPath*: string
     maxConcurrent*: int ## Not checked here; `newScheduler` rejects values below 1.
-    databasePath*: string
 
   CliAction* = enum
     caServe ## Serve a client with the parsed input.
@@ -49,7 +47,6 @@ proc defaultCliInput*(): CliInput =
   CliInput(
     trnrunPath: getAppDir() / "trnrun.exe",
     maxConcurrent: max(countProcessors() - 1, 1),
-    databasePath: "trnrund.sqlite3",
   )
 
 proc applyOption*(input: var CliInput, key, value: string): bool =
@@ -59,14 +56,11 @@ proc applyOption*(input: var CliInput, key, value: string): bool =
   of "trnrun":
     input.trnrunPath = value
   of "maxConcurrent":
-    try:
-      input.maxConcurrent = parseInt(value)
-    except ValueError as error:
-      raise newException(InputError, error.msg)
-  of "database":
-    if value.len == 0:
-      raise newException(InputError, "'database' must not be empty")
-    input.databasePath = value
+    input.maxConcurrent =
+      try:
+        parseInt(value)
+      except ValueError as error:
+        raise newException(InputError, error.msg)
   else:
     result = false
 

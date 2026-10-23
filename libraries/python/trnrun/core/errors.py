@@ -39,9 +39,9 @@ class ClosedError(TrnrunError, RuntimeError):
     """The daemon or manager was already closed."""
 
 
-class SyncError(TrnrunError, RuntimeError):
-    """A ``SimulationManager`` stopped syncing its runs for a reason other than trnrund exiting; the cause is chained."""
+class ProtocolError(TrnrunError, RuntimeError):
+    """trnrund wrote something other than the reply to the request, such as a malformed line."""
 
 
-class SchemaVersionError(TrnrunError, ValueError):
-    """The database has a schema version this package does not read."""
+class ProtocolVersionError(TrnrunError, ValueError):
+    """trnrund speaks a protocol version this package does not."""

@@ -3,13 +3,12 @@ import std/strutils
 # Package
 version = "0.8.0"
 author = "Alex Lachance"
-description = "Daemon that runs TRNRun simulations and persists state in SQLite"
+description = "Daemon that runs TRNRun simulations and answers for their state over stdin and stdout"
 license = "MIT"
 srcDir = "src"
 
 # Dependencies
 requires "nim >= 2.2.12"
-requires "db_connector == 0.1.0"
 
 # Build configuration
 const

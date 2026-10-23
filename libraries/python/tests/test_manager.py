@@ -3,18 +3,15 @@
 The daemon is real; TRNRun is Python running decks from ``helpers.write_deck``.
 """
 
-import sqlite3
+import threading
 import time
 from collections.abc import Callable, Iterator, Sequence
-from contextlib import closing
 from pathlib import Path
 
 import pytest
 
-from tests.helpers import FAILED_EVENTS, PYTHON, release, requires_trnrund, write_deck
-from trnrun import manager as manager_module
-from trnrun.core.database import connect, parse_run
-from trnrun.core.errors import ClosedError, DaemonExitedError, RequestRejectedError, SyncError
+from tests.helpers import DONE_EVENTS, FAILED_EVENTS, PYTHON, release, requires_trnrund, write_deck
+from trnrun.core.errors import ClosedError, DaemonExitedError, RequestRejectedError
 from trnrun.core.records import SimulationState, SimulationStatus
 from trnrun.core.settings import SimulationSettings
 from trnrun.manager import SimulationManager
@@ -56,13 +53,13 @@ def start() -> Iterator[StartManager]:
     """Return a function starting a manager on the fake TRNRun; every one started is shut down afterwards."""
     started: list[SimulationManager] = []
 
-    def start(database_path: str | Path | None = None, **kwargs: object) -> SimulationManager:
-        """Start a manager, by default without a display, syncing every 10 ms."""
+    def start(**kwargs: object) -> SimulationManager:
+        """Start a manager, by default without a display, refreshing every 10 ms."""
         kwargs.setdefault("trnrun_path", PYTHON)
         kwargs.setdefault("max_concurrent", 2)
         kwargs.setdefault("refresh_interval", 0.01)
         kwargs.setdefault("display", False)
-        manager = SimulationManager(database_path, **kwargs)  # ty: ignore[invalid-argument-type]  # pyright: ignore[reportArgumentType]
+        manager = SimulationManager(**kwargs)  # ty: ignore[invalid-argument-type]  # pyright: ignore[reportArgumentType]
         started.append(manager)
         return manager
 
@@ -71,12 +68,13 @@ def start() -> Iterator[StartManager]:
         manager.shutdown()
 
 
-def wait_for_state(simulation: Simulation, state: SimulationState) -> None:
-    """Block until the handle reaches ``state``."""
+def refresh_until(manager: SimulationManager, simulation: Simulation, state: SimulationState) -> None:
+    """Refresh until the handle reaches ``state``."""
     deadline = time.monotonic() + TIMEOUT
     while simulation.state is not state:
         if time.monotonic() > deadline:
             raise AssertionError(f"{simulation!r} did not reach {state} within {TIMEOUT} s")
+        manager.refresh()
         time.sleep(0.01)
 
 
@@ -100,30 +98,15 @@ def test_startup_failure_closes_the_display(tmp_path: Path) -> None:
 
 
 @requires_trnrund
-def test_temporary_database_is_deleted_on_shutdown(start: StartManager) -> None:
-    """Keep the runs in a temporary database, deleted by shutdown."""
+def test_no_thread_is_started(start: StartManager, tmp_path: Path) -> None:
+    """Sync only on the caller's thread."""
+    before = threading.active_count()
+
     manager = start()
-    path = manager.database_path
+    _ = manager.add(write_deck(tmp_path / "done.dck"))
+    manager.wait(timeout=TIMEOUT)
 
-    assert path.is_file()
-    assert manager.session_id == 1
-    manager.shutdown()
-
-    assert not path.parent.exists()
-
-
-@requires_trnrund
-def test_given_database_outlives_the_manager(start: StartManager, tmp_path: Path) -> None:
-    """Keep a given database, with the manager's runs, after shutdown."""
-    path = tmp_path / "runs.sqlite3"
-    with start(path) as manager:
-        simulation = manager.add(write_deck(tmp_path / "model.dck"))
-        manager.wait(timeout=TIMEOUT)
-
-    with closing(connect(path)) as connection:
-        row = connection.execute("SELECT * FROM runs WHERE run_id = ?", (simulation.run_id,)).fetchone()
-
-    assert parse_run(row).succeeded is True
+    assert threading.active_count() == before
 
 
 # -----------------------------------------------------------------
@@ -142,7 +125,6 @@ def test_added_runs_are_synced_until_finished(start: StartManager, tmp_path: Pat
     assert done.succeeded is True
     assert done.status is SimulationStatus.DONE
     assert done.info.label == "baseline"
-    assert done.info.session_id == manager.session_id
     assert (done.notices, done.warnings, done.fatals) == (1, 1, 1)
     assert [log.message for log in done.logs] == ["first", "second", "third"]
     assert failed.is_finished
@@ -151,6 +133,44 @@ def test_added_runs_are_synced_until_finished(start: StartManager, tmp_path: Pat
     assert failed.info.status_message == "Fake failure"
     assert failed.info.exit_code == 1
     assert manager.active == []
+
+
+@requires_trnrund
+def test_finished_runs_are_released_once_their_logs_are_in(
+    start: StartManager,
+    tmp_path: Path,
+) -> None:
+    """Collect every log entry once, then release the finished runs from the daemon."""
+    many: list[dict[str, object]] = [
+        {"kind": "LOG", "severity": "Notice", "time": index, "message": str(index)} for index in range(7)
+    ]
+    manager = start()
+    first = manager.add(write_deck(tmp_path / "first.dck", [*many, *DONE_EVENTS]))
+    second = manager.add(write_deck(tmp_path / "second.dck", [*many, *DONE_EVENTS]))
+
+    manager.wait(timeout=TIMEOUT)
+
+    for simulation in (first, second):
+        assert [log.message for log in simulation.logs] == [*map(str, range(7)), "first", "second", "third"]
+        with pytest.raises(RequestRejectedError, match="Unknown runId"):
+            _ = manager._daemon.get(simulation.run_id)
+
+
+@requires_trnrund
+def test_refresh_updates_the_handles(start: StartManager, tmp_path: Path) -> None:
+    """Change a handle only when refreshed."""
+    manager = start(max_concurrent=1)
+    gate = write_deck(tmp_path / "gate.dck", gated=True)
+    first = manager.add(gate)
+    second = manager.add(write_deck(tmp_path / "done.dck"))
+
+    refresh_until(manager, first, SimulationState.RUNNING)
+    release(gate)
+    time.sleep(0.5)
+
+    assert second.state is SimulationState.QUEUED  # Not refreshed since.
+    manager.wait(timeout=TIMEOUT)
+    assert (first.succeeded, second.succeeded) == (True, True)
 
 
 @requires_trnrund
@@ -189,7 +209,7 @@ def test_active_lists_unfinished_runs_in_submission_order(start: StartManager, t
     gate = write_deck(tmp_path / "gate.dck", gated=True)
     first = manager.add(gate)
     second = manager.add(write_deck(tmp_path / "done.dck"))
-    wait_for_state(first, SimulationState.RUNNING)
+    refresh_until(manager, first, SimulationState.RUNNING)
 
     assert manager.active == [first, second]
     assert second.state is SimulationState.QUEUED
@@ -277,7 +297,7 @@ def test_add_rejects_invalid_runs(start: StartManager, tmp_path: Path) -> None:
 # Display
 # -----------------------------------------------------------------
 @requires_trnrund
-def test_display_gets_every_change_and_is_closed(start: StartManager, tmp_path: Path) -> None:
+def test_display_gets_every_change_before_wait_returns_and_is_closed(start: StartManager, tmp_path: Path) -> None:
     """Show changed runs in submission order, including their final state, then close the display."""
     display = RecordingDisplay()
     manager = start(display=display)
@@ -314,9 +334,8 @@ def test_display_failure_never_stops_syncing(start: StartManager, tmp_path: Path
 def test_cancel_queued_and_running_simulations(start: StartManager, tmp_path: Path) -> None:
     """Finish both as CANCELLED, keeping whether they started."""
     manager = start(max_concurrent=1)
-    running = manager.add(write_deck(tmp_path / "gate.dck", gated=True))
+    running = manager.add(write_deck(tmp_path / "gate.dck", gated=True), wait_for="RUNNING")
     queued = manager.add(write_deck(tmp_path / "done.dck"))
-    wait_for_state(running, SimulationState.RUNNING)
 
     manager.cancel(queued)
     manager.wait(queued, timeout=TIMEOUT)
@@ -359,36 +378,33 @@ def test_foreign_simulation_is_rejected(start: StartManager, tmp_path: Path) -> 
 # Shutting down and failures
 # -----------------------------------------------------------------
 @requires_trnrund
-def test_after_shutdown(start: StartManager, tmp_path: Path) -> None:
-    """Keep finished handles, refuse new work, and raise for unfinished runs."""
-    manager = start()
-    done = manager.add(write_deck(tmp_path / "done.dck"))
-    manager.wait(done, timeout=TIMEOUT)
-    gate = manager.add(write_deck(tmp_path / "gate.dck", gated=True))
-    wait_for_state(gate, SimulationState.RUNNING)
+def test_shutdown_collects_the_last_results(start: StartManager, tmp_path: Path) -> None:
+    """Finish unfinished handles as CANCELLED, keep finished ones, and refuse new work."""
+    manager = start(max_concurrent=1)
+    done = manager.add(write_deck(tmp_path / "done.dck"), wait_for="FINISHED")
+    gate = manager.add(write_deck(tmp_path / "gate.dck", gated=True), wait_for="RUNNING")
+    queued = manager.add(write_deck(tmp_path / "queued.dck"))
 
     manager.shutdown()
     manager.shutdown()  # Later calls do nothing.
 
-    manager.wait(done)  # Already finished: returns at once.
     assert done.succeeded
-    assert gate.state is SimulationState.RUNNING  # Handles keep their last state.
-    with pytest.raises(ClosedError, match="SimulationManager is closed"):
-        manager.wait(gate)
+    assert (gate.status, gate.error) == (SimulationStatus.CANCELLED, "Interrupted: the daemon shut down")
+    assert (queued.status, queued.error) == (SimulationStatus.CANCELLED, "Not started: the daemon shut down")
+    manager.wait()  # Every run finished: returns at once.
     with pytest.raises(ClosedError, match="SimulationManager is closed"):
         _ = manager.add(tmp_path / "done.dck")
     with pytest.raises(ClosedError, match="SimulationManager is closed"):
-        manager.cancel(gate)
+        manager.refresh()
     with pytest.raises(ClosedError, match="SimulationManager is closed"), manager:
         pass
 
 
 @requires_trnrund
-def test_daemon_crash_stops_syncing(start: StartManager, tmp_path: Path) -> None:
-    """Raise the daemon's exit for unfinished runs and later calls instead of hanging."""
+def test_daemon_crash_is_raised_instead_of_hanging(start: StartManager, tmp_path: Path) -> None:
+    """Raise the daemon's exit for unfinished runs and later calls."""
     manager = start()
-    simulation = manager.add(write_deck(tmp_path / "gate.dck", gated=True))
-    wait_for_state(simulation, SimulationState.RUNNING)
+    simulation = manager.add(write_deck(tmp_path / "gate.dck", gated=True), wait_for="RUNNING")
 
     manager._daemon._process._popen.kill()
     with pytest.raises(DaemonExitedError, match="trnrund exited with code 1") as raised:
@@ -397,33 +413,15 @@ def test_daemon_crash_stops_syncing(start: StartManager, tmp_path: Path) -> None
 
     with pytest.raises(DaemonExitedError, match="code 1"):
         _ = manager.add(tmp_path / "gate.dck")
+    assert simulation.state is SimulationState.RUNNING  # Handles keep their last state.
+    manager.shutdown()  # Still releases everything.
 
 
 @requires_trnrund
-def test_database_failure_stops_syncing(
-    start: StartManager,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Raise SyncError, chaining the cause, when reading the database fails."""
-
-    def broken(*_args: object) -> None:
-        """Fail like an unreadable database."""
-        raise sqlite3.OperationalError("disk I/O error")
-
-    monkeypatch.setattr(manager_module, "read_changes", broken)
+def test_shutdown_returns_promptly(start: StartManager, tmp_path: Path) -> None:
+    """Kill running runs rather than wait for them."""
     manager = start()
-    _ = manager.add(write_deck(tmp_path / "done.dck"))
-
-    with pytest.raises(SyncError, match="stopped syncing: disk I/O error") as raised:
-        manager.wait(timeout=TIMEOUT)
-    assert isinstance(raised.value.__cause__, sqlite3.OperationalError)
-
-
-@requires_trnrund
-def test_shutdown_returns_promptly(start: StartManager) -> None:
-    """Stop the background thread quickly, even though it now stops before the daemon."""
-    manager = start()
+    _ = manager.add(write_deck(tmp_path / "gate.dck", gated=True), wait_for="RUNNING")
 
     started = time.monotonic()
     manager.shutdown()

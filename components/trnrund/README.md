@@ -3,8 +3,10 @@
 `trnrund.exe` is a Windows daemon that runs TRNSYS simulations through
 [TRNRun Runner](https://github.com/NRCan/TRNRun/tree/main/components/trnrun)
 on behalf of one client application. It reads requests as JSON Lines from
-stdin, runs them on a bounded pool of `trnrun.exe` processes, and records
-their progress, results, and logs in a SQLite database.
+stdin, runs them on a bounded pool of `trnrun.exe` processes, keeps their
+progress, results, and logs in memory, and answers for them on stdout. The
+JSON protocol below is the whole interface: a client sends requests and reads
+their replies, nothing else.
 
 ## Table of Contents
 
@@ -13,8 +15,8 @@ their progress, results, and logs in a SQLite database.
 - [Quick start](#quick-start)
 - [Settings](#settings)
 - [Request protocol](#request-protocol)
-- [Notifications](#notifications)
-- [Reading the database](#reading-the-database)
+- [Runs and logs](#runs-and-logs)
+- [Following runs](#following-runs)
 - [Shutdown and failures](#shutdown-and-failures)
 - [Exit codes](#exit-codes)
 - [Examples](#examples)
@@ -56,21 +58,21 @@ to the repository root.
 
 ## Quick start
 
-Start the daemon with a runner, a concurrency limit, and a database:
+Start the daemon with a runner and a concurrency limit:
 
 ```powershell
-trnrund --trnrun:"C:\bin\trnrun.exe" `
-    --maxConcurrent:2 `
-    --database:"C:\runs\runs.sqlite3"
+trnrund --trnrun:"C:\bin\trnrun.exe" --maxConcurrent:2
 ```
 
 Then write one request per line to its stdin:
 
 ```json
 {"id":1,"cmd":"ready"}
-{"id":2,"cmd":"add","deckFile":"C:\\models\\building-a.dck","trnrunArgs":["--watchTmp:true"]}
+{"id":2,"cmd":"add","deckFile":"C:\\models\\building-a.dck","trnrunArgs":["--watchTmp:true"],"waitFor":"FINISHED"}
 {"id":3,"cmd":"shutdown"}
 ```
+
+Close stdin to make the daemon exit.
 
 For option and version information:
 
@@ -81,8 +83,8 @@ trnrund --version
 
 ## Settings
 
-Options accept either `--name:value` or `--name=value`. Relative TRNRun, deck,
-and database paths resolve from the daemon's working directory.
+Options accept either `--name:value` or `--name=value`. Relative TRNRun and
+deck paths resolve from the daemon's working directory.
 
 - _`--trnrun`_ (`path`, default: `trnrun.exe` beside `trnrund.exe`)
 
@@ -93,61 +95,62 @@ and database paths resolve from the daemon's working directory.
   Maximum number of simulations running at once. The value must be at least
   `1`.
 
-- _`--database`_ (`path`, default: `trnrund.sqlite3`)
-
-  SQLite database the daemon writes and clients read. The database's directory
-  must exist.
-
 ## Request protocol
 
 The client writes one JSON request per line to stdin. The daemon writes one
-reply per request to stdout, in the same order. stdout also carries
-[notifications](#notifications); replies have an `ok` field, notifications
-have an `event` field. Startup and fatal errors go to stderr.
+reply per request to stdout, and nothing else. Replies come in request order,
+except for an [`add`](#add) that waits for its run: its reply comes once its
+run gets there, and later replies are not held behind it. stderr gets one
+line only, before a fatal exit. The protocol version is `2`, reported by
+[`ready`](#ready).
 
 A request may include an `id` (any JSON value). The reply echoes it as its
-first field, so a client that stopped waiting can still match a late reply to
-its request.
+first field, so a client can match each reply to its request. Only an `add`
+with `waitFor` waits on a simulation; every other request replies at once.
 
-Each command below shows a request line and its reply line.
+Runs and their logs live in memory: they are lost when the daemon exits, and
+run IDs start at 1 on each start. `runId` only grows within one daemon and is
+never reused.
 
-The `cmd` field picks the command:
+Each command below shows a request line and its reply line, with the run and
+log objects shortened. The `cmd` field picks the command:
 
-- [`ready`](#ready): get the database to read.
+- [`ready`](#ready): get the protocol version.
 - [`add`](#add): queue a simulation.
+- [`get`](#get): read one run with all its logs.
+- [`release`](#release): delete a finished run the client has saved.
 - [`cancel`](#cancel): stop one run.
-- [`shutdown`](#shutdown): stop the daemon.
+- [`shutdown`](#shutdown): stop new work.
 
 ### `ready`
 
-Reports the database to read and how far its history goes, so a client knows
-where to start reading.
+Reports the protocol and daemon versions and the concurrency limit, so a
+client can check that it speaks the same protocol.
 
 ```jsonc
 // stdin
 {"id":1,"cmd":"ready"}
 // stdout
-{"id":1,"ok":true,"databasePath":"C:\\runs\\runs.sqlite3","sessionId":3,"revision":120,"logId":45}
+{"id":1,"ok":true,"protocolVersion":2,"version":"0.9.0","maxConcurrent":4}
 ```
 
 - **stdin**: no fields besides `cmd`.
 - **stdout**:
-  - `databasePath`: absolute path of the database to read.
-  - `sessionId`: the session this daemon records on its runs.
-  - `revision`, `logId`: the largest saved so far; a client that only wants
-    later changes starts reading after them (see [Polling](#polling)).
+  - `protocolVersion`: changes whenever a command, field, or object changes
+    what clients read.
+  - `version`: the daemon's version.
+  - `maxConcurrent`: most simulations running at once.
 
 ### `add`
 
-Saves a simulation as `QUEUED`, starts it at once if a slot is free, and
-replies with its `runId`. The reply does not mean the run has started; read
-`state` in the database.
+Queues a simulation as `QUEUED`, starts it at once if a slot is free, and
+replies with its `runId` and [run](#runs).
 
 ```jsonc
 // stdin
 {"id":2,"cmd":"add","deckFile":"model.dck","trnrunArgs":["--watchTmp:true"],"label":"case A"}
 // stdout
-{"id":2,"ok":true,"runId":7}
+{"id":2,"ok":true,"runId":7,"run":{"runId":7,"label":"case A","state":"RUNNING"}}
 ```
 
 - **stdin**:
@@ -158,11 +161,56 @@ replies with its `runId`. The reply does not mean the run has started; read
     refuse one, so a typo fails at once instead of when the run starts. The
     daemon passes the deck and `runId` itself, so `trnrunArgs` cannot hold a
     deck path, `--deckFile`, `--runId`, `--help`, or `--version`.
-  - `label` (optional): a text tag saved with the run, for the client's own
+  - `label` (optional): a text tag kept with the run, for the client's own
     use. It does not need to be unique.
+  - `waitFor` (optional, default `QUEUED`): when to reply. `QUEUED` replies at
+    once, `RUNNING` once the run starts, and `FINISHED` once it finishes. A
+    later state also counts, so a run cancelled or failed before it started
+    answers a `RUNNING` wait. An `add` that waits must have an `id`.
 - **stdout**:
-  - `runId`: the ID the daemon assigned, an integer never reused within a
-    database.
+  - `runId`: the ID the daemon assigned.
+  - `run`: the run as it is when the reply is sent, so a `FINISHED` wait
+    returns the outcome without a separate `get`.
+
+A waiting `add` still gets its reply after a `shutdown`, once its run
+finishes or is cancelled. When stdin closes, waiting adds get no reply.
+
+### `get`
+
+Replies with one run and all its logs.
+
+```jsonc
+// stdin
+{"id":3,"cmd":"get","runId":7}
+// stdout
+{"id":3,"ok":true,"run":{"runId":7,"state":"FINISHED","logs":[{"severity":"Notice","simTime":0}]}}
+```
+
+- **stdin**:
+  - `runId`: the run to read. An unknown or released `runId` is rejected.
+- **stdout**:
+  - `run`: the [run](#runs), with every log entry so far in `logs`.
+
+### `release`
+
+Deletes a finished run, with its logs, once the client has saved what it
+needs. The daemon keeps every run until it is released, so a long batch
+should release its runs as they finish.
+
+```jsonc
+// stdin
+{"id":5,"cmd":"release","runId":7}
+// stdout
+{"id":5,"ok":true}
+```
+
+- **stdin**:
+  - `runId`: the run to delete. It must be `FINISHED`, or the request is
+    rejected. An unknown or already released `runId` is skipped, so a client
+    can safely send the same request again.
+- **stdout**: no fields besides `ok`.
+
+A released run is unknown afterwards: `get` and `cancel` reject it.
 
 ### `cancel`
 
@@ -170,29 +218,32 @@ Stops one queued or running run.
 
 ```jsonc
 // stdin
-{"id":3,"cmd":"cancel","runId":7}
+{"id":6,"cmd":"cancel","runId":7}
 // stdout
-{"id":3,"ok":true}
+{"id":6,"ok":true}
 ```
 
 - **stdin**:
-  - `runId`: the run to stop. Only an unknown `runId` is rejected.
-- **stdout**: no fields besides `ok`, once the request is recorded.
+  - `runId`: the run to stop. Only an unknown or released `runId` is
+    rejected.
+- **stdout**: no fields besides `ok`, once the cancel is recorded.
 
 ### `shutdown`
 
-Stops accepting runs and exits the daemon once nothing runs.
+Stops accepting runs and cancels queued ones. The daemon keeps answering
+requests, so a client can collect the last results, and exits only when stdin
+closes.
 
 ```jsonc
 // stdin
-{"id":4,"cmd":"shutdown","cancelRunning":false}
+{"id":7,"cmd":"shutdown","cancelRunning":false}
 // stdout
-{"id":4,"ok":true}
+{"id":7,"ok":true}
 ```
 
 - **stdin**:
   - `cancelRunning` (optional, default `false`): kill running runs instead of
-    waiting for them.
+    letting them finish.
 - **stdout**: no fields besides `ok`, at once.
 
 ### Errors
@@ -202,215 +253,121 @@ fields, gets `ok: false` and an `error` message, with its `id` if it had one:
 
 ```jsonc
 // stdin
-{"id":5,"cmd":"cancel","runId":99}
+{"id":8,"cmd":"cancel","runId":99}
 // stdout
-{"id":5,"ok":false,"error":"Unknown runId: 99"}
+{"id":8,"ok":false,"error":"Unknown runId: 99"}
 ```
 
-A database failure is never a reply: the daemon exits rather than acknowledge
-something it could not save.
+## Runs and logs
 
-## Notifications
+### Runs
 
-After each batch of changes it saves, the daemon also writes a notification:
+A run object has these fields. A value TRNRun has not reported yet is `null`,
+as are `exitCode` until TRNRun exits and `error` when there is none.
 
-```json
-{"event":"changed","revision":131}
-```
-
-Everything up to `revision` is then readable in the database, so a client can
-wait for a notification instead of polling on a timer. A
-client that only wants replies skips every line without `ok`.
-
-## Reading the database
-
-The daemon saves every change as it happens, so clients only read; they never
-need to ask the daemon for updates, and any number of them can read at once.
-The changes from each batch the daemon handles become visible together. The
-database has three tables.
-
-### `runs` table
-
-`runs` holds one row per run:
-
-| Column | Type | Meaning |
+| Field | Type | Meaning |
 | ------ | ---- | ------- |
-| `run_id` | integer | Assigned by the daemon and returned by `add`; never reused |
-| `session_id` | integer | The daemon start that added it; see `sessions` |
-| `label` | text | The `label` it was added with, or `NULL` |
-| `revision` | integer | Grows with every save; see [Polling](#polling) |
-| `state` | text | `QUEUED`, `RUNNING`, or `FINISHED` |
-| `trnrun_status`, `trnrun_message` | text | TRNRun's latest `STATUS`; not `state`. `PENDING`, `LAUNCHING`, or `RUNNING` while it runs, then `DONE`, `CANCELLED`, `ERROR`, `TIMEOUT`, or `STALLED` |
-| `percent`, `sim_time`, `elapsed_ms`, `eta_ms` | real | TRNRun's latest `PROGRESS` |
+| `runId` | integer | Assigned by the daemon and returned by `add` |
+| `label` | string | The `label` it was added with, or `null` |
+| `state` | string | `QUEUED`, `RUNNING`, or `FINISHED` |
+| `trnrunStatus`, `trnrunMessage` | string | TRNRun's latest `STATUS`; not `state`. `PENDING`, `LAUNCHING`, or `RUNNING` while it runs, then `DONE`, `CANCELLED`, `ERROR`, `TIMEOUT`, or `STALLED` |
+| `percent`, `simTime`, `elapsedMs`, `etaMs` | number | TRNRun's latest `PROGRESS` |
 | `notices`, `warnings`, `fatals` | integer | Log entries so far, by severity |
-| `succeeded` | integer | `1` if it finished with `DONE`, exit code 0, and no error, else `0`; `NULL` until `FINISHED` |
-| `exit_code` | integer | TRNRun's exit code |
-| `error` | text | Execution error reported by the daemon |
-| `submitted_at`, `started_at`, `finished_at` | text | Timestamps, see [Timestamps](#timestamps) |
-| `deck_file` | text | Absolute deck path |
-| `trnrun_args` | text | The `trnrunArgs` it was added with, as a JSON array |
-| `start_time`, `stop_time`, `time_step` | real | TRNRun's `CONFIG`: simulated hours |
-| `setting` | text | TRNRun's latest `SETTING` event as JSON, without its `kind` and `timestamp` |
+| `succeeded` | boolean | `true` if it finished with `DONE`, exit code 0, and no error, else `false`; `null` until `FINISHED` |
+| `exitCode` | integer | TRNRun's exit code |
+| `error` | string | Execution error reported by the daemon |
+| `submittedAt`, `startedAt`, `finishedAt` | string | Timestamps, see [Timestamps](#timestamps) |
+| `deckFile` | string | Absolute deck path |
+| `trnrunArgs` | array of strings | The `trnrunArgs` it was added with |
+| `startTime`, `stopTime`, `timeStep` | number | TRNRun's `CONFIG`: simulated hours |
+| `setting` | object | TRNRun's latest `SETTING` event, without its `kind` and `timestamp` |
+| `logs` | array of objects | Every [log entry](#logs) so far, oldest first |
 
-A column TRNRun has not reported yet is `NULL`, as are `exit_code` until TRNRun
-exits and `error` when there is none. `setting` holds the options trnrund
-knows, one key per TRNRun option; its keys change only with the schema version.
+`setting` holds the options trnrund knows, one key per TRNRun option; its keys
+change only with the protocol version.
 
-### `logs` table
+### Logs
 
-`logs` holds one row per TRNRun `LOG` event:
+A log object is one TRNRun `LOG` event of its run:
 
-| Column | Type | Meaning |
+| Field | Type | Meaning |
 | ------ | ---- | ------- |
-| `log_id` | integer | Grows with every entry; see [Polling](#polling) |
-| `run_id` | integer | The run it belongs to |
-| `severity` | text | `Notice`, `Warning`, or `Fatal` |
-| `sim_time` | real | Simulated time of the entry |
-| `unit_id`, `type_id`, `message_code` | integer | TRNSYS unit, type, and message code; `NULL` if none |
-| `message`, `information` | text | TRNSYS text; `NULL` if none |
-
-### `sessions` table
-
-`sessions` holds one row per daemon start, with its `session_id` and
-`started_at`.
-
-### Schema version
-
-`PRAGMA user_version` returns the schema version, currently `3`. It changes
-whenever this layout does, so the tables, columns, and values documented here
-are the interface clients can rely on. A daemon refuses a database of another
-version, and there is no migration: point it at a new file. A client can check
-the version once after opening.
+| `severity` | string | `Notice`, `Warning`, or `Fatal` |
+| `simTime` | number | Simulated time of the entry |
+| `unitId`, `typeId`, `messageCode` | integer | TRNSYS unit, type, and message code; `null` if none |
+| `message`, `information` | string | TRNSYS text; `null` if none |
 
 ### Timestamps
 
 The timestamps are UTC ISO 8601 text with milliseconds, such as
-`2026-10-09T14:03:12.345Z`, which sort chronologically and work with SQLite
-date functions. `started_at` is `NULL` until TRNRun starts, and stays `NULL`
-for a run that never did; `finished_at` is `NULL` until the run is `FINISHED`.
-For example, run times in seconds:
-
-```sql
-SELECT run_id, ROUND((julianday(finished_at) - julianday(started_at)) * 86400, 3)
-FROM runs WHERE finished_at IS NOT NULL;
-```
-
-### Polling
-
-Every save gets the next `revision`, a counter that only grows but can skip
-numbers, so always compare with `>`. A run's logs are saved together with its
-row, and each one gives the run a new `revision`, so a new revision also
-announces new logs. To follow changes, remember the largest `revision` and
-`log_id` seen, and ask only for what came after them. Read both in one
-transaction to get a consistent view:
-
-```sql
-SELECT * FROM runs WHERE revision > ? ORDER BY revision;
-SELECT * FROM logs WHERE log_id > ? ORDER BY log_id;
-```
-
-Start from 0 to read the whole history, or from the `revision` and `logId`
-that `ready` returns to read only what this daemon changes. A client that waits
-for notifications runs these queries when one arrives.
-
-Both are indexed, so polling stays fast however many runs the database holds.
-So are `state = ?` and `state IN (...)`, which find the few running runs among
-thousands queued or finished, and `session_id = ?`; `state != ?` reads every
-run instead. For example, a progress bar for the running runs:
-
-```sql
-SELECT run_id, percent, eta_ms, notices, warnings, fatals
-FROM runs WHERE state = 'RUNNING';
-```
-
-A run's logs, in the order TRNRun reported them, are also indexed:
-
-```sql
-SELECT * FROM logs WHERE run_id = ? ORDER BY log_id;
-```
+`2026-10-09T14:03:12.345Z`, which sort chronologically as text. `startedAt` is
+`null` until TRNRun starts, and stays `null` for a run that never did;
+`finishedAt` is `null` until the run is `FINISHED`.
 
 ### Completion
 
 A run is done once `state` is `FINISHED`, after TRNRun exits. Do not use
-`trnrun_status = 'DONE'` or `percent = 1` instead: TRNRun can report them
-before it exits, and output may still follow. `FINISHED` includes failed and
+`trnrunStatus` `DONE` or `percent` `1` instead: TRNRun can report them before
+it exits, and output may still follow. `FINISHED` includes failed and
 cancelled runs; `succeeded` tells them apart, and its logs are then complete.
-A run is saved as `FINISHED` once and never changes after.
+A `FINISHED` run never changes again.
 
-### Database files
+## Following runs
 
-Open the database read-only, for example with `?mode=ro` in a SQLite URI, and
-keep read transactions short. It is in WAL mode, so keep it on a local disk
-and leave its `-wal` and `-shm` files beside it; the daemon refuses to start
-where WAL is unavailable, such as on a network share.
-
-Runs and logs stay in the database after the daemon exits, and the next daemon
-on the same file continues its run numbers, revisions, and log IDs in a new
-session, so the positions a client remembered stay valid. To start from an
-empty history, use a new database file.
-
-Only one daemon at a time can use a database: it holds a `.lock` file beside
-it, and a second daemon pointed at the same database exits with code `1`.
-Windows deletes the lock file when its daemon exits, even if it crashes.
-Readers do not need the lock.
+A client polls: it remembers the `runId` each `add` replied with, and sends
+`get` for each unfinished run every second or so. Each reply is one
+consistent view of the run and all its logs. Once a run is `FINISHED`, its
+logs are complete, so the client can save it and `release` it. The daemon's
+memory then stays flat however long the batch.
 
 ## Shutdown and failures
 
-- [`cancel`](#cancel) saves a queued run as `FINISHED` and `CANCELLED`, with
-  the error `Not started: cancelled by the client`, before its reply. A running
-  run has its TRNRun killed, and TRNRun's own Job Object then stops TrnEXE; the
-  run becomes `FINISHED` and `CANCELLED` shortly after the reply, with the
-  error `Interrupted: cancelled by the client`, a `NULL` exit code, and its
-  slot freed for the next queued run. A finished run is left unchanged, so a
-  run that finishes just before its cancel keeps its real outcome. If TRNRun
-  reported a terminal status, such as `DONE`, just before it was killed, that
-  status is kept, but `succeeded` is still false.
-- [`shutdown`](#shutdown) saves queued runs as `FINISHED` and `CANCELLED`,
-  with the error `Not started: the daemon shut down`. Running runs are waited
-  for, or with `cancelRunning` killed and saved with the error
-  `Interrupted: the daemon shut down`. While it waits, the daemon still answers
-  every request: `cancel` works, `shutdown` can be sent again with
-  `cancelRunning`, and `add` is rejected. It ends with stdout closing and exit
-  code `0`.
-- Closing stdin exits immediately, also during a `shutdown`, without waiting
-  for running simulations. Before exiting, the daemon kills them and saves
-  every unfinished run as `FINISHED` and `CANCELLED`, with the error
-  `Not started: the client disconnected` or `Interrupted: the client
-  disconnected`. The same happens if stdout can no longer be written.
-- stdout ends only after the daemon's final changes are saved, so a client
-  that reads end of file there can read the database for the outcome. However
-  the daemon exits, a client still reading stdout gets everything left to
-  write; one that is not reading holds the exit up for at most a second. TRNRun
-  children do not inherit the daemon's stdin, stdout, or stderr.
+- [`cancel`](#cancel) finishes a queued run as `FINISHED` and `CANCELLED`,
+  with the error `Not started: cancelled by the client`, before its reply. A
+  running run has its TRNRun killed, and TRNRun's own Job Object then stops
+  TrnEXE; the run becomes `FINISHED` and `CANCELLED` shortly after the reply,
+  with the error `Interrupted: cancelled by the client`, a `null` exit code,
+  and its slot freed for the next queued run. A finished run is left
+  unchanged, so a run that finishes just before its cancel keeps its real
+  outcome. If TRNRun reported a terminal status, such as `DONE`, just before
+  it was killed, that status is kept, but `succeeded` is still false.
+- [`shutdown`](#shutdown) finishes queued runs as `FINISHED` and `CANCELLED`,
+  with the error `Not started: the daemon shut down`. Running runs finish, or
+  with `cancelRunning` are killed with the error
+  `Interrupted: the daemon shut down`. The daemon keeps answering every
+  request: `get`, `release`, and `cancel` work, `shutdown` can be sent
+  again with `cancelRunning`, and `add` is rejected.
+- The daemon exits only when stdin closes, also during a `shutdown`, without
+  waiting for running simulations: it kills them, and their state is lost
+  with every other run's. The same happens if stdout can no longer be
+  written. A client that wants the final results collects them before it
+  closes stdin.
+- However the daemon exits, a client still reading stdout gets every reply
+  left to write; one that is not reading holds the exit up for at most a
+  second. TRNRun children do not inherit the daemon's stdin, stdout, or
+  stderr.
 - A kill-on-close Windows Job Object terminates remaining TRNRun descendants
-  when the daemon exits.
-- If the daemon dies without saving, for example when it is killed, the next
-  daemon to open the database finishes its unfinished runs the same way, with
-  the reason `its daemon stopped unexpectedly`, and never runs them. Until
-  then, those runs keep their last saved state.
+  when the daemon exits, even if it crashes.
 - A run whose TRNRun cannot be started finishes at once, from `QUEUED`, with
   the launch error and a daemon `ERROR` status.
-- A database failure is fatal: the daemon exits rather than acknowledge a run
-  it could not save.
 
 ## Exit codes
 
 | Exit code | Meaning |
 | --- | --- |
-| `0` | Normal exit after `shutdown` or closed stdin. Help and version also return `0`. Individual runs may still have failed. |
-| `1` | Fatal failure, such as a database error or a database locked by another daemon. |
+| `0` | Normal exit after stdin closed. Help and version also return `0`. Individual runs may still have failed. |
+| `1` | Fatal failure: an unexpected fault in the daemon. |
 | `2` | Invalid option or startup validation error. |
 
 Run outcomes do not become the daemon's exit code. Read `succeeded` and
-`exit_code` in the `runs` table instead.
+`exitCode` in each run instead.
 
 ## Examples
 
 PowerShell examples are available in
 [`examples`](https://github.com/NRCan/TRNRun/tree/main/components/trnrund/examples).
 They expect `build/trnrund.exe` and `../trnrun/build/trnrun.exe` to exist, and
-poll the database through Python's standard `sqlite3` module, so they need
-`python` on `PATH`. Real simulations need TRNSYS.
+poll each run with `get`. Real simulations need TRNSYS.
 
 - [`example_concurrent.ps1`](https://github.com/NRCan/TRNRun/blob/main/components/trnrund/examples/example_concurrent.ps1)
   submits the full batch immediately.
@@ -419,7 +376,7 @@ poll the database through Python's standard `sqlite3` module, so they need
 - [`example_percent.ps1`](https://github.com/NRCan/TRNRun/blob/main/components/trnrund/examples/example_percent.ps1)
   does the same and also prints progress.
 
-The scripts name runs with `label` and skip notifications.
+The scripts name runs with `label` and release them once finished.
 
 [`tests/manual_daemon.nim`](https://github.com/NRCan/TRNRun/blob/main/components/trnrund/tests/manual_daemon.nim)
 runs 20 copies of a deck through real TRNSYS; adjust its configuration for your

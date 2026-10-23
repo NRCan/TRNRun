@@ -1,4 +1,4 @@
-import std/[atomics, json, locks, monotimes, os, strutils, times, unittest]
+import std/[atomics, locks, monotimes, os, strutils, times, unittest]
 
 import ../src/[messages, writer]
 import ./fake_client
@@ -32,10 +32,6 @@ proc waitForCalls(count: int) =
     doAssert getMonoTime() < deadline, "the writer never wrote"
     sleep(1)
 
-proc changed(revision: int): string =
-  ## The notification line announcing `revision`.
-  $(%*{"event": "changed", "revision": revision})
-
 proc runTests() =
   ## Runs the writer tests.
   initLock(outputLock)
@@ -52,38 +48,38 @@ proc runTests() =
       while inbox.tryRecv().dataAvailable:
         discard
 
-    test "send returns while a write blocks; replies stay in order before one notification":
+    test "send returns while a write blocks; replies stay in order, and nothing else is written":
       gateOpen.store(false)
       var output = Writer()
-      output.start(record, addr inbox, 5)
-      output.send(@["a"], 5) # The client already knows revision 5.
+      output.start(record, addr inbox)
+      output.send(@["a"])
       waitForCalls(1)
-      output.send(@["b"], 6)
-      output.send(@[], 8)
-      output.send(@["c"], 7)
+      output.send(@["b"])
+      output.send(@[])
+      output.send(@["c", "d"])
       gateOpen.store(true)
       output.stop(5_000)
-      check writes() == @[@["a"], @["b", "c", changed(8)]]
+      check writes() == @[@["a"], @["b", "c", "d"]]
       check inbox.peek() == 0
       output.stop(5_000) # A no-op once stopped.
 
     test "a failed write posts mkClosed once and drops later sends":
       accepting.store(false)
       var output = Writer()
-      output.start(record, addr inbox, 0)
-      output.send(@["a"], 1)
+      output.start(record, addr inbox)
+      output.send(@["a"])
       check inbox.recv().kind == mkClosed
-      output.send(@["b"], 2)
+      output.send(@["b"])
       output.stop(5_000)
-      check writes() == @[@["a", changed(1)]]
+      check writes() == @[@["a"]]
       check inbox.peek() == 0
 
     test "stop cancels a write blocked on a client that does not read, after the grace period":
       openUnreadPipe()
       defer: closeUnreadPipe()
       var output = Writer()
-      output.start(writeUnread, addr inbox, 0)
-      output.send(@[repeat('x', 65_536)], 1)
+      output.start(writeUnread, addr inbox)
+      output.send(@[repeat('x', 65_536)])
       let started = getMonoTime()
       output.stop(100)
       let elapsed = getMonoTime() - started
@@ -92,7 +88,7 @@ proc runTests() =
 
     test "stop returns at once from an idle writer":
       var output = Writer()
-      output.start(record, addr inbox, 0)
+      output.start(record, addr inbox)
       let started = getMonoTime()
       output.stop(5_000)
       check getMonoTime() - started < initDuration(seconds = 1)

@@ -1,15 +1,12 @@
 ## Starts the trnrund daemon, which runs TRNSYS simulations for one client.
 ##
 ## The client exchanges one JSON object per line over stdin and stdout, see
-## `protocol`, and reads the state and logs of every run from the SQLite
-## database, see `database`. When the client closes stdin, the daemon saves its
-## unfinished runs as interrupted and exits at once, and the Job Object kills
-## any TRNRun process still going.
+## `protocol`, and asks for the state and logs of its runs, which the daemon
+## keeps in memory, see `store`. When the client closes stdin, the daemon exits
+## at once, and the Job Object kills any TRNRun process still going.
 
 import std/[os, winlean]
-import ./[cli, job, messages, scheduler, server, threadstart]
-
-const NimblePkgVersion {.strdefine.} = "unknown"
+import ./[cli, job, messages, protocol, scheduler, server, threadstart]
 
 var
   daemonScheduler: Scheduler
@@ -28,7 +25,7 @@ proc readRequests(inbox: ptr Channel[Message]) {.thread.} =
   inbox[].send(Message(kind: mkClosed))
 
 proc writeLines(lines: seq[string]): bool {.nimcall, gcsafe, raises: [].} =
-  ## Writes reply and notification lines to the client; false once it is gone.
+  ## Writes reply lines to the client; false once it is gone.
   # `WriteFile` bypasses the C runtime's buffer, so a write cancelled at exit
   # leaves nothing for the exit to flush and block on.
   var
@@ -49,7 +46,7 @@ proc keepStdHandlesPrivate() =
       discard setHandleInformation(handle, HANDLE_FLAG_INHERIT, 0)
 
 proc main() =
-  ## Parses the command line, then serves the client until it leaves or shuts down.
+  ## Parses the command line, then serves the client until it leaves.
   let command = parseCommandLine(commandLineParams())
   case command.action
   of caHelp:
@@ -60,7 +57,7 @@ proc main() =
     let input = command.input
     keepStdHandlesPrivate()
     initJobGuard()
-    daemonScheduler = newScheduler(input.trnrunPath, input.maxConcurrent, input.databasePath)
+    daemonScheduler = newScheduler(input.trnrunPath, input.maxConcurrent)
     reader.startThread(readRequests, daemonScheduler.requestInbox)
     daemonScheduler.serve(writeLines)
 

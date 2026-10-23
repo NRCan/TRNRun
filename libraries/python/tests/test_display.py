@@ -49,7 +49,6 @@ def _simulation(
             warnings=2,
             fatals=3,
         ),
-        [],
     )
     return simulation
 
@@ -175,7 +174,7 @@ def test_finished_runs_are_printed_once(display: ProgressDisplay, output: String
     """Print each finished run once, as a final line that stays."""
     simulation = _simulation(1, SimulationState.RUNNING, SimulationStatus.RUNNING, percent=0.5)
     display.update([simulation])
-    simulation._apply(_simulation(1, SimulationState.FINISHED, SimulationStatus.DONE).info, [])
+    simulation._apply(_simulation(1, SimulationState.FINISHED, SimulationStatus.DONE).info)
 
     display.update([simulation])
     display.update([])
@@ -198,7 +197,7 @@ def test_live_lines_are_the_running_runs_in_start_order(display: ProgressDisplay
 
     assert list(display._rows) == [3, 2]
 
-    third._apply(SimulationInfo(3, SimulationState.FINISHED, deck_file=DECK), [])
+    third._apply(SimulationInfo(3, SimulationState.FINISHED, deck_file=DECK))
     display.update([third])
 
     assert list(display._rows) == [2]
@@ -213,7 +212,7 @@ def test_live_region_stops_when_empty(display: ProgressDisplay) -> None:
     display.update([simulation])
     assert terminal._live is not None
 
-    simulation._apply(SimulationInfo(1, SimulationState.FINISHED, deck_file=DECK), [])
+    simulation._apply(SimulationInfo(1, SimulationState.FINISHED, deck_file=DECK))
     display.update([simulation])
     assert terminal._live is None
 
@@ -281,7 +280,7 @@ def test_notebook_publishes_changed_frames_only(
 
     notebook.update([simulation])
     notebook.update([simulation])
-    simulation._apply(_simulation(1, SimulationState.RUNNING, percent=0.5).info, [])
+    simulation._apply(_simulation(1, SimulationState.RUNNING, percent=0.5).info)
     notebook.update([simulation])
 
     assert [kind for kind, _ in published] == ["display", "update"]

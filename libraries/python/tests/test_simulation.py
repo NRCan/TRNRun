@@ -10,9 +10,9 @@ from trnrun.simulation import Simulation
 DECK = Path(r"C:\decks\model.dck")
 
 
-def _log(log_id: int, severity: LogSeverity = LogSeverity.NOTICE) -> LogEvent:
-    """Return a log entry of run 1."""
-    return LogEvent(log_id=log_id, run_id=1, severity=severity, time=float(log_id))
+def _log(time: float, severity: LogSeverity = LogSeverity.NOTICE) -> LogEvent:
+    """Return a log entry at simulation ``time``."""
+    return LogEvent(severity=severity, time=time)
 
 
 def test_new_handle_is_queued_and_empty() -> None:
@@ -37,13 +37,13 @@ def test_new_handle_is_queued_and_empty() -> None:
 def test_properties_share_the_names_of_info_fields() -> None:
     """Keep one vocabulary: every shortcut is the ``SimulationInfo`` field of the same name."""
     info_fields = {info_field.name for info_field in fields(SimulationInfo)} | {"is_finished"}
-    shortcuts = {name for name, value in vars(Simulation).items() if isinstance(value, property)} - {"info", "logs"}
+    shortcuts = {name for name, value in vars(Simulation).items() if isinstance(value, property)} - {"info"}
 
     assert shortcuts <= info_fields
 
 
-def test_apply_replaces_info_and_appends_logs() -> None:
-    """Replace the whole snapshot, and accumulate every log entry."""
+def test_apply_replaces_info_and_its_logs() -> None:
+    """Replace the whole snapshot, logs included."""
     simulation = Simulation(1, DECK, SimulationSettings())
     running = SimulationInfo(
         1,
@@ -53,17 +53,17 @@ def test_apply_replaces_info_and_appends_logs() -> None:
         progress=ProgressEvent(time=5.0, percent=0.5, elapsed_ms=100.0, eta_ms=100.0),
         notices=1,
         warnings=1,
+        logs=[_log(1), _log(2, LogSeverity.WARNING)],
     )
 
-    simulation._apply(running, [_log(1), _log(2, LogSeverity.WARNING)])
-    simulation._apply(None, [_log(3)])
+    simulation._apply(running)
 
     assert simulation.info is running
     assert simulation.state is SimulationState.RUNNING
     assert simulation.status is SimulationStatus.RUNNING
     assert simulation.progress == running.progress
     assert (simulation.notices, simulation.warnings) == (1, 1)
-    assert [log.log_id for log in simulation.logs] == [1, 2, 3]
+    assert [log.time for log in simulation.logs] == [1, 2]
 
 
 def test_finished_handle_reports_its_outcome() -> None:
@@ -81,7 +81,6 @@ def test_finished_handle_reports_its_outcome() -> None:
             succeeded=False,
             error="Cannot read TRNRun output",
         ),
-        [],
     )
 
     assert simulation.is_finished
@@ -95,7 +94,7 @@ def test_finished_handle_reports_its_outcome() -> None:
 def test_logs_returns_a_copy() -> None:
     """Keep the history safe from callers changing the returned list."""
     simulation = Simulation(1, DECK, SimulationSettings())
-    simulation._apply(None, [_log(1)])
+    simulation._apply(SimulationInfo(1, SimulationState.RUNNING, DECK, logs=[_log(1)]))
 
     simulation.logs.clear()
 
@@ -116,7 +115,6 @@ def test_repr_summarizes_the_run() -> None:
             status=SimulationStatus.RUNNING,
             progress=ProgressEvent(time=4.2, percent=0.42, elapsed_ms=1.0, eta_ms=1.0),
         ),
-        [],
     )
 
     assert repr(simulation) == "Simulation(run_id=3, deck='model.dck', state=RUNNING, status=RUNNING, 42%)"

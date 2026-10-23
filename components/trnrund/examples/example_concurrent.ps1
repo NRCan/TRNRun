@@ -1,6 +1,4 @@
-# Requires Python 3 on PATH; sqlite3 is part of Python's standard library.
 $ErrorActionPreference = 'Stop'
-Get-Command python -ErrorAction Stop | Out-Null
 
 $RunCount = 10
 $ConcurrencyLimit = 5
@@ -11,7 +9,6 @@ $DaemonPath = Join-Path $DaemonRoot 'build\trnrund.exe'
 $RunnerPath = Join-Path $DaemonRoot '..\trnrun\build\trnrun.exe'
 $SourceDeck = Join-Path $PSScriptRoot 'dck\example_wo_plot_w_tracking.dck'
 $RunDirectory = Join-Path ([IO.Path]::GetTempPath()) "trnrund-example-$PID"
-$DatabasePath = Join-Path $RunDirectory 'runs.sqlite3'
 
 $DaemonPath, $RunnerPath, $SourceDeck | ForEach-Object {
     if (-not (Test-Path -LiteralPath $_ -PathType Leaf)) {
@@ -19,64 +16,38 @@ $DaemonPath, $RunnerPath, $SourceDeck | ForEach-Object {
     }
 }
 
-# trnrund answers each request line with one reply line, in request order.
-# Its stdout also carries change notifications, which have no "ok"; this
-# client polls the database instead, so it skips them.
+# trnrund answers each request line with exactly one reply line, in request
+# order, and writes nothing else to stdout.
 function Send-Request([hashtable] $Request) {
     $Daemon.StandardInput.WriteLine(($Request | ConvertTo-Json -Compress))
-    do {
-        $Line = $Daemon.StandardOutput.ReadLine()
-        if ($null -eq $Line) {
-            throw 'trnrund closed its output'
-        }
-        $Reply = $Line | ConvertFrom-Json
-    } while ($null -eq $Reply.ok)
+    $Line = $Daemon.StandardOutput.ReadLine()
+    if ($null -eq $Line) {
+        throw 'trnrund closed its output'
+    }
+    $Reply = $Line | ConvertFrom-Json
     if (-not $Reply.ok) {
         throw "$($Request.cmd) failed: $($Reply.error)"
     }
     $Reply
 }
 
-# Reads the runs changed since the last revision seen, with their log counts.
-# Reading never consumes anything, so any number of clients can read at once.
-$QueryCode = @'
-import json, pathlib, sqlite3, sys
-uri = pathlib.Path(sys.argv[1]).as_uri() + '?mode=ro'
-revision = int(sys.argv[2])
-db = sqlite3.connect(uri, uri=True)
-db.row_factory = sqlite3.Row
-rows = db.execute('''SELECT label, revision, state, trnrun_status, succeeded, warnings,
-    notices + warnings + fatals AS log_count
-    FROM runs WHERE revision > ? ORDER BY revision''', (revision,)).fetchall()
-db.close()
-if rows:
-    revision = rows[-1]['revision']
-print(json.dumps(dict(simulations=[dict(row) for row in rows], revision=revision)))
-'@
-$Revision = 0
+# Asks for each unfinished run's latest state, keeps the finished ones, then
+# releases them so trnrund no longer holds them in memory.
+$Pending = [Collections.Generic.List[int]]::new()
 $States = @{}
-$LogCounts = @{}
 $Finished = @{}
 function Update-Runs {
-    if ($Daemon.HasExited) {
-        throw "trnrund exited unexpectedly with code $($Daemon.ExitCode)"
-    }
-    $Json = & python -c $QueryCode $DatabasePath $script:Revision
-    if ($LASTEXITCODE -ne 0) {
-        throw 'Database query failed'
-    }
-    $Changes = $Json | ConvertFrom-Json
-    $script:Revision = $Changes.revision
-    foreach ($Simulation in $Changes.simulations) {
+    foreach ($RunId in @($Pending)) {
+        $Simulation = (Send-Request @{ cmd = 'get'; runId = $RunId }).run
         $Name = $Simulation.label
-        $LogCounts[$Name] = $Simulation.log_count
         if ($States[$Name] -ne $Simulation.state) {
             $States[$Name] = $Simulation.state
             Write-Host "${Name}: $($Simulation.state)"
         }
-        # FINISHED is saved together with the final logs.
         if ($Simulation.state -eq 'FINISHED') {
             $Finished[$Name] = $Simulation
+            Send-Request @{ cmd = 'release'; runId = $RunId } | Out-Null
+            $Pending.Remove($RunId) | Out-Null
         }
     }
 }
@@ -85,17 +56,16 @@ New-Item -ItemType Directory -Path $RunDirectory | Out-Null
 $Daemon = $null
 try {
     $StartInfo = [Diagnostics.ProcessStartInfo]::new($DaemonPath)
-    $StartInfo.Arguments = "--trnrun:`"$RunnerPath`" --maxConcurrent:$ConcurrencyLimit --database:`"$DatabasePath`""
+    $StartInfo.Arguments = "--trnrun:`"$RunnerPath`" --maxConcurrent:$ConcurrencyLimit"
     $StartInfo.UseShellExecute = $false
     $StartInfo.RedirectStandardInput = $true
     $StartInfo.RedirectStandardOutput = $true
     $Daemon = [Diagnostics.Process]::Start($StartInfo)
-    $DatabasePath = (Send-Request @{ cmd = 'ready' }).databasePath
 
     Write-Host "Running $RunCount copies with max concurrency $ConcurrencyLimit"
 
-    # add replies with the runId the daemon assigned; this example names each run
-    # by its label instead. Lifecycle states come from the database.
+    # add replies with the runId the daemon assigned; Update-Runs asks for each
+    # run by it, and names it by its label.
     # Adding every run at once lets the daemon queue the surplus and start each
     # as a worker frees; see example_waiting.ps1 to keep that queue client-side.
 
@@ -106,7 +76,7 @@ try {
         # Each run needs its own deck because TRNRun writes sidecars beside it.
         Copy-Item -LiteralPath $SourceDeck -Destination $DeckFile
 
-        Send-Request @{
+        $Pending.Add((Send-Request @{
             cmd = 'add'
             label = $Name
             deckFile = $DeckFile
@@ -114,7 +84,7 @@ try {
                 '--guiVisibility:auto'
                 '--watchTmp:true'
             )
-        } | Out-Null
+        }).runId)
     }
 
     Update-Runs
@@ -128,8 +98,9 @@ try {
         $Simulation = $Finished[$Name]
         $Verdict = if ($Simulation.succeeded) { 'PASS' } else { 'FAIL' }
         Write-Host (
-            "$Verdict - ${Name}: $($Simulation.trnrun_status), " +
-            "$($LogCounts[$Name]) logs, $($Simulation.warnings) warnings"
+            "$Verdict - ${Name}: $($Simulation.trnrunStatus), " +
+            "$($Simulation.logs.Count) logs, " +
+            "$($Simulation.warnings) warnings"
         )
         if (-not $Simulation.succeeded) {
             $FailureCount++
@@ -137,7 +108,8 @@ try {
     }
 
     Send-Request @{ cmd = 'shutdown' } | Out-Null
-    # Reading stdout to its end lets trnrund exit without waiting for the client.
+    # trnrund exits once its stdin closes; nothing else is left to read.
+    $Daemon.StandardInput.Close()
     $Daemon.StandardOutput.ReadToEnd() | Out-Null
     $Daemon.WaitForExit()
     if ($Daemon.ExitCode) {

@@ -234,5 +234,5 @@ runs.
   runs a single TRNSYS simulation and reports its lifecycle as a JSON Lines
   event stream.
 - [TRNRun Daemon](https://github.com/NRCan/TRNRun/tree/main/components/trnrund):
-  runs simulations on behalf of a client application and records progress,
-  results, and logs in a SQLite database.
+  runs simulations on behalf of a client application and answers for their
+  progress, results, and logs over stdin and stdout.

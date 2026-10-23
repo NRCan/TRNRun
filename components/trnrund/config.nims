@@ -6,13 +6,6 @@ switch("experimental", "strictDefs")
 switch("experimental", "strictFuncs")
 switch("experimental", "strictEffects")
 
-when defined(windows):
-  # db_connector 0.1.0 has no DLL-name define. Link its official bindings
-  # directly to the built-in Windows 10+ DLL (supported by GCC and Zig).
-  switch("dynlibOverride", "sqlite3")
-  switch("passL", "\"" & getEnv("SystemRoot", "C:\\Windows") &
-    "\\System32\\winsqlite3.dll\"")
-
 switch("warningAsError", "ProveInit")
 switch("warningAsError", "Deprecated")
 switch("warningAsError", "UnusedImport")

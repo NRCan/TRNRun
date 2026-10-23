@@ -5,19 +5,16 @@ runs every copy, but follows them in a window: a live table of runs, overall
 progress, the selected run's details, and a log of every TRNSYS message. Decks
 can be added and runs cancelled while the batch runs.
 
-It does not use ``SimulationManager``: the application owns its widgets, its
-timer, and its database connection. Each tick asks ``Daemon.wait_for_changes``
-without blocking whether anything was saved, and reads it with
-``read_changes``. For a GUI that would rather let a background thread keep
-handles up to date, see ``SimulationManager(display=False)`` in the README.
+It does not use ``SimulationManager``: the application owns its widgets and
+its timer. Each tick asks ``Daemon.get`` for every unfinished run, with all its
+logs, then releases the runs that finished, which it keeps itself. For a GUI that would rather keep ``Simulation`` handles, see
+``SimulationManager(display=False)`` in the README.
 """
 
 from __future__ import annotations
 
 import shutil
-import sqlite3
 import tkinter as tk
-from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
@@ -34,7 +31,6 @@ from trnrun import (
     SimulationState,
     SimulationStatus,
     TrnrunError,
-    read_changes,
 )
 
 # -----------------------------------------------------------------------------
@@ -137,11 +133,11 @@ def elapsed_ms(run: SimulationInfo) -> float | None:
     return (end - run.started_at).total_seconds() * 1000
 
 
-def format_log(log: LogEvent) -> str:
-    """Format a log entry as one line, with the unit and type that raised it when known."""
+def format_log(run_id: int, log: LogEvent) -> str:
+    """Format a log entry of run ``run_id`` as one line, with the unit and type that raised it when known."""
     source = f"Unit {log.unit_id} Type {log.type_id}: " if log.unit_id is not None else ""
     information = f" ({log.information})" if log.information else ""
-    return f"[{log.run_id:>3}] {log.time:>10,.2f} h  {log.severity:<7}  {source}{log.message or ''}{information}\n"
+    return f"[{run_id:>3}] {log.time:>10,.2f} h  {log.severity:<7}  {source}{log.message or ''}{information}\n"
 
 
 # -----------------------------------------------------------------------------
@@ -150,16 +146,12 @@ def format_log(log: LogEvent) -> str:
 class Dashboard:
     """A window following a daemon's runs: table, overall progress, details, and logs."""
 
-    def __init__(self, root: tk.Tk, daemon: Daemon, connection: sqlite3.Connection) -> None:
+    def __init__(self, root: tk.Tk, daemon: Daemon) -> None:
         """Build the widgets; call ``tick()`` once to start following the daemon."""
         self.root: tk.Tk = root
         self.daemon: Daemon = daemon
-        self.connection: sqlite3.Connection = connection
-        # Where the next read starts: only this daemon's changes.
-        self.revision: int = daemon.start_revision
-        self.log_id: int = daemon.start_log_id
         self.runs: dict[int, SimulationInfo] = {}
-        self.logs: list[LogEvent] = []
+        self.logs: list[tuple[int, LogEvent]] = []  # Every entry read, with its run ID.
         self.started_at: datetime = datetime.now(UTC)
         self.following: bool = True
 
@@ -236,12 +228,12 @@ class Dashboard:
     def add(self, deck: Path) -> None:
         """Submit a deck and show it as queued until the daemon reports on it."""
         try:
-            run_id = self.daemon.add(deck, SETTINGS, label=deck.stem)
-        except (TrnrunError, OSError) as error:  # Rejected, trnrund exited, TRNSYS missing, or no reply.
+            run = self.daemon.add(deck, SETTINGS, label=deck.stem)
+        except (TrnrunError, OSError) as error:  # Rejected, trnrund exited, or TRNSYS missing.
             _ = messagebox.showerror("TRNRun", f"{deck.name} was not added:\n{error}", parent=self.root)
             return
-        self.runs[run_id] = SimulationInfo(run_id, SimulationState.QUEUED, deck_file=deck, label=deck.stem)
-        self._draw_row(self.runs[run_id])
+        self.runs[run.run_id] = run
+        self._draw_row(run)
         self._draw_summary()
 
     def add_decks(self) -> None:
@@ -286,24 +278,23 @@ class Dashboard:
     # Following the daemon
     # -----------------------------------------------------------------
     def tick(self) -> None:
-        """Read what changed, redraw it, and schedule the next tick."""
+        """Ask for each unfinished run, redraw what changed, release finished runs, and schedule the next tick."""
         try:
-            changed = self.daemon.wait_for_changes(self.revision, timeout=0)
-        except ClosedError:  # trnrund exited cleanly, and everything it saved was read.
+            runs = [self.daemon.get(run.run_id) for run in self.runs.values() if not run.is_finished]
+            for run in runs:
+                if run.is_finished:  # Its logs are complete; this window keeps them.
+                    self.daemon.release(run.run_id)
+        except ClosedError:  # trnrund was closed.
             self.following = False
             return
-        except DaemonExitedError as error:  # trnrund crashed, and everything it saved was read.
+        except DaemonExitedError as error:  # trnrund crashed.
             self.following = False
             self.footer["text"] = f"trnrund stopped: {error}"
             _ = messagebox.showerror("TRNRun", str(error), parent=self.root)
             return
 
-        runs: list[SimulationInfo] = []
-        logs: list[LogEvent] = []
-        if changed:
-            changes = read_changes(self.connection, self.revision, self.log_id)
-            self.revision, self.log_id = changes.revision, changes.log_id
-            runs, logs = changes.runs, changes.logs
+        runs = [run for run in runs if self.runs[run.run_id] != run]
+        logs = [(run.run_id, log) for run in runs for log in run.logs[len(self.runs[run.run_id].logs) :]]
         for run in runs:
             self.runs[run.run_id] = run
         # Running rows are redrawn every tick so their elapsed time keeps counting.
@@ -317,10 +308,7 @@ class Dashboard:
             self._draw_details()
 
         uptime = (datetime.now(UTC) - self.started_at).total_seconds() * 1000
-        self.footer["text"] = (
-            f"Database: {self.daemon.database_path}   |   Session {self.daemon.session_id}"
-            f"   |   Up {format_duration(uptime)}   |   {MAX_CONCURRENT} at once"
-        )
+        self.footer["text"] = f"Up {format_duration(uptime)}   |   {MAX_CONCURRENT} at once"
         self.root.after(POLL_MS, self.tick)
 
     # -----------------------------------------------------------------
@@ -400,21 +388,21 @@ class Dashboard:
         self.details.insert("end", "\n".join(lines))
         self.details.configure(state="disabled")
 
-    def _shows(self, log: LogEvent) -> bool:
-        """Return whether the log pane shows this entry under the current filter."""
-        return not self.only_selected.get() or log.run_id in self._selected()
+    def _shows(self, run_id: int) -> bool:
+        """Return whether the log pane shows run ``run_id``'s entries under the current filter."""
+        return not self.only_selected.get() or run_id in self._selected()
 
-    def _append_logs(self, logs: list[LogEvent]) -> None:
+    def _append_logs(self, logs: list[tuple[int, LogEvent]]) -> None:
         """Keep new log entries and append those the filter shows, following the end."""
         self.logs.extend(logs)
-        shown = [log for log in logs if self._shows(log)]
+        shown = [(run_id, log) for run_id, log in logs if self._shows(run_id)]
         if not shown:
             return
         # Only follow the end if the user has not scrolled up to read.
         at_end = self.log_text.yview()[1] >= 0.999
         self.log_text.configure(state="normal")
-        for log in shown:
-            self.log_text.insert("end", format_log(log), log.severity)
+        for run_id, log in shown:
+            self.log_text.insert("end", format_log(run_id, log), log.severity)
         self.log_text.configure(state="disabled")
         if at_end:
             self.log_text.see("end")
@@ -435,10 +423,9 @@ class Dashboard:
 def main() -> None:
     """Copy the master deck, submit every copy, and follow them in the dashboard."""
     dck_files = copy_dck(MASTER_DCK, DCK_FOLDER, n=SIM_COUNT)
-    # The connection closes first, before the daemon deletes its temporary database.
-    with Daemon(max_concurrent=MAX_CONCURRENT) as daemon, closing(daemon.connect()) as connection:
+    with Daemon(max_concurrent=MAX_CONCURRENT) as daemon:
         root = tk.Tk()
-        dashboard = Dashboard(root, daemon, connection)
+        dashboard = Dashboard(root, daemon)
         for dck in dck_files:
             dashboard.add(dck)
         dashboard.tick()

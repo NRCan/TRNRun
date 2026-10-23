@@ -1,13 +1,17 @@
-"""The typed records read from a trnrund database: runs, their TRNRun events, and their logs.
+"""The typed records trnrund replies with: runs, their TRNRun events, and their logs.
 
 The event types mirror trnrund's ``events.nim``. ``STATUS`` and ``SETTING``
-have no record: they are fields of ``SimulationInfo``.
+have no record: they are fields of ``SimulationInfo``, as are the run's logs.
+``parse_run`` turns the run object of a reply into a record.
 """
+
+# pyright: reportAny=false, reportExplicitAny=false
 
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
+from typing import Any
 
 
 # -----------------------------------------------------------------
@@ -82,18 +86,12 @@ class LogEvent:
 
     Attributes
     ----------
-    log_id : int
-        Position among every run's logs; grows with each entry.
-    run_id : int
-        Run the entry belongs to.
     time : float
         Simulation time of the message, in simulated hours.
     unit_id, type_id : int or None
         Unit, and its type, that emitted the message.
     """
 
-    log_id: int
-    run_id: int
     severity: LogSeverity
     time: float
     unit_id: int | None = None
@@ -108,22 +106,18 @@ class LogEvent:
 # -----------------------------------------------------------------
 @dataclass(frozen=True)
 class SimulationInfo:
-    """One run's row in the daemon's database; a field is None where its column is NULL.
+    """One run as trnrund reported it; a field is None where trnrund replied ``null``.
 
     Attributes
     ----------
     run_id : int
-        ID the daemon assigned; never reused in its database.
+        ID the daemon assigned; never reused while it runs.
     state : SimulationState
         Daemon lifecycle.
     deck_file : Path
         Absolute deck path.
-    session_id : int
-        Daemon start that added the run.
     label : str or None
         Tag the run was added with.
-    revision : int
-        Revision of the run's latest save.
     trnrun_args : list of str
         TRNRun options the run was added with.
     status, status_message : SimulationStatus or None, str or None
@@ -134,7 +128,9 @@ class SimulationInfo:
     setting : dict or None
         Settings TRNRun applied, its defaults included, keyed by flag name.
     notices, warnings, fatals : int
-        Log entries saved so far, by severity.
+        Log entries so far, by severity.
+    logs : list of LogEvent
+        Every log entry so far, oldest first; complete once finished.
     succeeded : bool or None
         Whether it finished with ``DONE``, exit code 0 and no error.
     exit_code : int or None
@@ -148,9 +144,7 @@ class SimulationInfo:
     run_id: int
     state: SimulationState
     deck_file: Path
-    session_id: int = 0
     label: str | None = None
-    revision: int = 0
     trnrun_args: list[str] = field(default_factory=list[str])
     status: SimulationStatus | None = None
     status_message: str | None = None
@@ -160,6 +154,7 @@ class SimulationInfo:
     notices: int = 0
     warnings: int = 0
     fatals: int = 0
+    logs: list[LogEvent] = field(default_factory=list[LogEvent])
     succeeded: bool | None = None
     exit_code: int | None = None
     error: str | None = None
@@ -173,25 +168,51 @@ class SimulationInfo:
         return self.state is SimulationState.FINISHED
 
 
-@dataclass(frozen=True)
-class Changes:
-    """What ``read_changes()`` read, and where to read next.
+# -----------------------------------------------------------------
+# Parsers
+# -----------------------------------------------------------------
+def _parse_timestamp(value: str | None) -> datetime | None:
+    """Parse a UTC timestamp, such as ``2026-10-09T14:03:12.345Z``."""
+    return None if value is None else datetime.fromisoformat(value)
 
-    Attributes
-    ----------
-    runs : list of SimulationInfo
-        Latest snapshot of each changed run, in the order they last changed.
-    logs : list of LogEvent
-        New log entries, oldest first.
-    revision, log_id : int
-        Positions to pass to the next ``read_changes()``.
-    """
 
-    runs: list[SimulationInfo] = field(default_factory=list[SimulationInfo])
-    logs: list[LogEvent] = field(default_factory=list[LogEvent])
-    revision: int = 0
-    log_id: int = 0
+def parse_run(run: dict[str, Any]) -> SimulationInfo:
+    """Parse a run object of a trnrund reply; an event TRNRun has not reported yet becomes None."""
+    status = run["trnrunStatus"]
+    percent = run["percent"]
+    stop = run["stopTime"]
+    return SimulationInfo(
+        run_id=run["runId"],
+        state=SimulationState(run["state"]),
+        deck_file=Path(run["deckFile"]),
+        label=run["label"],
+        trnrun_args=run["trnrunArgs"],
+        status=None if status is None else SimulationStatus(status),
+        status_message=run["trnrunMessage"],
+        progress=None if percent is None else ProgressEvent(run["simTime"], percent, run["elapsedMs"], run["etaMs"]),
+        config=None if stop is None else ConfigEvent(run["startTime"], stop, run["timeStep"]),
+        setting=run["setting"],
+        notices=run["notices"],
+        warnings=run["warnings"],
+        fatals=run["fatals"],
+        logs=[_parse_log(log) for log in run["logs"]],
+        succeeded=run["succeeded"],
+        exit_code=run["exitCode"],
+        error=run["error"],
+        submitted_at=_parse_timestamp(run["submittedAt"]),
+        started_at=_parse_timestamp(run["startedAt"]),
+        finished_at=_parse_timestamp(run["finishedAt"]),
+    )
 
-    def __bool__(self) -> bool:
-        """Return whether anything changed."""
-        return bool(self.runs or self.logs)
+
+def _parse_log(log: dict[str, Any]) -> LogEvent:
+    """Parse a log object of a run object."""
+    return LogEvent(
+        severity=LogSeverity(log["severity"]),
+        time=log["simTime"],
+        unit_id=log["unitId"],
+        type_id=log["typeId"],
+        message_code=log["messageCode"],
+        message=log["message"],
+        information=log["information"],
+    )

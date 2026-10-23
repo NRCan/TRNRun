@@ -3,11 +3,10 @@ import std/[cpuinfo, os, unittest]
 import ../src/cli
 
 suite "CLI options":
-  test "defaults to the TRNRun beside trnrund, one worker per CPU but one, and a local database":
+  test "defaults to the TRNRun beside trnrund and one worker per CPU but one":
     check defaultCliInput() == CliInput(
       trnrunPath: getAppDir() / "trnrun.exe",
       maxConcurrent: max(countProcessors() - 1, 1),
-      databasePath: "trnrund.sqlite3",
     )
 
   test "applies every documented option":
@@ -15,16 +14,11 @@ suite "CLI options":
 
     check input.applyOption("trnrun", r"D:\Tools\trnrun.exe")
     check input.applyOption("maxConcurrent", "3")
-    check input.applyOption("database", r"D:\Runs\my runs.sqlite3")
 
-    check input == CliInput(
-      trnrunPath: r"D:\Tools\trnrun.exe",
-      maxConcurrent: 3,
-      databasePath: r"D:\Runs\my runs.sqlite3",
-    )
+    check input == CliInput(trnrunPath: r"D:\Tools\trnrun.exe", maxConcurrent: 3)
 
   test "returns false for an unknown option without changing input":
-    for key in ["doesNotExist", "maxconcurrent", "help", "overwrite"]:
+    for key in ["doesNotExist", "maxconcurrent", "help", "overwrite", "database", "maxLogsPerRun"]:
       checkpoint("option: " & key)
       var input = defaultCliInput()
       check not input.applyOption(key, "value")
@@ -36,7 +30,7 @@ suite "CLI options":
     expect InputError:
       discard input.applyOption("maxConcurrent", "many")
     expect InputError:
-      discard input.applyOption("database", "")
+      discard input.applyOption("maxConcurrent", "")
 
 suite "command line":
   test "serves with the defaults when given no arguments":
@@ -44,9 +38,9 @@ suite "command line":
 
   test "serves with every option applied":
     var expected = defaultCliInput()
+    expected.trnrunPath = "trnrun.exe"
     expected.maxConcurrent = 3
-    expected.databasePath = r"D:\Runs\my runs.sqlite3"
-    check parseCommandLine(["--maxConcurrent:3", r"--database:D:\Runs\my runs.sqlite3"]) ==
+    check parseCommandLine(["--maxConcurrent:3", "--trnrun=trnrun.exe"]) ==
       CliCommand(action: caServe, input: expected)
 
   test "stops at the first help or version option":

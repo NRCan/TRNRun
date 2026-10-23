@@ -1,9 +1,9 @@
 ## Runs 20 copies of one slow deck through the TRNRun daemon and reports each result.
 ##
-## Exercises the client protocol and database against real TRNSYS: adds every
-## copy, reads run columns through a query-only connection, prints state
-## changes, and keeps finished reports. Build both executables first, then run
-## from the `trnrund` directory:
+## Exercises the client protocol against real TRNSYS: adds every copy, polls
+## the runs with `list`, prints state changes, and keeps finished reports
+## before releasing their runs. Build both executables first, then run from the
+## `trnrund` directory:
 ##
 ##   cd ../trnrun
 ##   nimble bin
@@ -12,7 +12,6 @@
 ##   nim r tests/manual_daemon.nim
 
 import std/[json, monotimes, os, osproc, streams, strutils, tables, terminal, times]
-import db_connector/db_sqlite
 
 # Manual-run configuration.
 const
@@ -78,26 +77,21 @@ proc request(daemon: Process, request: JsonNode): JsonNode =
     )
 
 proc runDaemon(daemon: Process, deckFiles: openArray[string]): Table[string, JsonNode] =
-  ## Reads the runs changed since the last poll from the database, without
-  ## sending commands while workers run. Reports are keyed by label, the
-  ## deck's name, and finished ones include a logCount.
+  ## Adds every deck, then polls each unfinished run with `get` until it
+  ## finished, releasing it once reported. Reports are keyed by label, the
+  ## deck's name, and include a logCount.
   result = initTable[string, JsonNode]()
-  let ready = daemon.request(%*{"cmd": "ready"})
-  let db = db_sqlite.open(ready["databasePath"].getStr(), "", "", "")
-  defer: db.close()
-  db.exec(sql"PRAGMA query_only = ON")
+  var pending: seq[int] = @[]
   for deckFile in deckFiles:
     # add replies with the runId the daemon assigned; the label names the run in reports.
-    discard daemon.request(%*{
+    pending.add(daemon.request(%*{
       "cmd": "add",
       "deckFile": deckFile,
       "trnrunArgs": TrnrunArgs,
       "label": deckFile.splitFile().name,
-    })
+    })["runId"].getInt())
 
-  var
-    states = initTable[string, string]()
-    revision = 0
+  var states = initTable[string, string]()
   let deadline = getMonoTime() + initDuration(milliseconds = TimeoutMs)
 
   proc note(name, state: string) =
@@ -110,22 +104,25 @@ proc runDaemon(daemon: Process, deckFiles: openArray[string]): Table[string, Jso
     if not daemon.running:
       raise newException(IOError, "trnrund exited before all runs finished")
     if getMonoTime() >= deadline:
-      raise newException(IOError, "Timed out waiting for runs in the database")
-    for row in db.getAllRows(sql"""SELECT label, revision, state, trnrun_status, succeeded, error,
-      notices + warnings + fatals, warnings, fatals
-      FROM runs WHERE revision > ? ORDER BY revision""", revision):
-      let name = row[0]
-      revision = parseInt(row[1])
-      note(name, row[2])
-      if row[2] == "FINISHED":
+      raise newException(IOError, "Timed out waiting for runs")
+    var unfinished: seq[int] = @[]
+    for runId in pending:
+      let run = daemon.request(%*{"cmd": "get", "runId": runId})["run"]
+      let name = run["label"].getStr()
+      note(name, run["state"].getStr())
+      if run["state"].getStr() == "FINISHED":
         result[name] = %*{
-          "status": (if row[3].len > 0: row[3] else: "NO STATUS"),
-          "succeeded": row[4] == "1",
-          "error": row[5],
-          "logCount": parseInt(row[6]),
-          "warnings": parseInt(row[7]),
-          "fatals": parseInt(row[8]),
+          "status": run["trnrunStatus"].getStr("NO STATUS"),
+          "succeeded": run["succeeded"].getBool(),
+          "error": run["error"].getStr(),
+          "logCount": run["logs"].len,
+          "warnings": run["warnings"].getInt(),
+          "fatals": run["fatals"].getInt(),
         }
+        discard daemon.request(%*{"cmd": "release", "runId": runId})
+      else:
+        unfinished.add(runId)
+    pending = unfinished
 
     if result.len < deckFiles.len:
       sleep(PollMs)
@@ -198,13 +195,13 @@ proc main(): int =
     let daemon = startProcess(
       daemonExecutable,
       workingDir = daemonRoot,
-      args = ["--trnrun:" & runnerExecutable, "--maxConcurrent:" & $MaxConcurrent,
-              "--database:" & (stagingDirectory / "runs.sqlite3")],
+      args = ["--trnrun:" & runnerExecutable, "--maxConcurrent:" & $MaxConcurrent],
       options = {},
     )
     try:
       collected = daemon.runDaemon(deckFiles)
       discard daemon.request(%*{"cmd": "shutdown"})
+      daemon.inputStream.close() # The daemon exits once stdin closes.
       daemonExitCode = daemon.waitForExit()
     except CatchableError as error:
       styledWriteLine(stdout, fgRed, "FAIL - Could not run trnrund: " & error.msg)

@@ -1,5 +1,4 @@
-import std/[atomics, importutils, json, locks, monotimes, os, sequtils, strutils, tempfiles, times, unittest]
-import db_connector/db_sqlite
+import std/[atomics, importutils, json, locks, monotimes, os, sequtils, strutils, tables, tempfiles, times, unittest]
 
 import ../src/[job, messages, scheduler, server, workerpool]
 import ./[fake_client, fake_deck, fake_trnrun]
@@ -10,12 +9,16 @@ var
   outputLock: Lock
   written: seq[string] ## Every line written, guarded by `outputLock`.
   accepting: Atomic[bool] ## Whether writes succeed.
+  closeAfter: string ## A line starting with this closes the client's input; guarded by `outputLock`.
+  inbox: ptr Channel[Message] ## Where closing the client's input is posted.
 
 proc record(lines: seq[string]): bool {.nimcall, gcsafe, raises: [].} =
-  ## Records the lines of one write; fails unless accepting.
+  ## Records the lines of one write, closing the input after `closeAfter`; fails unless accepting.
   {.cast(gcsafe).}:
     withLock outputLock:
       written.add(lines)
+      if closeAfter.len > 0 and lines.anyIt(it.startsWith(closeAfter)):
+        inbox[].send(Message(kind: mkClosed))
   accepting.load()
 
 proc writtenLines(): seq[string] =
@@ -27,6 +30,10 @@ proc post(scheduler: Scheduler, requests: varargs[JsonNode]) =
   ## Queues client requests for `serve`, as the stdin reader does.
   for request in requests:
     scheduler.requestInbox[].send(Message(kind: mkRequest, line: $request))
+
+proc closeInput(scheduler: Scheduler) =
+  ## Reports that the client closed its input, as the stdin reader does.
+  scheduler.requestInbox[].send(Message(kind: mkClosed))
 
 proc runTests() =
   ## Runs the server tests in a temporary directory.
@@ -41,72 +48,86 @@ proc runTests() =
   suite "serving a client":
     setup:
       written = @[]
+      closeAfter = ""
       accepting.store(true)
 
-    test "replies in order, then notifies of later revisions, until shutdown completes":
-      let scheduler = newScheduler(trnrun, 1, testDirectory / "serve.sqlite3")
+    test "replies once to each request, in order, and keeps answering after shutdown":
+      let scheduler = newScheduler(trnrun, 1)
       scheduler.post(
         %*{"id": 1, "cmd": "ready"},
         %*{"id": 2, "cmd": "add", "deckFile": doneDeck},
         %*{"id": 3, "cmd": "shutdown"},
+        %*{"id": 4, "cmd": "get", "runId": 1},
+        %*{"id": 5, "cmd": "add", "deckFile": doneDeck},
       )
+      scheduler.closeInput()
       scheduler.serve(record)
-      let reader = db_sqlite.open(scheduler.databasePath, "", "", "")
-      defer: reader.close()
 
-      let lines = writtenLines()
-      let replies = lines.filterIt("\"ok\"" in it).mapIt(parseJson(it))
-      let events = lines.filterIt("\"event\"" in it).mapIt(parseJson(it))
-      check replies.mapIt(it["id"].getInt()) == @[1, 2, 3]
-      check lines[0..2].allIt("\"ok\"" in it) # The first batch's replies come first.
-      check replies[0]["revision"].getInt() == 0
-      check replies[1] == %*{"id": 2, "ok": true, "runId": 1}
-      check events.len >= 2
-      check events.allIt(it["event"].getStr() == "changed")
-      let revisions = events.mapIt(it["revision"].getInt())
-      check revisions[0] > 0 # Only revisions after the one the client started from.
-      for index in 1..<revisions.len:
-        check revisions[index] > revisions[index - 1]
-      check $revisions[^1] == reader.getValue(sql"SELECT max(revision) FROM runs")
-      check reader.getRow(sql"SELECT state, succeeded FROM runs") == @["FINISHED", "1"]
+      let replies = writtenLines().mapIt(parseJson(it))
+      check replies.mapIt(it["id"].getInt()) == @[1, 2, 3, 4, 5]
+      check replies.allIt(it.hasKey("ok"))
+      check replies[1]["runId"] == %1
+      check replies[3]["run"]["runId"] == %1
+      check replies[4]["error"] == %"The daemon is shutting down"
       check scheduler.isClosed
 
-    test "a client that closes its input, or can no longer be written to, abandons the runs":
+    test "a waiting add replies once its run finished, without holding up later replies":
+      let scheduler = newScheduler(trnrun, 1)
+      inbox = scheduler.requestInbox
+      closeAfter = "{\"id\":\"w\""
+      scheduler.post(
+        %*{"id": "w", "cmd": "add", "deckFile": doneDeck, "waitFor": "FINISHED"},
+        %*{"id": 2, "cmd": "get", "runId": 1},
+      )
+      scheduler.serve(record)
+
+      let replies = writtenLines().mapIt(parseJson(it))
+      check replies.mapIt(it["id"]) == @[%2, %"w"]
+      check replies[0]["run"]["state"] == %"RUNNING"
+      check replies[1]["runId"] == %1
+      check replies[1]["run"]["succeeded"] == %true
+      scheduler.pool.shutdown()
+
+    test "a client that closes its input, or can no longer be written to, has TRNRun killed":
       for closedBy in ["input", "output"]:
         checkpoint(closedBy)
         written = @[]
         accepting.store(closedBy != "output")
         let
           deckFile = createDeck(testDirectory, "gate-" & closedBy & ".dck")
-          scheduler = newScheduler(trnrun, 1, testDirectory / ("abandon-" & closedBy & ".sqlite3"))
+          scheduler = newScheduler(trnrun, 1)
         scheduler.post(%*{"cmd": "add", "deckFile": deckFile})
         if closedBy == "input":
-          scheduler.requestInbox[].send(Message(kind: mkClosed))
+          scheduler.closeInput()
         scheduler.serve(record)
         check scheduler.isClosed
-        let reader = db_sqlite.open(scheduler.databasePath, "", "", "")
-        defer: reader.close()
-        check reader.getRow(sql"SELECT state, error FROM runs") ==
-          @["FINISHED", "Interrupted: the client disconnected"]
+        check scheduler.running.len == 0
         scheduler.pool.shutdown()
         check not fileExists(deckFile.changeFileExt("released"))
+
+    test "closing the input drops waiting adds without replying":
+      let
+        deckFile = createDeck(testDirectory, "gate-dropped.dck")
+        scheduler = newScheduler(trnrun, 1)
+      scheduler.post(%*{"id": 1, "cmd": "add", "deckFile": deckFile, "waitFor": "FINISHED"})
+      scheduler.closeInput()
+      let started = getMonoTime()
+      scheduler.serve(record)
+      check getMonoTime() - started < initDuration(seconds = 3)
+      check writtenLines().len == 0
+      scheduler.pool.shutdown()
 
     test "a client that does not read holds up the end of serving for the grace period only":
       openUnreadPipe()
       defer: closeUnreadPipe()
-      for ending in ["input", "shutdown"]:
-        checkpoint(ending)
-        let scheduler = newScheduler(trnrun, 1, testDirectory / ("unread-" & ending & ".sqlite3"))
-        for _ in 1..100: # Replies that fill the pipe.
-          scheduler.post(%*{"cmd": "ready"})
-        if ending == "input":
-          scheduler.requestInbox[].send(Message(kind: mkClosed))
-        else:
-          scheduler.post(%*{"cmd": "shutdown"})
-        let started = getMonoTime()
-        scheduler.serve(writeUnread)
-        check getMonoTime() - started < initDuration(seconds = 3)
-        check scheduler.isClosed
-        scheduler.pool.shutdown()
+      let scheduler = newScheduler(trnrun, 1)
+      for _ in 1..100: # Replies that fill the pipe.
+        scheduler.post(%*{"cmd": "ready"})
+      scheduler.closeInput()
+      let started = getMonoTime()
+      scheduler.serve(writeUnread)
+      check getMonoTime() - started < initDuration(seconds = 3)
+      check scheduler.isClosed
+      scheduler.pool.shutdown()
 
 runTests()
