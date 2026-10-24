@@ -1,7 +1,8 @@
 ## Starts trnrund, which runs TRNRun simulations for one client.
 ##
 ## The client writes one JSON request per stdin line and reads exactly one JSON
-## response per stdout line before sending the next. Diagnostics go to stderr.
+## response per stdout line before sending the next. Diagnostics go to stderr,
+## only just before exiting.
 ## Closing stdin cancels every simulation and exits.
 
 import std/os

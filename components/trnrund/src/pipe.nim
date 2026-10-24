@@ -64,7 +64,10 @@ proc poll*(line: var string): PollResult =
     return prLine
 
 proc diagnose*(message: string) =
-  ## Writes a diagnostic to stderr, which stays free of protocol traffic.
+  ## Writes a diagnostic to stderr; call it only just before exiting.
+  ##
+  ## Clients may read stderr only once the daemon exits, so a diagnostic
+  ## written while serving could fill the pipe and block the daemon.
   try:
     stderr.writeLine("trnrund: ", message)
   except IOError:

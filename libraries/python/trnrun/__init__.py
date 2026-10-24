@@ -1,58 +1,39 @@
-"""Run batches of TRNSYS simulations and follow their progress.
+"""Run TRNSYS simulations through trnrund.
 
-For scripts and notebooks: ``SimulationManager`` starts the daemon, keeps a
-``Simulation`` handle per run in sync whenever you call ``wait()`` or
-``refresh()``, and shows their progress with a ``ProgressDisplay``, or any
-``Display``.
-
-Applications with their own GUI use ``Daemon`` to submit runs and poll
-``Daemon.get()`` for each one, as a ``SimulationInfo`` record holding its
-``LogEvent`` logs. Those live in ``trnrun.core``; every name either needs is importable
-from here.
+``Daemon`` is the thin client: one method per trnrund command, returning
+simulations as ``Simulation`` records. ``SimulationManager`` launches many
+simulations on one daemon, waits for them as asked, and shows them live in the
+terminal; ``add`` returns a ``Simulation`` it keeps current.
 """
 
-from trnrun.core import (
-    ClosedError,
-    ConfigEvent,
-    Daemon,
-    DaemonExitedError,
+from trnrun.daemon import Daemon, DaemonExitedError, RequestError, TrnrunError
+from trnrun.display import Display
+from trnrun.manager import SimulationManager
+from trnrun.simulation import (
     LogEvent,
     LogSeverity,
-    ProgressEvent,
-    ProtocolError,
-    ProtocolVersionError,
-    RequestRejectedError,
-    SimulationInfo,
-    SimulationSettings,
+    Simulation,
     SimulationState,
     SimulationStatus,
-    TrnrunError,
-    parse_run,
+    StateName,
+    parse_simulation,
 )
-from trnrun.display import Display, ProgressDisplay
-from trnrun.manager import SimulationManager
-from trnrun.simulation import Simulation
+from trnrun.settings import SimulationSettings
 
 __version__ = "0.8.0"
 __all__ = [
-    "ClosedError",
-    "ConfigEvent",
     "Daemon",
     "DaemonExitedError",
     "Display",
     "LogEvent",
     "LogSeverity",
-    "ProgressDisplay",
-    "ProgressEvent",
-    "ProtocolError",
-    "ProtocolVersionError",
-    "RequestRejectedError",
+    "RequestError",
     "Simulation",
-    "SimulationInfo",
     "SimulationManager",
     "SimulationSettings",
     "SimulationState",
     "SimulationStatus",
+    "StateName",
     "TrnrunError",
-    "parse_run",
+    "parse_simulation",
 ]

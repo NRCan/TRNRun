@@ -111,7 +111,9 @@ Options accept either `--name:value` or `--name=value`.
 
 Write one JSON object per line to daemon stdin, then read exactly one JSON
 response line from stdout before sending the next request. Stdout carries
-nothing else; diagnostics go to stderr.
+nothing else. Stderr is written only just before the daemon exits, so a client
+may leave it unread until then; a simulation that fails reports why in its
+`error` field.
 
 ```json
 {"cmd":"add","deckFile":"C:\\models\\building-a.dck","label":"building-a","trnrunArgs":["--guiVisibility:min"]}

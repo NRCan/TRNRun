@@ -33,7 +33,10 @@ Homepage = "https://github.com/NRCan/TRNRun"
 Issues = "https://github.com/NRCan/TRNRun/issues"
 
 [dependency-groups]
-dev = ["pytest>=9.0.1", "ipykernel>=7.1.0"]
+dev = [
+    "ipykernel>=7.4.0",
+    "pytest>=9.0.1",
+]
 
 [tool.hatch.version]
 path = "trnrun/__init__.py"

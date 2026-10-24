@@ -6,7 +6,7 @@
 ## Nothing here knows about the client protocol.
 
 import std/[algorithm, options, tables]
-import ./[pipe, simulation, trnrun]
+import ./[simulation, trnrun]
 
 export simulation
 
@@ -27,7 +27,6 @@ proc startTrnrun(self: var Scheduler, simId: int) =
       launch(self.trnrunPath, simulation.deckFile, simulation.trnrunArgs)
     simulation.start()
   except OSError as error:
-    diagnose("cannot start simulation " & $simId & ": " & error.msg)
     simulation.finish(none(int), "Cannot start TRNRun: " & error.msg)
 
 proc startQueued(self: var Scheduler) =
