@@ -24,13 +24,13 @@ proc launch*(trnrunPath, deckFile: string, trnrunArgs: seq[string]): Trnrun =
   )
   Trnrun(process: process)
 
-proc drain(trnrun: var Trnrun) =
+proc drain(self: var Trnrun) =
   ## Appends everything TRNRun wrote so far to `pending`; never blocks.
-  while trnrun.process.hasData:
-    let start = trnrun.pending.len
-    trnrun.pending.setLen(start + ReadSize)
-    let count = trnrun.process.outputStream.readData(addr trnrun.pending[start], ReadSize)
-    trnrun.pending.setLen(start + count)
+  while self.process.hasData:
+    let start = self.pending.len
+    self.pending.setLen(start + ReadSize)
+    let count = self.process.outputStream.readData(addr self.pending[start], ReadSize)
+    self.pending.setLen(start + count)
 
 proc takeLines(pending: var string): seq[string] =
   ## Removes the complete lines from the start of `pending` and returns them without line breaks.
@@ -45,32 +45,31 @@ proc takeLines(pending: var string): seq[string] =
   if lineStart > 0:
     pending.delete(0..<lineStart)
 
-proc readLines*(trnrun: var Trnrun): seq[string] =
+proc readLines*(self: var Trnrun): seq[string] =
   ## The complete lines TRNRun wrote since the last call, without line breaks; never blocks.
-  trnrun.drain()
-  trnrun.pending.takeLines()
+  self.drain()
+  self.pending.takeLines()
 
-proc readLastLines*(trnrun: var Trnrun): seq[string] =
+proc readLastLines*(self: var Trnrun): seq[string] =
   ## `readLines`, plus a last line without a line break; call once TRNRun exited.
-  result = trnrun.readLines()
-  if trnrun.pending.len > 0:
-    result.add(trnrun.pending)
-    trnrun.pending = ""
+  result = self.readLines()
+  if self.pending.len > 0:
+    result.add(move self.pending)
 
-proc exitCode*(trnrun: Trnrun): Option[int] =
+proc exitCode*(self: Trnrun): Option[int] =
   ## TRNRun's exit code, or none while it runs; never blocks.
   # Windows reports a process that exited with 259 (`STILL_ACTIVE`) as running; TRNRun never does.
-  let code = trnrun.process.peekExitCode()
+  let code = self.process.peekExitCode()
   if code == -1: none(int) else: some(code)
 
-proc kill*(trnrun: Trnrun) =
+proc kill*(self: Trnrun) =
   ## Kills TRNRun and waits for it to exit; `OSError` if it cannot be killed.
   # TRNRun keeps TrnEXE in a kill-on-close Job Object, so killing TRNRun stops both.
-  trnrun.process.kill()
+  self.process.kill()
   # On Windows `kill` ignores a failed TerminateProcess, so an unbounded wait could hang the daemon.
-  if trnrun.process.waitForExit(KillWaitMs) == -1:
+  if self.process.waitForExit(KillWaitMs) == -1:
     raise newException(OSError, "TRNRun still running " & $KillWaitMs & " ms after being killed")
 
-proc close*(trnrun: Trnrun) {.inline.} =
+proc close*(self: Trnrun) {.inline.} =
   ## Releases TRNRun's handles and pipes; call once it exited.
-  trnrun.process.close()
+  self.process.close()

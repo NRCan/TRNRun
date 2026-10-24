@@ -6,6 +6,7 @@ switch("experimental", "strictFuncs")
 switch("experimental", "strictEffects")
 
 switch("warningAsError", "ProveInit")
+switch("warningAsError", "Uninit")
 switch("warningAsError", "Deprecated")
 switch("warningAsError", "UnusedImport")
 switch("warningAsError", "CStringConv")

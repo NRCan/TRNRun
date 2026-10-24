@@ -89,12 +89,12 @@ for humans.
 
 | Path                 | Role                                                       |
 | -------------------- | ---------------------------------------------------------- |
-| `src/trnrund2.nim`   | Entry point and the serve loop tying client and pool       |
+| `src/trnrund2.nim`   | Entry point and the serve loop tying client and scheduler       |
 | `src/cli.nim`        | Parses the command line: options, help and version         |
 | `src/pipe.nim`       | stdin reader thread and stdout responses                   |
 | `src/protocol.nim`   | Request line to response line; all JSON lives here         |
 | `src/validate.nim`   | Checks deck and TRNRun paths, and `trnrunArgs`             |
-| `src/pool.nim`       | Queue, worker limit, which simulation runs where           |
+| `src/scheduler.nim`       | Queue, worker limit, which simulation runs where           |
 | `src/trnrun.nim`     | Launches one TRNRun, reads its output lines, kills it      |
 | `src/job.nim`        | Kill-on-close Job Object: TRNRun never outlives the daemon |
 | `src/simulation.nim` | One simulation's record and how events and exits update it |

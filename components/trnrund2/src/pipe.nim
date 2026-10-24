@@ -19,7 +19,7 @@ proc readStdin() {.thread.} =
   var line = ""
   try:
     while stdin.readLine(line):
-      inbox.send(some(line))
+      inbox.send(some(move line)) # readLine refills the emptied `line`.
   except IOError:
     discard # A broken pipe means the client is gone, like a closed one.
   inbox.send(none(string))

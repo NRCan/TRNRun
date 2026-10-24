@@ -59,74 +59,74 @@ proc initSimulation*(
     trnrunArgs: trnrunArgs,
   )
 
-proc start*(simulation: var Simulation) =
+proc start*(self: var Simulation) =
   ## Marks the simulation running once its TRNRun has started.
-  simulation.state = ssRunning
-  simulation.startedAt = some(timestamp())
+  self.state = ssRunning
+  self.startedAt = some(timestamp())
 
-proc record*(simulation: var Simulation, event: SimulationEvent) =
+proc record*(self: var Simulation, event: SimulationEvent) =
   ## Saves one TRNRun event: a `LOG` is counted and appended, any other replaces the last value.
   case event.kind
   of ekSetting:
-    simulation.setting = some(event.setting)
+    self.setting = some(event.setting)
   of ekStatus:
-    simulation.trnrunStatus = some(event.status.status)
-    simulation.trnrunMessage = some(event.status.message)
+    self.trnrunStatus = some(event.status.status)
+    self.trnrunMessage = some(event.status.message)
   of ekConfig:
-    simulation.startTime = some(event.config.start)
-    simulation.stopTime = some(event.config.stop)
-    simulation.timeStep = some(event.config.step)
+    self.startTime = some(event.config.start)
+    self.stopTime = some(event.config.stop)
+    self.timeStep = some(event.config.step)
   of ekProgress:
-    simulation.percent = some(event.progress.percent)
-    simulation.simTime = some(event.progress.time)
-    simulation.elapsedMs = some(event.progress.elapsedMs)
-    simulation.etaMs = some(event.progress.etaMs)
+    self.percent = some(event.progress.percent)
+    self.simTime = some(event.progress.time)
+    self.elapsedMs = some(event.progress.elapsedMs)
+    self.etaMs = some(event.progress.etaMs)
   of ekLog:
     case event.log.severity
-    of lsNotice: inc simulation.notices
-    of lsWarning: inc simulation.warnings
-    of lsFatal: inc simulation.fatals
-    simulation.logs.add(event.log)
+    of lsNotice: inc self.notices
+    of lsWarning: inc self.warnings
+    of lsFatal: inc self.fatals
+    self.logs.add(event.log)
 
-proc recordLines*(simulation: var Simulation, lines: seq[string]) =
+proc recordLines*(self: var Simulation, lines: seq[string]) =
   ## Saves the TRNRun event in each output line; ignores a line that is not one.
   for line in lines:
     let event = parseEventLine(line)
     if event.isSome:
-      simulation.record(event.get())
+      self.record(event.get())
 
 proc finish(
-    simulation: var Simulation,
+    self: var Simulation,
     exitCode: Option[int],
     error: string,
     fallback: StatusEvent,
 ) =
   ## Marks the simulation finished, with `fallback` as its status unless TRNRun reported an end.
-  if simulation.trnrunStatus.isNone or simulation.trnrunStatus.get() notin TerminalStatuses:
-    simulation.trnrunStatus = some(fallback.status)
-    simulation.trnrunMessage = some(fallback.message)
+  if self.trnrunStatus.isNone or self.trnrunStatus.get() notin TerminalStatuses:
+    self.trnrunStatus = some(fallback.status)
+    self.trnrunMessage = some(fallback.message)
   # It succeeded only with a `DONE` status from TRNRun, exit code 0, and no daemon error.
-  simulation.succeeded = some(
-    simulation.trnrunStatus == some(stDone) and exitCode == some(0) and error.len == 0
+  self.succeeded = some(
+    self.trnrunStatus == some(stDone) and exitCode == some(0) and error.len == 0
   )
-  simulation.state = ssFinished
-  simulation.finishedAt = some(timestamp())
-  simulation.exitCode = exitCode
-  simulation.error = if error.len > 0: some(error) else: none(string)
+  self.state = ssFinished
+  self.finishedAt = some(timestamp())
+  self.exitCode = exitCode
+  self.error = if error.len > 0: some(error) else: none(string)
 
-proc finish*(simulation: var Simulation, exitCode: Option[int], error: string = "") =
+proc finish*(self: var Simulation, exitCode: Option[int], error: string = "") =
   ## Finishes the simulation once TRNRun exited or failed to start.
   ##
   ## `exitCode` is none if TRNRun never started, and `error` explains why. If
   ## TRNRun reported no terminal status, the status becomes `ERROR`. The
   ## simulation succeeded only with status `DONE`, exit code 0 and no `error`.
   let message = if error.len > 0: error else: "TRNRun exited without a terminal status"
-  simulation.finish(exitCode, error, StatusEvent(status: stError, message: message))
+  self.finish(exitCode, error, StatusEvent(status: stError, message: message))
 
-proc cancel*(simulation: var Simulation) =
+proc cancel*(self: var Simulation) =
   ## Finishes the simulation as `CANCELLED`, interrupted if it was running.
-  let outcome = if simulation.state == ssRunning: "Interrupted" else: "Not started"
-  simulation.finish(
+  let outcome = if self.state == ssRunning: "Interrupted" else: "Not started"
+  self.finish(
     exitCode = none(int),
     error = outcome & ": " & CancelReason,
     fallback = StatusEvent(status: stCancelled, message: outcome),

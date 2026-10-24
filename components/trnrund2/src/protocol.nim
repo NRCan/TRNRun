@@ -2,10 +2,14 @@
 ##
 ## A request is a JSON object with a `cmd`. Every response is a JSON object
 ## with `ok`; when `ok` is false it also has an `error` for humans. README.md
-## lists the commands. Simulation work is delegated to `pool`.
+## lists the commands. Simulation work is delegated to `scheduler`.
 
 import std/[json, options, sequtils, strutils]
-import ./[pool, validate]
+import ./[scheduler, validate]
+
+# --------------------------
+# Request fields
+# --------------------------
 
 proc optionalField(
     request: JsonNode,
@@ -46,9 +50,9 @@ proc trnrunArgs(request: JsonNode): seq[string] =
   let node = request.optionalField("trnrunArgs", JArray, expected)
   if node == nil:
     return @[]
-  if node.elems.anyIt(it.kind != JString):
+  if node.getElems().anyIt(it.kind != JString):
     raise newException(InputError, "'trnrunArgs' must be " & expected)
-  result = node.elems.mapIt(it.getStr())
+  result = node.getElems().mapIt(it.getStr())
   validateTrnrunArgs(result)
 
 proc state(request: JsonNode): SimulationState =
@@ -64,71 +68,77 @@ proc withLogs(request: JsonNode): bool =
   let node = request.optionalField("withLogs", JBool, "true or false")
   node == nil or node.getBool()
 
-proc listJson(pool: Pool, state: SimulationState, withLogs: bool): JsonNode =
+# --------------------------
+# Commands
+# --------------------------
+proc listJson(scheduler: Scheduler, state: SimulationState, withLogs: bool): JsonNode =
   ## The simulations `list` returns for `state`, without their `logs` key unless `withLogs`.
-  result = %pool.list(state)
+  result = %scheduler.list(state)
   if not withLogs:
     for simulation in result:
       simulation.delete("logs")
 
-proc refusal(pool: Pool, simId: int, action: string): JsonNode =
+proc refusal(scheduler: Scheduler, simId: int, action: string): JsonNode =
   ## The response refusing to `action` simulation `simId`, saying why.
   let error =
-    if simId notin pool:
+    if simId notin scheduler:
       "Unknown simId: " & $simId
     else:
-      "Cannot " & action & " simulation " & $simId & ": it is " & $pool[simId].state
+      "Cannot " & action & " simulation " & $simId & ": it is " & $scheduler[simId].state
   %*{"ok": false, "error": error}
 
-proc addCmd(pool: var Pool, request: JsonNode): JsonNode =
+proc addCmd(scheduler: var Scheduler, request: JsonNode): JsonNode =
   ## Answers `add`: queues the requested simulation and returns its simId.
-  let simId = pool.add(
+  let simId = scheduler.add(
     deckFile = validateDeck(request.field("deckFile", JString, "a string").getStr()),
     trnrunArgs = request.trnrunArgs(),
     label = request.label(),
   )
   %*{"ok": true, "simId": simId}
 
-proc cancelCmd(pool: var Pool, request: JsonNode): JsonNode =
+proc cancelCmd(scheduler: var Scheduler, request: JsonNode): JsonNode =
   ## Answers `cancel`: cancels the simulation, or says why it cannot.
   let simId = request.simId()
   let cancelled =
     try:
-      pool.cancel(simId)
+      scheduler.cancel(simId)
     except OSError as error:
       return %*{"ok": false, "error": "Cannot cancel simulation " & $simId & ": " & error.msg}
-  if cancelled: %*{"ok": true} else: pool.refusal(simId, "cancel")
+  if cancelled: %*{"ok": true} else: scheduler.refusal(simId, "cancel")
 
-proc releaseCmd(pool: var Pool, request: JsonNode): JsonNode =
+proc releaseCmd(scheduler: var Scheduler, request: JsonNode): JsonNode =
   ## Answers `release`: forgets the finished simulation, or says why it cannot.
   let simId = request.simId()
-  if pool.release(simId): %*{"ok": true} else: pool.refusal(simId, "release")
+  if scheduler.release(simId): %*{"ok": true} else: scheduler.refusal(simId, "release")
 
-proc getCmd(pool: Pool, request: JsonNode): JsonNode =
+proc getCmd(scheduler: Scheduler, request: JsonNode): JsonNode =
   ## Answers `get`: returns the simulation, or says it is unknown.
   let simId = request.simId()
-  if simId in pool: %*{"ok": true, "simulation": pool[simId]} else: pool.refusal(simId, "get")
+  if simId in scheduler:
+    %*{"ok": true, "simulation": scheduler[simId]}
+  else:
+    scheduler.refusal(simId, "get")
 
-proc listCmd(pool: Pool, request: JsonNode): JsonNode =
+proc listCmd(scheduler: Scheduler, request: JsonNode): JsonNode =
   ## Answers `list`: returns the simulations in the requested state.
-  %*{"ok": true, "simulations": pool.listJson(request.state(), request.withLogs())}
+  %*{"ok": true, "simulations": scheduler.listJson(request.state(), request.withLogs())}
 
-proc dispatch(pool: var Pool, request: JsonNode): JsonNode =
+proc dispatch(scheduler: var Scheduler, request: JsonNode): JsonNode =
   ## Routes one parsed request to its command and returns the response.
   if request.kind != JObject:
     raise newException(InputError, "Request must be a JSON object")
   let cmd = request.field("cmd", JString, "a string").getStr()
   case cmd
   of "ready": %*{"ok": true}
-  of "add": pool.addCmd(request)
-  of "cancel": pool.cancelCmd(request)
-  of "release": pool.releaseCmd(request)
-  of "get": pool.getCmd(request)
-  of "list": pool.listCmd(request)
+  of "add": scheduler.addCmd(request)
+  of "cancel": scheduler.cancelCmd(request)
+  of "release": scheduler.releaseCmd(request)
+  of "get": scheduler.getCmd(request)
+  of "list": scheduler.listCmd(request)
   else: raise newException(InputError, "Unknown cmd: " & cmd)
 
-proc handleRequest*(pool: var Pool, line: string): string =
-  ## Runs the request in `line` against `pool` and returns its one-line JSON response.
+proc handleRequest*(scheduler: var Scheduler, line: string): string =
+  ## Runs the request in `line` against `scheduler` and returns its one-line JSON response.
   ##
   ## A request the client got wrong, such as bad JSON, an unknown `cmd`, a
   ## missing field or a deck that does not exist, is answered with
@@ -137,7 +147,7 @@ proc handleRequest*(pool: var Pool, line: string): string =
   ## propagates.
   let response =
     try:
-      pool.dispatch(parseJson(line))
+      scheduler.dispatch(parseJson(line))
     except InputError, JsonParsingError:
       %*{"ok": false, "error": getCurrentExceptionMsg()}
   $response

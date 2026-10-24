@@ -5,18 +5,18 @@
 ## Closing stdin cancels every simulation and exits.
 
 import std/os
-import ./[cli, job, pipe, pool, protocol, validate]
+import ./[cli, job, pipe, scheduler, protocol, validate]
 
 const PollMs = 10 ## Idle wait between checks for requests and finished simulations.
 
-proc serve(pool: var Pool) =
+proc serve(scheduler: var Scheduler) =
   ## Answers requests until the client closes stdin, keeping simulations moving meanwhile.
   var line = ""
   while true:
-    pool.update()
+    scheduler.update()
     case poll(line)
     of prNothing: sleep(PollMs)
-    of prLine: respond(pool.handleRequest(line))
+    of prLine: respond(scheduler.handleRequest(line))
     of prClosed: return
 
 proc run(input: CliInput): int =
@@ -26,12 +26,12 @@ proc run(input: CliInput): int =
   ## to stderr if the job guard or pipe cannot be set up, or a fault stops the
   ## serve loop. Never raises a `CatchableError`.
   result = 0
-  var pool = initPool(input.trnrunPath, input.maxWorkers)
+  var scheduler = initScheduler(input.trnrunPath, input.maxWorkers)
   try:
     # Windows kills every TRNRun this daemon started once it exits, however it exits.
     initJobGuard()
     openPipe()
-    pool.serve()
+    scheduler.serve()
   except CatchableError as error:
     diagnose(error.msg)
     result = 1

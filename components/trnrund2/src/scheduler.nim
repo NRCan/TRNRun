@@ -10,7 +10,7 @@ import ./[pipe, simulation, trnrun]
 
 export simulation
 
-type Pool* = object
+type Scheduler* = object
   ## Every simulation not released yet, and the TRNRun running each started one.
   trnrunPath: string
   maxWorkers: int
@@ -19,53 +19,56 @@ type Pool* = object
   queue: seq[int] ## Queued simIds, oldest first.
   running: Table[int, Trnrun]
 
-proc startTrnrun(pool: var Pool, simId: int) =
+proc startTrnrun(self: var Scheduler, simId: int) =
   ## Starts TRNRun for simulation `simId`, finishing it with an error if TRNRun cannot start.
-  template simulation: untyped = pool.simulations[simId]
+  template simulation: untyped = self.simulations[simId]
   try:
-    pool.running[simId] = launch(pool.trnrunPath, simulation.deckFile, simulation.trnrunArgs)
+    self.running[simId] =
+      launch(self.trnrunPath, simulation.deckFile, simulation.trnrunArgs)
     simulation.start()
   except OSError as error:
     diagnose("cannot start simulation " & $simId & ": " & error.msg)
     simulation.finish(none(int), "Cannot start TRNRun: " & error.msg)
 
-proc startQueued(pool: var Pool) =
+proc startQueued(self: var Scheduler) =
   ## Starts the oldest queued simulations while a worker is free.
-  while pool.running.len < pool.maxWorkers and pool.queue.len > 0:
-    let simId = pool.queue[0]
-    pool.queue.delete(0)
-    pool.startTrnrun(simId)
+  while self.running.len < self.maxWorkers and self.queue.len > 0:
+    let simId = self.queue[0]
+    self.queue.delete(0)
+    self.startTrnrun(simId)
 
-proc recordOutput(pool: var Pool) =
+proc recordOutput(self: var Scheduler) =
   ## Records the lines every running TRNRun wrote since the last call.
-  for simId, trnrun in pool.running.mpairs:
-    pool.simulations[simId].recordLines(trnrun.readLines())
+  for simId, trnrun in self.running.mpairs:
+    self.simulations[simId].recordLines(trnrun.readLines())
 
-proc dropTrnrun(pool: var Pool, simId: int) =
+proc dropTrnrun(self: var Scheduler, simId: int) =
   ## Records the last output of `simId`'s exited TRNRun, then closes and forgets it.
-  pool.simulations[simId].recordLines(pool.running[simId].readLastLines())
-  pool.running[simId].close()
-  pool.running.del(simId)
+  self.simulations[simId].recordLines(self.running[simId].readLastLines())
+  self.running[simId].close()
+  self.running.del(simId)
 
-proc finishExited(pool: var Pool) =
+proc finishExited(self: var Scheduler) =
   ## Finishes the simulations whose TRNRun exited, freeing their workers.
   var exited: seq[(int, int)] = @[]
-  for simId, trnrun in pool.running:
+  for simId, trnrun in self.running:
     let exitCode = trnrun.exitCode()
     if exitCode.isSome:
       exited.add((simId, exitCode.get()))
   for (simId, exitCode) in exited:
-    pool.dropTrnrun(simId)
-    pool.simulations[simId].finish(some(exitCode))
+    self.dropTrnrun(simId)
+    self.simulations[simId].finish(some(exitCode))
 
+# --------------------------
 # Public API
+# --------------------------
 
-proc initPool*(trnrunPath: string, maxWorkers: Positive): Pool =
-  ## An empty pool running `trnrunPath` on at most `maxWorkers` simulations at once.
-  Pool(trnrunPath: trnrunPath, maxWorkers: maxWorkers)
+proc initScheduler*(trnrunPath: string, maxWorkers: Positive): Scheduler =
+  ## An empty scheduler running `trnrunPath` on at most `maxWorkers` simulations at once.
+  Scheduler(trnrunPath: trnrunPath, maxWorkers: maxWorkers)
 
 proc add*(
-    pool: var Pool,
+    self: var Scheduler,
     deckFile: sink string,
     trnrunArgs: sink seq[string] = @[],
     label: sink Option[string] = none(string),
@@ -76,40 +79,40 @@ proc add*(
   ## simulation starts at once if a worker is free. If TRNRun cannot start, the
   ## simulation is already `FINISHED` with an error when this returns. Nothing
   ## is validated here; `deckFile` and `trnrunArgs` are passed to TRNRun as given.
-  inc pool.lastSimId
-  result = pool.lastSimId
-  pool.simulations[result] = initSimulation(result, deckFile, trnrunArgs, label)
-  pool.queue.add(result)
-  pool.startQueued()
+  inc self.lastSimId
+  result = self.lastSimId
+  self.simulations[result] = initSimulation(result, deckFile, trnrunArgs, label)
+  self.queue.add(result)
+  self.startQueued()
 
-proc contains*(pool: Pool, simId: int): bool {.inline.} =
+proc contains*(self: Scheduler, simId: int): bool {.inline.} =
   ## Whether simulation `simId` was added and is not released yet.
-  simId in pool.simulations
+  simId in self.simulations
 
-proc `[]`*(pool: Pool, simId: int): lent Simulation {.inline.} =
-  ## The simulation `simId`, borrowed; `KeyError` unless `simId in pool`.
-  pool.simulations[simId]
+proc `[]`*(self: Scheduler, simId: int): lent Simulation {.inline.} =
+  ## The simulation `simId`, borrowed; `KeyError` unless `simId in self`.
+  self.simulations[simId]
 
-proc list*(pool: Pool, state: SimulationState): seq[Simulation] =
+proc list*(self: Scheduler, state: SimulationState): seq[Simulation] =
   ## Every simulation not released yet that is in `state`, oldest first.
   result = @[]
-  for simulation in pool.simulations.values:
+  for simulation in self.simulations.values:
     if simulation.state == state:
       result.add(simulation)
   result = result.sortedByIt(it.simId)
 
-proc update*(pool: var Pool) =
+proc update*(self: var Scheduler) =
   ## Moves every simulation forward one step; never blocks.
   ##
   ## In order, it records the events every running TRNRun wrote, finishes the
   ## simulations whose TRNRun exited, and starts queued simulations on the
   ## workers that freed up. Call it often: TRNRun blocks once its output pipe
   ## is full, and nothing else reads that pipe.
-  pool.recordOutput()
-  pool.finishExited()
-  pool.startQueued()
+  self.recordOutput()
+  self.finishExited()
+  self.startQueued()
 
-proc cancel*(pool: var Pool, simId: int): bool =
+proc cancel*(self: var Scheduler, simId: int): bool =
   ## Cancels a queued or running simulation; false if it is unknown or already finished.
   ##
   ## A running simulation has its TRNRun killed, its last output recorded, and
@@ -117,20 +120,20 @@ proc cancel*(pool: var Pool, simId: int): bool =
   ## as not started. Both end `FINISHED` with status `CANCELLED`, and the freed
   ## worker starts the next queued simulation. Raises `OSError` if TRNRun
   ## cannot be killed, which leaves the simulation running.
-  if simId notin pool.simulations or pool.simulations[simId].state == ssFinished:
+  if simId notin self.simulations or self.simulations[simId].state == ssFinished:
     return false
-  if simId in pool.running:
-    pool.running[simId].kill()
-    pool.dropTrnrun(simId)
+  if simId in self.running:
+    self.running[simId].kill()
+    self.dropTrnrun(simId)
   else:
-    pool.queue.delete(pool.queue.find(simId))
-  pool.simulations[simId].cancel() # Still RUNNING here, so it is reported as interrupted.
-  pool.startQueued()
+    self.queue.delete(self.queue.find(simId))
+  self.simulations[simId].cancel() # Still RUNNING here, so it is reported as interrupted.
+  self.startQueued()
   true
 
-proc release*(pool: var Pool, simId: int): bool =
+proc release*(self: var Scheduler, simId: int): bool =
   ## Forgets a finished simulation and its logs; false if unknown, queued or running.
-  if simId notin pool.simulations or pool.simulations[simId].state != ssFinished:
+  if simId notin self.simulations or self.simulations[simId].state != ssFinished:
     return false
-  pool.simulations.del(simId)
+  self.simulations.del(simId)
   true

@@ -7,7 +7,9 @@
 
 import std/[oserrors, winlean]
 
+# --------------------------
 # Win32 API
+# --------------------------
 type
   JOBOBJECT_BASIC_LIMIT_INFORMATION = object
     perProcessUserTimeLimit: int64
@@ -74,7 +76,9 @@ proc setKillOnClose(job: Handle) =
   if configured == 0:
     raiseOSError(osLastError(), "Failed to configure Job Object limits.")
 
+# --------------------------
 # Public API
+# --------------------------
 
 proc initJobGuard*() =
   ## Places this process in a new kill-on-close Job Object.

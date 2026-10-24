@@ -61,14 +61,14 @@ proc parseWorkers(value: string): int =
   if result < 1:
     raise newException(InputError, "--workers must be at least 1")
 
-proc applyOption*(input: var CliInput, key, value: string): bool =
+proc applyOption*(self: var CliInput, key, value: string): bool =
   ## Applies one option; false if `key` is unknown, `InputError` if `value` is bad.
   result = true
   case key
   of "trnrun":
-    input.trnrunPath = value
+    self.trnrunPath = value
   of "workers":
-    input.maxWorkers = parseWorkers(value)
+    self.maxWorkers = parseWorkers(value)
   else:
     result = false
 

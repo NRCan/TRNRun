@@ -1,17 +1,17 @@
 import std/[json, os, unittest]
 
 import ../src/protocol
-import ../src/pool
+import ../src/scheduler
 import ./fake_trnrun
 
 let dir = createDeckDir()
 
 suite "protocol":
-  var pool = initPool(getAppFilename(), 1)
+  var scheduler = initScheduler(getAppFilename(), 1)
 
   proc request(line: string): JsonNode =
     ## Sends `line` to the protocol and parses its response, which must be one line.
-    let response = pool.handleRequest(line)
+    let response = scheduler.handleRequest(line)
     check '\n' notin response
     parseJson(response)
 
@@ -40,8 +40,8 @@ suite "protocol":
   teardown:
     # Queued first, so cancelling a running one starts nothing.
     for state in [ssQueued, ssRunning]:
-      for simulation in pool.list(state):
-        discard pool.cancel(simulation.simId)
+      for simulation in scheduler.list(state):
+        discard scheduler.cancel(simulation.simId)
 
   test "ready answers true":
     check request("""{"cmd":"ready"}""") == %*{"ok": true}
@@ -68,7 +68,7 @@ suite "protocol":
       if simulation["state"].getStr() == "FINISHED":
         break
       sleep(10)
-      pool.update()
+      scheduler.update()
       simulation = simulation(simId)
     var fieldCount = 0
     for name, _ in default(Simulation).fieldPairs:
