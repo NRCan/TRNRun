@@ -7,12 +7,12 @@ suite "command line":
     let command = parseCommandLine([])
     check command.action == caServe
     check command.input.trnrunPath == getAppDir() / "trnrun.exe"
-    check command.input.workers == max(countProcessors() - 1, 1)
+    check command.input.maxWorkers == max(countProcessors() - 1, 1)
 
   test "reads --trnrun and --workers":
     let command = parseCommandLine(["--trnrun:C:/tools/trnrun.exe", "--workers:3"])
     check command.action == caServe
-    check command.input == CliInput(trnrunPath: "C:/tools/trnrun.exe", workers: 3)
+    check command.input == CliInput(trnrunPath: "C:/tools/trnrun.exe", maxWorkers: 3)
 
   test "help and version win over the other options":
     check parseCommandLine(["--workers:3", "-h"]).action == caHelp

@@ -1,7 +1,7 @@
 ## Defines and parses the trnrund2 command line.
 
 import std/[cpuinfo, os, parseopt, strutils]
-import ./client/validate
+import ./validate
 
 export InputError
 
@@ -32,7 +32,7 @@ type
   CliInput* = object
     ## Settings for a serving daemon; see `HelpText` for each option.
     trnrunPath*: string ## Not checked here; `main` checks the file exists.
-    workers*: int
+    maxWorkers*: int
 
   CliAction* = enum
     caServe ## Serve a client with the parsed input.
@@ -48,8 +48,18 @@ proc defaultCliInput*(): CliInput =
   ## Returns the input used for options the command line leaves out.
   CliInput(
     trnrunPath: getAppDir() / "trnrun.exe",
-    workers: max(countProcessors() - 1, 1),
+    maxWorkers: max(countProcessors() - 1, 1),
   )
+
+proc parseWorkers(value: string): int =
+  ## The `--workers` count in `value`; `InputError` unless an integer of at least 1.
+  result =
+    try:
+      parseInt(value)
+    except ValueError as error:
+      raise newException(InputError, "Invalid --workers: " & error.msg)
+  if result < 1:
+    raise newException(InputError, "--workers must be at least 1")
 
 proc applyOption*(input: var CliInput, key, value: string): bool =
   ## Applies one option; false if `key` is unknown, `InputError` if `value` is bad.
@@ -58,18 +68,17 @@ proc applyOption*(input: var CliInput, key, value: string): bool =
   of "trnrun":
     input.trnrunPath = value
   of "workers":
-    input.workers =
-      try:
-        parseInt(value)
-      except ValueError as error:
-        raise newException(InputError, "Invalid --workers: " & error.msg)
-    if input.workers < 1:
-      raise newException(InputError, "--workers must be at least 1")
+    input.maxWorkers = parseWorkers(value)
   else:
     result = false
 
 proc parseCommandLine*(args: openArray[string]): CliCommand =
-  ## Parses the daemon's arguments, such as `commandLineParams()`; `InputError` if one is invalid.
+  ## Parses the daemon's arguments, such as `commandLineParams()`.
+  ##
+  ## Options left out keep their `defaultCliInput` values. `--help` or
+  ## `--version` returns as soon as it is seen, so options after it are not
+  ## checked. Raises `InputError` for an unknown option, a bad value or a
+  ## positional argument.
   result = CliCommand(action: caServe, input: defaultCliInput())
   if args.len == 0:
     return # `initOptParser` would parse the process's own command line instead.

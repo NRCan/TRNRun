@@ -45,9 +45,9 @@ proc timestamp(): string =
 
 proc initSimulation*(
     simId: int,
-    deckFile: string,
-    trnrunArgs: seq[string],
-    label: Option[string],
+    deckFile: sink string,
+    trnrunArgs: sink seq[string],
+    label: sink Option[string],
 ): Simulation =
   ## A new `QUEUED` simulation, submitted now.
   Simulation(
@@ -88,11 +88,12 @@ proc record*(simulation: var Simulation, event: SimulationEvent) =
     of lsFatal: inc simulation.fatals
     simulation.logs.add(event.log)
 
-proc recordLine*(simulation: var Simulation, line: string) =
-  ## Saves the TRNRun event in one output line; ignores a line that is not one.
-  let event = parseEventLine(line)
-  if event.isSome:
-    simulation.record(event.get())
+proc recordLines*(simulation: var Simulation, lines: seq[string]) =
+  ## Saves the TRNRun event in each output line; ignores a line that is not one.
+  for line in lines:
+    let event = parseEventLine(line)
+    if event.isSome:
+      simulation.record(event.get())
 
 proc finish(
     simulation: var Simulation,
@@ -114,7 +115,11 @@ proc finish(
   simulation.error = if error.len > 0: some(error) else: none(string)
 
 proc finish*(simulation: var Simulation, exitCode: Option[int], error: string = "") =
-  ## Marks the simulation finished once TRNRun exited or failed to start; `ERROR` if it reported no end.
+  ## Finishes the simulation once TRNRun exited or failed to start.
+  ##
+  ## `exitCode` is none if TRNRun never started, and `error` explains why. If
+  ## TRNRun reported no terminal status, the status becomes `ERROR`. The
+  ## simulation succeeded only with status `DONE`, exit code 0 and no `error`.
   let message = if error.len > 0: error else: "TRNRun exited without a terminal status"
   simulation.finish(exitCode, error, StatusEvent(status: stError, message: message))
 

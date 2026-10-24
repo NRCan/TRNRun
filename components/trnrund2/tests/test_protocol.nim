@@ -1,7 +1,7 @@
 import std/[json, os, unittest]
 
-import ../src/client/protocol
-import ../src/worker/pool
+import ../src/protocol
+import ../src/pool
 import ./fake_trnrun
 
 let dir = createDeckDir()
@@ -38,7 +38,10 @@ suite "protocol":
     response == %*{"ok": false, "error": error}
 
   teardown:
-    pool.stop()
+    # Queued first, so cancelling a running one starts nothing.
+    for state in [ssQueued, ssRunning]:
+      for simulation in pool.list(state):
+        discard pool.cancel(simulation.simId)
 
   test "ready answers true":
     check request("""{"cmd":"ready"}""") == %*{"ok": true}
@@ -142,6 +145,20 @@ suite "protocol":
     let listed = request(%*{"cmd": "list", "state": "RUNNING"})["simulations"][0]
     check listed == simulation(queued[0])
     check listed.hasKey("logs")
+
+  test "list leaves out logs only when withLogs is false":
+    let simId = add(createDeck(dir, "wait-l.dck"))
+    proc listed(withLogs: JsonNode): JsonNode =
+      ## The one running simulation `list` returns with `withLogs`.
+      request(%*{"cmd": "list", "state": "RUNNING", "withLogs": withLogs})["simulations"][0]
+    check listed(newJBool(true)) == simulation(simId)
+    check listed(newJNull()) == simulation(simId)
+    let withoutLogs = listed(newJBool(false))
+    check not withoutLogs.hasKey("logs")
+    withoutLogs["logs"] = simulation(simId)["logs"]
+    check withoutLogs == simulation(simId)
+    check request(%*{"cmd": "list", "state": "RUNNING", "withLogs": 1}).rejects(
+      "'withLogs' must be true or false")
 
   test "list refuses a missing or unknown state":
     for node in [%*{"cmd": "list"}, %*{"cmd": "list", "state": "DONE"}]:

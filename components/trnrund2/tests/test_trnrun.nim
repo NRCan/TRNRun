@@ -1,6 +1,6 @@
 import std/[monotimes, options, os, times, unittest]
 
-import ../src/worker/trnrun
+import ../src/trnrun
 import ./fake_trnrun
 
 proc waitForExit(trnrun: var Trnrun): seq[string] =

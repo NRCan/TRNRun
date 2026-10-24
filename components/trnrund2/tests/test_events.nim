@@ -1,6 +1,6 @@
 import std/[json, options, unittest]
 
-import ../src/worker/events
+import ../src/events
 from ../../trnrun/src/events as trnrunEvents import nil
 from ../../trnrun/src/settings as trnrunSettings import nil
 

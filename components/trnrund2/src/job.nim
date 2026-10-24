@@ -44,8 +44,12 @@ proc createJobObjectW(lpJobAttributes, lpName: pointer): Handle
   {.importc: "CreateJobObjectW", dynlib: "kernel32", stdcall.}
   ## Creates a Job Object; returns 0 on failure.
 
-proc setInformationJobObject(hJob: Handle, infoClass: int32, lpInfo: pointer, cbLen: uint32): int32
-  {.importc: "SetInformationJobObject", dynlib: "kernel32", stdcall.}
+proc setInformationJobObject(
+    hJob: Handle,
+    infoClass: int32,
+    lpInfo: pointer,
+    cbLen: uint32,
+): int32 {.importc: "SetInformationJobObject", dynlib: "kernel32", stdcall.}
   ## Sets one class of Job Object limits; returns 0 on failure.
 
 proc assignProcessToJobObject(hJob, hProcess: Handle): int32
@@ -54,10 +58,32 @@ proc assignProcessToJobObject(hJob, hProcess: Handle): int32
 
 var jobHandle: Handle = 0 ## This process's job; 0 until `initJobGuard` succeeds.
 
+proc setKillOnClose(job: Handle) =
+  ## Makes closing `job` kill every process in it; `OSError` on failure.
+  let limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION(
+    basicLimitInformation: JOBOBJECT_BASIC_LIMIT_INFORMATION(
+      limitFlags: JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    ),
+  )
+  let configured = setInformationJobObject(
+    hJob = job,
+    infoClass = JOB_OBJECT_EXTENDED_LIMIT_INFO_CLASS,
+    lpInfo = addr limits,
+    cbLen = uint32(sizeof(limits)),
+  )
+  if configured == 0:
+    raiseOSError(osLastError(), "Failed to configure Job Object limits.")
+
 # Public API
 
 proc initJobGuard*() =
-  ## Places this process in a new kill-on-close Job Object; a no-op once done, `OSError` on failure.
+  ## Places this process in a new kill-on-close Job Object.
+  ##
+  ## Call it before starting any TRNRun: only processes started afterwards join
+  ## the job. The job handle stays open until this process exits, and Windows
+  ## then kills every process still in the job. Calling it again does nothing.
+  ## Raises `OSError` if the job cannot be created, configured or joined, and
+  ## leaves no handle open in that case.
   if jobHandle != 0:
     return
 
@@ -66,12 +92,7 @@ proc initJobGuard*() =
     raiseOSError(osLastError(), "Failed to create Win32 Job Object.")
 
   try:
-    let limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION(basicLimitInformation:
-      JOBOBJECT_BASIC_LIMIT_INFORMATION(limitFlags: JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE))
-    if setInformationJobObject(handle, JOB_OBJECT_EXTENDED_LIMIT_INFO_CLASS,
-        addr limits, uint32(sizeof(limits))) == 0:
-      raiseOSError(osLastError(), "Failed to configure Job Object limits.")
-
+    setKillOnClose(handle)
     if assignProcessToJobObject(handle, getCurrentProcess()) == 0:
       raiseOSError(osLastError(), "Failed to place this process in the Job Object.")
 

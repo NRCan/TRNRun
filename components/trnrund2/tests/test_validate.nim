@@ -1,6 +1,6 @@
 import std/[os, unittest]
 
-import ../src/client/validate
+import ../src/validate
 import ./fake_trnrun
 
 let dir = createDeckDir()

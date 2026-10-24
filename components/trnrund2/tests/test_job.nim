@@ -1,6 +1,6 @@
 import std/unittest
 
-include ../src/worker/job
+include ../src/job
 
 proc isProcessInJob(
     processHandle: Handle,

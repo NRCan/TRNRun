@@ -1,11 +1,11 @@
 import std/[monotimes, options, os, sequtils, strutils, times, unittest]
 
-import ../src/worker/pool
+import ../src/pool
 import ./fake_trnrun
 
 proc simulationOf(pool: Pool, simId: int): Simulation =
   ## The simulation `simId`, which must exist.
-  pool.get(simId).get()
+  pool[simId]
 
 proc stateOf(pool: Pool, simId: int): SimulationState =
   ## The state of simulation `simId`, which must exist.
@@ -25,7 +25,10 @@ suite "pool":
   var pool = initPool(getAppFilename(), 2)
 
   teardown:
-    pool.stop()
+    # Queued first, so cancelling a running one starts nothing.
+    for state in [ssQueued, ssRunning]:
+      for simulation in pool.list(state):
+        discard pool.cancel(simulation.simId)
     pool = initPool(getAppFilename(), 2)
 
   test "add starts a simulation at once when a worker is free":
@@ -166,7 +169,9 @@ suite "pool":
     pool.waitUntil(pool.stateOf(done) == ssFinished)
     check not pool.release(running)
     check pool.release(done)
-    check pool.get(done).isNone
+    check done notin pool
+    expect KeyError:
+      discard pool[done]
     check not pool.release(done)
     check pool.cancel(running)
     check pool.release(running)
@@ -187,15 +192,5 @@ suite "pool":
     check pool.list(ssFinished)[0].logs.len == 3
     check pool.release(done)
     check pool.list(ssFinished).len == 0
-
-  test "stop cancels every queued and running simulation":
-    let simIds = [
-      pool.add(createDeck(dir, "wait-m1.dck")),
-      pool.add(createDeck(dir, "wait-m2.dck")),
-      pool.add(createDeck(dir, "wait-m3.dck")),
-    ]
-    pool.stop()
-    for simId in simIds:
-      check pool.simulationOf(simId).trnrunStatus == some(stCancelled)
 
 removeDir(dir)

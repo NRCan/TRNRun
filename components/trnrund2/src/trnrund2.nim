@@ -5,9 +5,7 @@
 ## Closing stdin cancels every simulation and exits.
 
 import std/os
-import ./cli
-import ./client/[pipe, protocol, validate]
-import ./worker/[job, pool]
+import ./[cli, job, pipe, pool, protocol, validate]
 
 const PollMs = 10 ## Idle wait between checks for requests and finished simulations.
 
@@ -21,35 +19,41 @@ proc serve(pool: var Pool) =
     of prLine: respond(pool.handleRequest(line))
     of prClosed: return
 
+proc run(input: CliInput): int =
+  ## Serves the client with `input` until it closes stdin and returns the exit code.
+  ##
+  ## Returns 0 once the client closes stdin. Returns 1 after writing the error
+  ## to stderr if the job guard or pipe cannot be set up, or a fault stops the
+  ## serve loop. Never raises a `CatchableError`.
+  result = 0
+  var pool = initPool(input.trnrunPath, input.maxWorkers)
+  try:
+    # Windows kills every TRNRun this daemon started once it exits, however it exits.
+    initJobGuard()
+    openPipe()
+    pool.serve()
+  except CatchableError as error:
+    diagnose(error.msg)
+    result = 1
+
 proc main(): int =
-  ## Runs the daemon and returns its exit code.
-  var input = default(CliInput)
+  ## Runs what the command line asks for and returns the exit code.
   try:
     let command = parseCommandLine(commandLineParams())
     case command.action
     of caHelp:
       echo HelpText
-      return 0
+      result = 0
     of caVersion:
       echo NimblePkgVersion
-      return 0
+      result = 0
     of caServe:
-      input = command.input
+      var input = command.input
       input.trnrunPath = validateFile(input.trnrunPath, "TRNRun")
+      result = run(input) # Never raises: `run` turns its own failures into exit code 1.
   except InputError as error:
-    stderr.writeLine("trnrund2: ", error.msg)
-    return 2
-  var pool = initPool(input.trnrunPath, input.workers)
-  try:
-    initJobGuard() # Even if the daemon crashes, Windows then kills every TRNRun it started.
-    openPipe()
-    pool.serve()
-  except CatchableError as error:
-    stderr.writeLine("trnrund2: ", error.msg)
-    return 1
-  finally:
-    pool.stop()
-  0
+    diagnose(error.msg)
+    result = 2
 
 when isMainModule:
   quit(main())

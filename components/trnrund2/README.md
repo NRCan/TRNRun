@@ -53,7 +53,9 @@ for humans.
 - `list` returns every simulation not released yet in `state` (`QUEUED`,
   `RUNNING` or `FINISHED`), oldest first, each as `get` returns it, logs
   included. Polling `list` with `FINISHED`, then releasing what it returns,
-  collects a batch in one request per poll.
+  collects a batch in one request per poll. With `"withLogs":false`, each
+  simulation comes without its `logs` key, keeping its counts: poll `RUNNING`
+  that way, and fetch logs once a simulation is `FINISHED`.
 
 ## Simulations
 
@@ -85,18 +87,18 @@ for humans.
 
 ## Layout
 
-| Path                        | Role                                                       |
-| --------------------------- | ---------------------------------------------------------- |
-| `src/trnrund2.nim`          | Entry point and the serve loop tying client and worker     |
-| `src/cli.nim`               | Parses the command line: options, help and version         |
-| `src/client/pipe.nim`       | stdin reader thread and stdout responses                   |
-| `src/client/protocol.nim`   | Request line to response line; all JSON lives here         |
-| `src/client/validate.nim`   | Checks deck and TRNRun paths, and `trnrunArgs`             |
-| `src/worker/pool.nim`       | Queue, worker limit, which simulation runs where           |
-| `src/worker/trnrun.nim`     | Launches one TRNRun, reads its output lines, kills it      |
-| `src/worker/job.nim`        | Kill-on-close Job Object: TRNRun never outlives the daemon |
-| `src/worker/simulation.nim` | One simulation's record and how events and exits update it |
-| `src/worker/events.nim`     | Parses TRNRun's JSON event lines                           |
+| Path                 | Role                                                       |
+| -------------------- | ---------------------------------------------------------- |
+| `src/trnrund2.nim`   | Entry point and the serve loop tying client and pool       |
+| `src/cli.nim`        | Parses the command line: options, help and version         |
+| `src/pipe.nim`       | stdin reader thread and stdout responses                   |
+| `src/protocol.nim`   | Request line to response line; all JSON lives here         |
+| `src/validate.nim`   | Checks deck and TRNRun paths, and `trnrunArgs`             |
+| `src/pool.nim`       | Queue, worker limit, which simulation runs where           |
+| `src/trnrun.nim`     | Launches one TRNRun, reads its output lines, kills it      |
+| `src/job.nim`        | Kill-on-close Job Object: TRNRun never outlives the daemon |
+| `src/simulation.nim` | One simulation's record and how events and exits update it |
+| `src/events.nim`     | Parses TRNRun's JSON event lines                           |
 
 ## Build, tests and examples
 
