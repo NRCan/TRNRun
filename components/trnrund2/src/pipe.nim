@@ -1,9 +1,10 @@
 ## Carries request lines from stdin, response lines to stdout, and diagnostics to stderr.
 ##
 ## Stdin is read on a thread of its own, so the daemon keeps starting and
-## reaping simulations while the client is quiet; `poll` never blocks.
+## reaping simulations while the client is quiet; `poll` never blocks, and
+## `waitForLine` sleeps only until the next line arrives.
 
-import std/[options, winlean]
+import std/[options, oserrors, winlean]
 
 type PollResult* = enum
   prNothing ## No request waiting.
@@ -12,17 +13,23 @@ type PollResult* = enum
 
 var
   inbox: Channel[Option[string]] ## Each stdin line, then none once stdin ends.
+  posted: Handle ## Auto-reset event set after each `inbox` send; wakes `waitForLine`.
   reader: Thread[void]
+
+proc post(message: sink Option[string]) =
+  ## Sends `message` to `inbox` and wakes `waitForLine`.
+  inbox.send(message)
+  discard setEvent(posted)
 
 proc readStdin() {.thread.} =
   ## Posts each stdin line to `inbox`, then none once the client is gone.
   var line = ""
   try:
     while stdin.readLine(line):
-      inbox.send(some(move line)) # readLine refills the emptied `line`.
+      post(some(move line)) # readLine refills the emptied `line`.
   except IOError:
     discard # A broken pipe means the client is gone, like a closed one.
-  inbox.send(none(string))
+  post(none(string))
 
 proc disinheritStdHandles() =
   ## Stops child processes such as TRNRun inheriting the client's pipes.
@@ -31,21 +38,30 @@ proc disinheritStdHandles() =
     discard setHandleInformation(getStdHandle(kind), HANDLE_FLAG_INHERIT, 0)
 
 proc openPipe*() =
-  ## Starts reading stdin and stops TRNRun inheriting the client's pipes.
+  ## Starts reading stdin and stops TRNRun inheriting the client's pipes; `OSError` on failure.
   disinheritStdHandles()
+  posted = createEvent(nil, 0, 0, nil)
+  if posted == 0:
+    raiseOSError(osLastError(), "Failed to create the stdin event.")
   inbox.open()
   createThread(reader, readStdin)
+
+proc waitForLine*(timeoutMs: int) =
+  ## Sleeps until a stdin line may be waiting, or at most `timeoutMs`.
+  # A line taken by `poll` before this wait leaves the event set, so the wait can
+  # end early without a line; the caller just polls again.
+  discard waitForSingleObject(posted, int32(timeoutMs))
 
 proc poll*(line: var string): PollResult =
   ## Takes the next request line into `line` if one is waiting; never blocks.
   let (available, message) = inbox.tryRecv()
   if not available:
-    prNothing
+    return prNothing
   elif message.isNone:
-    prClosed
+    return prClosed
   else:
     line = message.get()
-    prLine
+    return prLine
 
 proc diagnose*(message: string) =
   ## Writes a diagnostic to stderr, which stays free of protocol traffic.

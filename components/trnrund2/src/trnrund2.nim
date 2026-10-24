@@ -7,7 +7,7 @@
 import std/os
 import ./[cli, job, pipe, scheduler, protocol, validate]
 
-const PollMs = 10 ## Idle wait between checks for requests and finished simulations.
+const PollMs = 10 ## Longest idle wait between checks for finished simulations; a request ends it.
 
 proc serve(scheduler: var Scheduler) =
   ## Answers requests until the client closes stdin, keeping simulations moving meanwhile.
@@ -15,7 +15,7 @@ proc serve(scheduler: var Scheduler) =
   while true:
     scheduler.update()
     case poll(line)
-    of prNothing: sleep(PollMs)
+    of prNothing: waitForLine(PollMs)
     of prLine: respond(scheduler.handleRequest(line))
     of prClosed: return
 
@@ -43,17 +43,17 @@ proc main(): int =
     case command.action
     of caHelp:
       echo HelpText
-      result = 0
+      return 0
     of caVersion:
       echo NimblePkgVersion
-      result = 0
+      return 0
     of caServe:
       var input = command.input
       input.trnrunPath = validateFile(input.trnrunPath, "TRNRun")
-      result = run(input) # Never raises: `run` turns its own failures into exit code 1.
+      return run(input) # Never raises: `run` turns its own failures into exit code 1.
   except InputError as error:
     diagnose(error.msg)
-    result = 2
+    return 2
 
 when isMainModule:
   quit(main())

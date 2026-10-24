@@ -56,7 +56,7 @@ proc runFakeTrnrun(deckFile: string): int =
 
 proc createDeckDir*(): string =
   ## A new empty temporary directory for decks.
-  createTempDir("trnrund2-", "")
+  return createTempDir("trnrund2-", "")
 
 proc createDeck*(dir, name: string): string =
   ## Writes an empty deck `name` in `dir` and returns its path.

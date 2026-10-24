@@ -51,11 +51,10 @@ for humans.
   is still `QUEUED` or `RUNNING` (cancel it first) or unknown.
 - `get` refuses an unknown simId.
 - `list` returns every simulation not released yet in `state` (`QUEUED`,
-  `RUNNING` or `FINISHED`), oldest first, each as `get` returns it, logs
-  included. Polling `list` with `FINISHED`, then releasing what it returns,
-  collects a batch in one request per poll. With `"withLogs":false`, each
-  simulation comes without its `logs` key, keeping its counts: poll `RUNNING`
-  that way, and fetch logs once a simulation is `FINISHED`.
+  `RUNNING` or `FINISHED`), oldest first, each as `get` returns it but without
+  its `logs` key; the log counts stay. Add `"withLogs":true` to include logs.
+  Polling `list` with `FINISHED`, then releasing what it returns, collects a
+  batch in one request per poll; use `get` or `withLogs` for the logs you need.
 
 ## Simulations
 

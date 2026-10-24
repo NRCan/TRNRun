@@ -46,7 +46,7 @@ type
 
 proc defaultCliInput*(): CliInput =
   ## Returns the input used for options the command line leaves out.
-  CliInput(
+  return CliInput(
     trnrunPath: getAppDir() / "trnrun.exe",
     maxWorkers: max(countProcessors() - 1, 1),
   )

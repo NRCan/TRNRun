@@ -41,7 +41,7 @@ const
 
 proc timestamp(): string =
   ## The current time, as every timestamp is kept.
-  now().utc().format("yyyy-MM-dd'T'HH:mm:ss'.'fff'Z'")
+  return now().utc().format("yyyy-MM-dd'T'HH:mm:ss'.'fff'Z'")
 
 proc initSimulation*(
     simId: int,
@@ -50,7 +50,7 @@ proc initSimulation*(
     label: sink Option[string],
 ): Simulation =
   ## A new `QUEUED` simulation, submitted now.
-  Simulation(
+  return Simulation(
     simId: simId,
     label: label,
     state: ssQueued,

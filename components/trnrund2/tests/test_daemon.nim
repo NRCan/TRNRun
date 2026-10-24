@@ -1,4 +1,4 @@
-import std/[json, os, osproc, streams, strutils, unittest]
+import std/[json, monotimes, os, osproc, streams, strutils, times, unittest]
 
 import ./fake_trnrun
 
@@ -17,21 +17,21 @@ let
 
 proc startDaemon(args: varargs[string]): Process =
   ## Starts the daemon with `args` and piped stdin, stdout and stderr.
-  startProcess(daemonExe, workingDir = dir, args = @args, options = {})
+  return startProcess(daemonExe, workingDir = dir, args = @args, options = {})
 
 proc request(daemon: Process, node: JsonNode): JsonNode =
   ## Sends one request line and reads the one response line it gets.
   daemon.inputStream.writeLine($node)
   daemon.inputStream.flush()
-  parseJson(daemon.outputStream.readLine())
+  return parseJson(daemon.outputStream.readLine())
 
 proc add(daemon: Process, deckFile: string): int =
   ## Adds `deckFile` and returns its simId.
-  daemon.request(%*{"cmd": "add", "deckFile": deckFile})["simId"].getInt()
+  return daemon.request(%*{"cmd": "add", "deckFile": deckFile})["simId"].getInt()
 
 proc simulation(daemon: Process, simId: int): JsonNode =
   ## The simulation `simId` as `get` returns it.
-  daemon.request(%*{"cmd": "get", "simId": simId})["simulation"]
+  return daemon.request(%*{"cmd": "get", "simId": simId})["simulation"]
 
 suite "daemon":
   test "builds":
@@ -85,6 +85,18 @@ suite "daemon":
     daemon.inputStream.close()
     check daemon.waitForExit(10_000) == 0
     check daemon.outputStream.readAll() == ""
+    daemon.close()
+
+  test "answers a request at once instead of after its idle wait":
+    let daemon = startDaemon(trnrunOption)
+    check daemon.request(%*{"cmd": "ready"}) == %*{"ok": true}
+    let start = getMonoTime()
+    for _ in 1..200:
+      discard daemon.request(%*{"cmd": "ready"})
+    # Waiting the full 10 ms idle wait per request would take at least 2 s.
+    check getMonoTime() - start < initDuration(seconds = 1)
+    daemon.inputStream.close()
+    check daemon.waitForExit(10_000) == 0
     daemon.close()
 
   test "closing stdin kills running TRNRun and exits 0":

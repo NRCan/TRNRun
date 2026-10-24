@@ -22,7 +22,7 @@ proc launch*(trnrunPath, deckFile: string, trnrunArgs: seq[string]): Trnrun =
     args = @[deckFile] & trnrunArgs,
     options = {poStdErrToStdOut, poDaemon},
   )
-  Trnrun(process: process)
+  return Trnrun(process: process)
 
 proc drain(self: var Trnrun) =
   ## Appends everything TRNRun wrote so far to `pending`; never blocks.
@@ -48,7 +48,7 @@ proc takeLines(pending: var string): seq[string] =
 proc readLines*(self: var Trnrun): seq[string] =
   ## The complete lines TRNRun wrote since the last call, without line breaks; never blocks.
   self.drain()
-  self.pending.takeLines()
+  return self.pending.takeLines()
 
 proc readLastLines*(self: var Trnrun): seq[string] =
   ## `readLines`, plus a last line without a line break; call once TRNRun exited.
@@ -60,7 +60,7 @@ proc exitCode*(self: Trnrun): Option[int] =
   ## TRNRun's exit code, or none while it runs; never blocks.
   # Windows reports a process that exited with 259 (`STILL_ACTIVE`) as running; TRNRun never does.
   let code = self.process.peekExitCode()
-  if code == -1: none(int) else: some(code)
+  return if code == -1: none(int) else: some(code)
 
 proc kill*(self: Trnrun) =
   ## Kills TRNRun and waits for it to exit; `OSError` if it cannot be killed.

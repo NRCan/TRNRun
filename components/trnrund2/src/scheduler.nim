@@ -65,7 +65,7 @@ proc finishExited(self: var Scheduler) =
 
 proc initScheduler*(trnrunPath: string, maxWorkers: Positive): Scheduler =
   ## An empty scheduler running `trnrunPath` on at most `maxWorkers` simulations at once.
-  Scheduler(trnrunPath: trnrunPath, maxWorkers: maxWorkers)
+  return Scheduler(trnrunPath: trnrunPath, maxWorkers: maxWorkers)
 
 proc add*(
     self: var Scheduler,
@@ -87,19 +87,19 @@ proc add*(
 
 proc contains*(self: Scheduler, simId: int): bool {.inline.} =
   ## Whether simulation `simId` was added and is not released yet.
-  simId in self.simulations
+  return simId in self.simulations
 
 proc `[]`*(self: Scheduler, simId: int): lent Simulation {.inline.} =
   ## The simulation `simId`, borrowed; `KeyError` unless `simId in self`.
-  self.simulations[simId]
+  return self.simulations[simId]
 
-proc list*(self: Scheduler, state: SimulationState): seq[Simulation] =
-  ## Every simulation not released yet that is in `state`, oldest first.
+proc list*(self: Scheduler, state: SimulationState): seq[int] =
+  ## The simIds of every simulation not released yet that is in `state`, oldest first.
   result = @[]
-  for simulation in self.simulations.values:
+  for simId, simulation in self.simulations:
     if simulation.state == state:
-      result.add(simulation)
-  result = result.sortedByIt(it.simId)
+      result.add(simId)
+  result.sort()
 
 proc update*(self: var Scheduler) =
   ## Moves every simulation forward one step; never blocks.
@@ -129,11 +129,11 @@ proc cancel*(self: var Scheduler, simId: int): bool =
     self.queue.delete(self.queue.find(simId))
   self.simulations[simId].cancel() # Still RUNNING here, so it is reported as interrupted.
   self.startQueued()
-  true
+  return true
 
 proc release*(self: var Scheduler, simId: int): bool =
   ## Forgets a finished simulation and its logs; false if unknown, queued or running.
   if simId notin self.simulations or self.simulations[simId].state != ssFinished:
     return false
   self.simulations.del(simId)
-  true
+  return true

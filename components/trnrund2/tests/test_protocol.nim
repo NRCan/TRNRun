@@ -13,35 +13,35 @@ suite "protocol":
     ## Sends `line` to the protocol and parses its response, which must be one line.
     let response = scheduler.handleRequest(line)
     check '\n' notin response
-    parseJson(response)
+    return parseJson(response)
 
   proc request(node: JsonNode): JsonNode =
     ## Sends `node` as one request line.
-    request($node)
+    return request($node)
 
   proc add(node: JsonNode): int =
     ## Sends the `add` request `node` and returns its simId.
     let response = request(node)
     check response["ok"].getBool()
-    response["simId"].getInt()
+    return response["simId"].getInt()
 
   proc add(deckFile: string): int =
     ## Adds `deckFile` and returns its simId.
-    add(%*{"cmd": "add", "deckFile": deckFile})
+    return add(%*{"cmd": "add", "deckFile": deckFile})
 
   proc simulation(simId: int): JsonNode =
     ## The `get` response's simulation for `simId`.
-    request(%*{"cmd": "get", "simId": simId})["simulation"]
+    return request(%*{"cmd": "get", "simId": simId})["simulation"]
 
   proc rejects(response: JsonNode, error: string): bool =
     ## Whether `response` is a refusal with exactly `error`.
-    response == %*{"ok": false, "error": error}
+    return response == %*{"ok": false, "error": error}
 
   teardown:
     # Queued first, so cancelling a running one starts nothing.
     for state in [ssQueued, ssRunning]:
-      for simulation in scheduler.list(state):
-        discard scheduler.cancel(simulation.simId)
+      for simId in scheduler.list(state):
+        discard scheduler.cancel(simId)
 
   test "ready answers true":
     check request("""{"cmd":"ready"}""") == %*{"ok": true}
@@ -143,20 +143,19 @@ suite "protocol":
     discard request(%*{"cmd": "cancel", "simId": running})
     check running in simIds("FINISHED")
     let listed = request(%*{"cmd": "list", "state": "RUNNING"})["simulations"][0]
-    check listed == simulation(queued[0])
-    check listed.hasKey("logs")
+    check not listed.hasKey("logs")
 
-  test "list leaves out logs only when withLogs is false":
+  test "list includes logs only when withLogs is true":
     let simId = add(createDeck(dir, "wait-l.dck"))
     proc listed(withLogs: JsonNode): JsonNode =
       ## The one running simulation `list` returns with `withLogs`.
-      request(%*{"cmd": "list", "state": "RUNNING", "withLogs": withLogs})["simulations"][0]
+      return request(%*{"cmd": "list", "state": "RUNNING", "withLogs": withLogs})["simulations"][0]
     check listed(newJBool(true)) == simulation(simId)
-    check listed(newJNull()) == simulation(simId)
-    let withoutLogs = listed(newJBool(false))
-    check not withoutLogs.hasKey("logs")
-    withoutLogs["logs"] = simulation(simId)["logs"]
-    check withoutLogs == simulation(simId)
+    for withLogs in [newJNull(), newJBool(false)]:
+      let withoutLogs = listed(withLogs)
+      check not withoutLogs.hasKey("logs")
+      withoutLogs["logs"] = simulation(simId)["logs"]
+      check withoutLogs == simulation(simId)
     check request(%*{"cmd": "list", "state": "RUNNING", "withLogs": 1}).rejects(
       "'withLogs' must be true or false")
 

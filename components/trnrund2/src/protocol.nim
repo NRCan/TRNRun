@@ -37,12 +37,12 @@ proc field(
 
 proc simId(request: JsonNode): int =
   ## The request's `simId`; `InputError` if missing or not an integer.
-  request.field("simId", JInt, "an integer").getInt()
+  return request.field("simId", JInt, "an integer").getInt()
 
 proc label(request: JsonNode): Option[string] =
   ## The request's optional `label`; `InputError` if not a string.
   let node = request.optionalField("label", JString, "a string")
-  if node == nil: none(string) else: some(node.getStr())
+  return if node == nil: none(string) else: some(node.getStr())
 
 proc trnrunArgs(request: JsonNode): seq[string] =
   ## The request's optional `trnrunArgs`; `InputError` unless TRNRun options the daemon allows.
@@ -58,26 +58,21 @@ proc trnrunArgs(request: JsonNode): seq[string] =
 proc state(request: JsonNode): SimulationState =
   ## The request's `state`; `InputError` unless a simulation state.
   const expected = "QUEUED, RUNNING or FINISHED"
-  try:
-    parseEnum[SimulationState](request.field("state", JString, expected).getStr())
-  except ValueError:
-    raise newException(InputError, "'state' must be " & expected)
+  let state =
+    try:
+      parseEnum[SimulationState](request.field("state", JString, expected).getStr())
+    except ValueError:
+      raise newException(InputError, "'state' must be " & expected)
+  return state
 
 proc withLogs(request: JsonNode): bool =
-  ## The request's optional `withLogs`, true when missing; `InputError` if not a boolean.
+  ## The request's optional `withLogs`, false when missing; `InputError` if not a boolean.
   let node = request.optionalField("withLogs", JBool, "true or false")
-  node == nil or node.getBool()
+  return node != nil and node.getBool()
 
 # --------------------------
 # Commands
 # --------------------------
-proc listJson(scheduler: Scheduler, state: SimulationState, withLogs: bool): JsonNode =
-  ## The simulations `list` returns for `state`, without their `logs` key unless `withLogs`.
-  result = %scheduler.list(state)
-  if not withLogs:
-    for simulation in result:
-      simulation.delete("logs")
-
 proc refusal(scheduler: Scheduler, simId: int, action: string): JsonNode =
   ## The response refusing to `action` simulation `simId`, saying why.
   let error =
@@ -85,7 +80,7 @@ proc refusal(scheduler: Scheduler, simId: int, action: string): JsonNode =
       "Unknown simId: " & $simId
     else:
       "Cannot " & action & " simulation " & $simId & ": it is " & $scheduler[simId].state
-  %*{"ok": false, "error": error}
+  return %*{"ok": false, "error": error}
 
 proc addCmd(scheduler: var Scheduler, request: JsonNode): JsonNode =
   ## Answers `add`: queues the requested simulation and returns its simId.
@@ -94,7 +89,7 @@ proc addCmd(scheduler: var Scheduler, request: JsonNode): JsonNode =
     trnrunArgs = request.trnrunArgs(),
     label = request.label(),
   )
-  %*{"ok": true, "simId": simId}
+  return %*{"ok": true, "simId": simId}
 
 proc cancelCmd(scheduler: var Scheduler, request: JsonNode): JsonNode =
   ## Answers `cancel`: cancels the simulation, or says why it cannot.
@@ -104,24 +99,35 @@ proc cancelCmd(scheduler: var Scheduler, request: JsonNode): JsonNode =
       scheduler.cancel(simId)
     except OSError as error:
       return %*{"ok": false, "error": "Cannot cancel simulation " & $simId & ": " & error.msg}
-  if cancelled: %*{"ok": true} else: scheduler.refusal(simId, "cancel")
+  return if cancelled: %*{"ok": true} else: scheduler.refusal(simId, "cancel")
 
 proc releaseCmd(scheduler: var Scheduler, request: JsonNode): JsonNode =
   ## Answers `release`: forgets the finished simulation, or says why it cannot.
   let simId = request.simId()
-  if scheduler.release(simId): %*{"ok": true} else: scheduler.refusal(simId, "release")
+  return if scheduler.release(simId): %*{"ok": true} else: scheduler.refusal(simId, "release")
 
 proc getCmd(scheduler: Scheduler, request: JsonNode): JsonNode =
   ## Answers `get`: returns the simulation, or says it is unknown.
   let simId = request.simId()
-  if simId in scheduler:
-    %*{"ok": true, "simulation": scheduler[simId]}
-  else:
-    scheduler.refusal(simId, "get")
+  return if simId in scheduler: %*{"ok": true, "simulation": scheduler[simId]} else: scheduler.refusal(simId, "get")
+
+proc toJsonWithoutLogs(simulation: Simulation): JsonNode =
+  ## `%simulation` without its `logs` key, never serializing the logs.
+  result = newJObject()
+  for name, value in simulation.fieldPairs:
+    when name != "logs":
+      result[name] = %value
 
 proc listCmd(scheduler: Scheduler, request: JsonNode): JsonNode =
-  ## Answers `list`: returns the simulations in the requested state.
-  %*{"ok": true, "simulations": scheduler.listJson(request.state(), request.withLogs())}
+  ## Answers `list`: returns the simulations in the requested state, without `logs` unless `withLogs`.
+  let
+    state = request.state()
+    withLogs = request.withLogs()
+  var simulations = newJArray()
+  for simId in scheduler.list(state):
+    # Indexed in place: `scheduler[simId]` is borrowed, so no simulation is copied.
+    simulations.add(if withLogs: %scheduler[simId] else: scheduler[simId].toJsonWithoutLogs())
+  return %*{"ok": true, "simulations": simulations}
 
 proc dispatch(scheduler: var Scheduler, request: JsonNode): JsonNode =
   ## Routes one parsed request to its command and returns the response.
@@ -129,12 +135,12 @@ proc dispatch(scheduler: var Scheduler, request: JsonNode): JsonNode =
     raise newException(InputError, "Request must be a JSON object")
   let cmd = request.field("cmd", JString, "a string").getStr()
   case cmd
-  of "ready": %*{"ok": true}
-  of "add": scheduler.addCmd(request)
-  of "cancel": scheduler.cancelCmd(request)
-  of "release": scheduler.releaseCmd(request)
-  of "get": scheduler.getCmd(request)
-  of "list": scheduler.listCmd(request)
+  of "ready": return %*{"ok": true}
+  of "add": return scheduler.addCmd(request)
+  of "cancel": return scheduler.cancelCmd(request)
+  of "release": return scheduler.releaseCmd(request)
+  of "get": return scheduler.getCmd(request)
+  of "list": return scheduler.listCmd(request)
   else: raise newException(InputError, "Unknown cmd: " & cmd)
 
 proc handleRequest*(scheduler: var Scheduler, line: string): string =
@@ -150,4 +156,4 @@ proc handleRequest*(scheduler: var Scheduler, line: string): string =
       scheduler.dispatch(parseJson(line))
     except InputError, JsonParsingError:
       %*{"ok": false, "error": getCurrentExceptionMsg()}
-  $response
+  return $response

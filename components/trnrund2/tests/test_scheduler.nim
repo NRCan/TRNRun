@@ -1,15 +1,15 @@
-import std/[monotimes, options, os, sequtils, strutils, times, unittest]
+import std/[monotimes, options, os, strutils, times, unittest]
 
 import ../src/scheduler
 import ./fake_trnrun
 
 proc simulationOf(scheduler: Scheduler, simId: int): Simulation =
   ## The simulation `simId`, which must exist.
-  scheduler[simId]
+  return scheduler[simId]
 
 proc stateOf(scheduler: Scheduler, simId: int): SimulationState =
   ## The state of simulation `simId`, which must exist.
-  scheduler.simulationOf(simId).state
+  return scheduler.simulationOf(simId).state
 
 template waitUntil(scheduler: var Scheduler, condition: untyped) =
   ## Updates `scheduler` until `condition` holds; fails after 5 seconds.
@@ -27,8 +27,8 @@ suite "scheduler":
   teardown:
     # Queued first, so cancelling a running one starts nothing.
     for state in [ssQueued, ssRunning]:
-      for simulation in scheduler.list(state):
-        discard scheduler.cancel(simulation.simId)
+      for simId in scheduler.list(state):
+        discard scheduler.cancel(simId)
     scheduler = initScheduler(getAppFilename(), 2)
 
   test "add starts a simulation at once when a worker is free":
@@ -176,7 +176,7 @@ suite "scheduler":
     check scheduler.cancel(running)
     check scheduler.release(running)
 
-  test "list returns the simulations in a state, oldest first":
+  test "list returns the simIds in a state, oldest first":
     let
       done = scheduler.add(createDeck(dir, "done-n1.dck"))
       running = scheduler.add(createDeck(dir, "wait-n2.dck"))
@@ -186,10 +186,9 @@ suite "scheduler":
       scheduler.add(createDeck(dir, "wait-n4.dck")),
       scheduler.add(createDeck(dir, "wait-n5.dck")),
     ]
-    check scheduler.list(ssFinished).mapIt(it.simId) == @[done]
-    check scheduler.list(ssRunning).mapIt(it.simId) == @[running, queued[0]]
-    check scheduler.list(ssQueued).mapIt(it.simId) == @[queued[1], queued[2]]
-    check scheduler.list(ssFinished)[0].logs.len == 3
+    check scheduler.list(ssFinished) == @[done]
+    check scheduler.list(ssRunning) == @[running, queued[0]]
+    check scheduler.list(ssQueued) == @[queued[1], queued[2]]
     check scheduler.release(done)
     check scheduler.list(ssFinished).len == 0
 
