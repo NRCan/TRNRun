@@ -96,19 +96,19 @@ proc parseSimulationEvent(node: JsonNode): SimulationEvent =
 
   case node["kind"].to(SimulationEventKind)
   of ekSetting:
-    SimulationEvent(kind: ekSetting, setting: node.to(SettingEvent))
+    return SimulationEvent(kind: ekSetting, setting: node.to(SettingEvent))
   of ekStatus:
-    SimulationEvent(kind: ekStatus, status: node.to(StatusEvent))
+    return SimulationEvent(kind: ekStatus, status: node.to(StatusEvent))
   of ekConfig:
-    SimulationEvent(kind: ekConfig, config: node.to(ConfigEvent))
+    return SimulationEvent(kind: ekConfig, config: node.to(ConfigEvent))
   of ekProgress:
-    SimulationEvent(kind: ekProgress, progress: node.to(ProgressEvent))
+    return SimulationEvent(kind: ekProgress, progress: node.to(ProgressEvent))
   of ekLog:
-    SimulationEvent(kind: ekLog, log: node.to(LogEvent))
+    return SimulationEvent(kind: ekLog, log: node.to(LogEvent))
 
 proc parseEventLine*(line: string): Option[SimulationEvent] =
   ## Parses one line of TRNRun output; none if it is not a valid event.
   try:
-    some(parseSimulationEvent(parseJson(line)))
+    return some(parseSimulationEvent(parseJson(line)))
   except ValueError, KeyError:
-    none(SimulationEvent)
+    return none(SimulationEvent)

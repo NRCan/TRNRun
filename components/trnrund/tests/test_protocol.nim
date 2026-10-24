@@ -1,211 +1,185 @@
-import std/[deques, importutils, json, monotimes, options, os, sequtils, strutils, tables, tempfiles, times, unittest]
+import std/[json, os, unittest]
 
-import ../src/[events, job, protocol, scheduler]
-import ./[fake_deck, fake_trnrun]
+import ../src/protocol
+import ../src/scheduler
+import ./fake_trnrun
 
-privateAccess(Scheduler)
+let dir = createDeckDir()
 
-proc call(scheduler: Scheduler, request: JsonNode): JsonNode =
-  ## Runs one request and returns its parsed reply.
-  parseJson(scheduler.handleRequest($request))
+suite "protocol":
+  var scheduler = initScheduler(getAppFilename(), 1)
 
-proc step(scheduler: Scheduler) =
-  ## Applies the next batch of worker messages, as the daemon does.
-  for message in scheduler.receive():
-    scheduler.apply(message)
+  proc request(line: string): JsonNode =
+    ## Sends `line` to the protocol and parses its response, which must be one line.
+    let response = scheduler.handleRequest(line)
+    check '\n' notin response
+    return parseJson(response)
 
-proc waitFinished(scheduler: Scheduler, runId: int) =
-  ## Applies worker messages until `runId` finished.
-  while scheduler.store[runId].state != ssFinished:
-    scheduler.step()
+  proc request(node: JsonNode): JsonNode =
+    ## Sends `node` as one request line.
+    return request($node)
 
-proc shutdown(scheduler: Scheduler) =
-  ## Shuts down without a client, applying worker messages until nothing runs, then closes.
-  scheduler.requestShutdown()
-  while not scheduler.isDone:
-    scheduler.step()
-  scheduler.close()
+  proc add(node: JsonNode): int =
+    ## Sends the `add` request `node` and returns its simId.
+    let response = request(node)
+    check response["ok"].getBool()
+    return response["simId"].getInt()
 
-proc logEvent(message: string): SimulationEvent =
-  ## A `Notice` log entry saying `message`.
-  parseEventLine($(%*{"kind": "LOG", "severity": "Notice", "time": 0, "message": message})).get()
+  proc add(deckFile: string): int =
+    ## Adds `deckFile` and returns its simId.
+    return add(%*{"cmd": "add", "deckFile": deckFile})
 
-proc runTests() =
-  ## Runs the protocol tests in a temporary directory.
-  initJobGuard()
-  let testDirectory = createTempDir("trnrund-protocol-", "")
-  defer: removeDir(testDirectory)
-  let
-    trnrun = getAppFilename()
-    doneDeck = createDeck(testDirectory, "done.dck")
+  proc simulation(simId: int): JsonNode =
+    ## The `get` response's simulation for `simId`.
+    return request(%*{"cmd": "get", "simId": simId})["simulation"]
 
-  suite "client requests":
-    test "ready reports the protocol and daemon versions and the concurrency limit":
-      let scheduler = newScheduler(trnrun, 3)
-      defer: scheduler.shutdown()
-      for _ in 0..<2:
-        check scheduler.call(%*{"cmd": "ready"}) == %*{
-          "ok": true, "protocolVersion": 2, "version": NimblePkgVersion, "maxConcurrent": 3,
-        }
+  proc rejects(response: JsonNode, error: string): bool =
+    ## Whether `response` is a refusal with exactly `error`.
+    return response == %*{"ok": false, "error": error}
 
-    test "repeats any request id first in its reply, also when rejected":
-      let scheduler = newScheduler(trnrun, 1)
-      defer: scheduler.shutdown()
-      for id in [%1, %"a-7", %*{"batch": [1, 2]}, newJNull()]:
-        checkpoint($id)
-        let reply = scheduler.handleRequest($(%*{"id": id, "cmd": "pull"}))
-        check reply.startsWith("{\"id\":" & $id & ",")
-        check parseJson(reply) == %*{"id": id, "ok": false, "error": "Unknown cmd: pull"}
-      check scheduler.call(%*{"cmd": "cancel", "runId": 9}) ==
-        %*{"ok": false, "error": "Unknown runId: 9"}
+  teardown:
+    # Queued first, so cancelling a running one starts nothing.
+    for state in [ssQueued, ssRunning]:
+      for simId in scheduler.list(state):
+        discard scheduler.cancel(simId)
 
-    test "rejects malformed and unknown requests":
-      let scheduler = newScheduler(trnrun, 1)
-      defer: scheduler.shutdown()
-      let cases = [
-        (line: "garbage", expected: ""),
-        (line: "[1]", expected: "Request must be a JSON object"),
-        (line: "{}", expected: "Missing field: cmd"),
-        (line: """{"cmd":5}""", expected: "'cmd' must be a string"),
-        (line: """{"cmd":"pull"}""", expected: "Unknown cmd: pull"),
-        (line: """{"cmd":"add"}""", expected: "Missing field: deckFile"),
-        (line: """{"cmd":"add","deckFile":3}""", expected: "'deckFile' must be a string"),
-        (line: """{"cmd":"add","deckFile":"x.dck","label":3}""",
-          expected: "'label' must be a string"),
-        (line: """{"cmd":"add","deckFile":"x.dck","trnrunArgs":"--clean"}""",
-          expected: "'trnrunArgs' must be an array of strings"),
-        (line: """{"cmd":"add","deckFile":"x.dck","trnrunArgs":["--clean",1]}""",
-          expected: "'trnrunArgs' must be an array of strings"),
-        (line: """{"cmd":"add","deckFile":"x.dck","waitFor":"STARTED"}""",
-          expected: "'waitFor' must be QUEUED, RUNNING or FINISHED"),
-        (line: """{"cmd":"add","deckFile":"x.dck","waitFor":"RUNNING"}""",
-          expected: "'waitFor' needs an 'id' to match its reply"),
-        (line: """{"cmd":"cancel"}""", expected: "Missing field: runId"),
-        (line: """{"cmd":"cancel","runId":"1"}""", expected: "'runId' must be an integer"),
-        (line: """{"cmd":"get"}""", expected: "Missing field: runId"),
-        (line: """{"cmd":"get","runId":1}""", expected: "Unknown runId: 1"),
-        (line: """{"cmd":"list"}""", expected: "Unknown cmd: list"),
-        (line: """{"cmd":"release"}""", expected: "Missing field: runId"),
-        (line: """{"cmd":"release","runId":[1]}""", expected: "'runId' must be an integer"),
-        (line: """{"cmd":"shutdown","cancelRunning":"yes"}""",
-          expected: "'cancelRunning' must be true or false"),
-      ]
-      for testCase in cases:
-        checkpoint("request: " & testCase.line)
-        let node = parseJson(scheduler.handleRequest(testCase.line))
-        check node.len == 2
-        check not node["ok"].getBool()
-        check node["error"].getStr().contains(testCase.expected)
-      check not scheduler.isShuttingDown
-      check 1 notin scheduler.store
+  test "ready answers true":
+    check request("""{"cmd":"ready"}""") == %*{"ok": true}
 
-    test "add replies with the new runId and run, keeping its arguments and label":
-      let scheduler = newScheduler(trnrun, 1)
-      defer: scheduler.shutdown()
-      let first = scheduler.call(%*{"cmd": "add", "deckFile": doneDeck})
-      check first["runId"] == %1
-      check first["run"]["runId"] == %1
-      check first["run"]["state"] == %"RUNNING" # Launched before the reply.
-      let second = scheduler.call(%*{
-        "cmd": "add", "deckFile": doneDeck, "trnrunArgs": ["--pollMs:50"], "label": "second",
-        "runId": "ignored",
-      })
-      check (second["runId"], second["run"]["state"]) == (%2, %"QUEUED")
-      check (second["run"]["label"], second["run"]["trnrunArgs"]) == (%"second", %["--pollMs:50"])
-      let third = scheduler.call(%*{
-        "cmd": "add", "deckFile": doneDeck, "trnrunArgs": nil, "label": nil, "waitFor": "QUEUED"
-      })
-      check (third["runId"], third["run"]["label"], third["run"]["trnrunArgs"]) ==
-        (%3, newJNull(), %[])
-      check scheduler.running.len == 1
-      check scheduler.queue.len == 2
+  test "add accepts a deck with a label and TRNRun options":
+    let deckFile = createDeck(dir, "wait-a.dck")
+    let simId = add(%*{
+      "cmd": "add",
+      "deckFile": deckFile,
+      "label": "first",
+      "trnrunArgs": ["--pollMs:50"],
+    })
+    let simulation = simulation(simId)
+    check simulation["simId"].getInt() == simId
+    check simulation["deckFile"].getStr() == deckFile
+    check simulation["label"].getStr() == "first"
+    check simulation["trnrunArgs"] == %*["--pollMs:50"]
+    check simulation["state"].getStr() == "RUNNING"
 
-    test "add with waitFor replies later, through takeReplies":
-      let scheduler = newScheduler(trnrun, 1)
-      defer: scheduler.shutdown()
-      check scheduler.handleRequest($(%*{
-        "id": "w", "cmd": "add", "deckFile": doneDeck, "waitFor": "FINISHED"
-      })) == ""
-      check scheduler.takeReplies().len == 0
-      check scheduler.call(%*{"cmd": "get", "runId": 1})["ok"] == %true # Answered meanwhile.
-      scheduler.waitFinished(1)
-      let replies = scheduler.takeReplies().mapIt(parseJson(it))
-      check replies.len == 1
-      check (replies[0]["id"], replies[0]["ok"], replies[0]["runId"]) == (%"w", %true, %1)
-      check replies[0]["run"] == scheduler.call(%*{"cmd": "get", "runId": 1})["run"]
-      check replies[0]["run"]["succeeded"] == %true
+  test "get returns every field of the simulation":
+    let simId = add(%*{"cmd": "add", "deckFile": createDeck(dir, "done-b.dck")})
+    var simulation = simulation(simId)
+    for _ in 1..500:
+      if simulation["state"].getStr() == "FINISHED":
+        break
+      sleep(10)
+      scheduler.update()
+      simulation = simulation(simId)
+    var fieldCount = 0
+    for name, _ in default(Simulation).fieldPairs:
+      check simulation.hasKey(name)
+      inc fieldCount
+    check simulation.len == fieldCount
+    check simulation["trnrunStatus"].getStr() == "DONE"
+    check simulation["succeeded"].getBool()
+    check simulation["label"].kind == JNull
+    check simulation["logs"][0] == %*{
+      "severity": "Notice",
+      "time": 0.0,
+      "unitId": nil,
+      "typeId": nil,
+      "messageCode": nil,
+      "message": "first",
+      "information": nil,
+    }
 
-    test "invalid submissions remain ordinary error replies":
-      let scheduler = newScheduler(trnrun, 1)
-      defer: scheduler.shutdown()
-      check not scheduler.call(%*{"cmd": "add", "deckFile": "missing.dck"})["ok"].getBool()
-      let request = %*{"cmd": "add", "deckFile": doneDeck, "trnrunArgs": ["--watchTMP:true"]}
-      check scheduler.call(request) ==
-        %*{"ok": false, "error": "Unknown option in trnrunArgs: 'watchTMP'"}
-      check 1 notin scheduler.store
+  test "add queues past the worker limit":
+    discard add(createDeck(dir, "wait-c1.dck"))
+    let queued = add(createDeck(dir, "wait-c2.dck"))
+    check simulation(queued)["state"].getStr() == "QUEUED"
 
-    test "get replies with one run and all its logs":
-      let scheduler = newScheduler(trnrun, 1)
-      defer: scheduler.shutdown()
-      let runId = scheduler.call(%*{"cmd": "add", "deckFile": doneDeck})["runId"].getInt()
-      scheduler.waitFinished(runId)
-      let reply = scheduler.call(%*{"cmd": "get", "runId": runId})
-      check reply.len == 2
-      check reply["run"]["notices"] == %2
-      let logs = reply["run"]["logs"]
-      check logs.elems.mapIt(it["message"].getStr()) == @["first", "second", "third"]
-      check logs[1] == %*{
-        "severity": "Warning", "simTime": 5.0, "unitId": nil,
-        "typeId": nil, "messageCode": nil, "message": "second", "information": nil,
-      }
+  test "add rejects a bad deckFile, label or trnrunArgs":
+    let deckFile = createDeck(dir, "done-d.dck")
+    check request(%*{"cmd": "add", "deckFile": dir / "none.dck"}).rejects(
+      "Deck file not found: '" & dir / "none.dck" & "'")
+    check request(%*{"cmd": "add", "deckFile": createDeck(dir, "d.txt")}).rejects(
+      "Expected .dck or .trd, got: '" & dir / "d.txt" & "'")
+    check request(%*{"cmd": "add"}).rejects("'deckFile' must be a string")
+    check request(%*{"cmd": "add", "deckFile": 3}).rejects("'deckFile' must be a string")
+    check request(%*{"cmd": "add", "deckFile": deckFile, "label": 1}).rejects(
+      "'label' must be a string")
+    for args in [%*"--clean:true", %*[1]]:
+      check request(%*{"cmd": "add", "deckFile": deckFile, "trnrunArgs": args}).rejects(
+        "'trnrunArgs' must be an array of TRNRun options")
+    check request(%*{"cmd": "add", "deckFile": deckFile, "trnrunArgs": ["--help"]}).rejects(
+      "Option not allowed in trnrunArgs: 'help'")
+    check request(%*{"cmd": "add", "deckFile": deckFile, "trnrunArgs": ["--bogus:1"]}).rejects(
+      "Unknown option in trnrunArgs: 'bogus'")
 
-    test "release deletes a finished run only, skipping an unknown one":
-      let scheduler = newScheduler(trnrun, 1)
-      defer: scheduler.shutdown()
-      discard scheduler.call(%*{"cmd": "add", "deckFile": doneDeck})
-      check scheduler.call(%*{"cmd": "release", "runId": 1}) ==
-        %*{"ok": false, "error": "Run 1 is not FINISHED"}
-      scheduler.waitFinished(1)
-      check scheduler.call(%*{"cmd": "release", "runId": 1}) == %*{"ok": true}
-      check scheduler.call(%*{"cmd": "release", "runId": 1}) == %*{"ok": true}
-      check scheduler.call(%*{"cmd": "get", "runId": 1}) ==
-        %*{"ok": false, "error": "Unknown runId: 1"}
-      check scheduler.call(%*{"cmd": "cancel", "runId": 1}) ==
-        %*{"ok": false, "error": "Unknown runId: 1"}
+  test "cancel answers true once cancelled, then refuses":
+    let simId = add(createDeck(dir, "wait-e.dck"))
+    check request(%*{"cmd": "cancel", "simId": simId}) == %*{"ok": true}
+    check simulation(simId)["trnrunStatus"].getStr() == "CANCELLED"
+    check request(%*{"cmd": "cancel", "simId": simId}).rejects(
+      "Cannot cancel simulation " & $simId & ": it is FINISHED")
 
-    test "cancel acknowledges only, after a queued run is stored as cancelled":
-      let scheduler = newScheduler(trnrun, 1)
-      defer: scheduler.shutdown()
-      discard scheduler.call(%*{"cmd": "add", "deckFile": doneDeck})
-      let queued = scheduler.call(%*{"cmd": "add", "deckFile": doneDeck})["runId"]
-      check scheduler.call(%*{"cmd": "cancel", "runId": queued}) == %*{"ok": true}
-      let run = scheduler.call(%*{"cmd": "get", "runId": queued})["run"]
-      check (run["state"], run["trnrunStatus"]) == (%"FINISHED", %"CANCELLED")
-      check scheduler.queue.len == 0
+  test "release refuses an unfinished simulation, then forgets a finished one":
+    let simId = add(createDeck(dir, "wait-f.dck"))
+    check request(%*{"cmd": "release", "simId": simId}).rejects(
+      "Cannot release simulation " & $simId & ": it is RUNNING")
+    discard request(%*{"cmd": "cancel", "simId": simId})
+    check request(%*{"cmd": "release", "simId": simId}) == %*{"ok": true}
+    check request(%*{"cmd": "get", "simId": simId}).rejects("Unknown simId: " & $simId)
 
-    test "shutdown stops new runs, and later requests are still answered":
-      let scheduler = newScheduler(trnrun, 1)
-      defer: scheduler.shutdown()
-      discard scheduler.call(%*{"cmd": "add", "deckFile": doneDeck})
-      check scheduler.call(%*{"cmd": "shutdown"}) == %*{"ok": true}
-      check scheduler.isShuttingDown
-      check scheduler.call(%*{"cmd": "add", "deckFile": doneDeck}) ==
-        %*{"ok": false, "error": "The daemon is shutting down"}
-      check scheduler.call(%*{"cmd": "get", "runId": 1})["ok"] == %true
-      check scheduler.call(%*{"cmd": "shutdown", "cancelRunning": true}) == %*{"ok": true}
+  test "list returns the simulations in a state, oldest first":
+    let
+      running = add(createDeck(dir, "wait-g1.dck"))
+      queued = [add(createDeck(dir, "wait-g2.dck")), add(createDeck(dir, "wait-g3.dck"))]
+    proc simIds(state: string): seq[int] =
+      ## The simIds `list` returns for `state`.
+      let response = request(%*{"cmd": "list", "state": state})
+      check response["ok"].getBool()
+      result = @[]
+      for simulation in response["simulations"]:
+        result.add(simulation["simId"].getInt())
+    check simIds("RUNNING") == @[running]
+    check simIds("QUEUED") == @[queued[0], queued[1]]
+    check running notin simIds("FINISHED")
+    discard request(%*{"cmd": "cancel", "simId": running})
+    check running in simIds("FINISHED")
+    let listed = request(%*{"cmd": "list", "state": "RUNNING"})["simulations"][0]
+    check not listed.hasKey("logs")
 
-    test "a run with 10,000 log entries replies well under a second":
-      let scheduler = newScheduler(trnrun, 1)
-      defer: scheduler.shutdown()
-      let runId = scheduler.store.submit(doneDeck) # Stored, not queued, so it never launches.
-      for index in 1..10_000:
-        scheduler.store.record(runId, logEvent("entry " & $index))
+  test "list includes logs only when withLogs is true":
+    let simId = add(createDeck(dir, "wait-l.dck"))
+    proc listed(withLogs: JsonNode): JsonNode =
+      ## The one running simulation `list` returns with `withLogs`.
+      return request(%*{"cmd": "list", "state": "RUNNING", "withLogs": withLogs})["simulations"][0]
+    check listed(newJBool(true)) == simulation(simId)
+    for withLogs in [newJNull(), newJBool(false)]:
+      let withoutLogs = listed(withLogs)
+      check not withoutLogs.hasKey("logs")
+      withoutLogs["logs"] = simulation(simId)["logs"]
+      check withoutLogs == simulation(simId)
+    check request(%*{"cmd": "list", "state": "RUNNING", "withLogs": 1}).rejects(
+      "'withLogs' must be true or false")
 
-      let started = getMonoTime()
-      let reply = scheduler.handleRequest($(%*{"cmd": "get", "runId": runId}))
-      let elapsed = getMonoTime() - started
-      checkpoint("replied in " & $elapsed)
-      check elapsed < initDuration(milliseconds = 500)
-      check parseJson(reply)["run"]["logs"].len == 10_000
+  test "list refuses a missing or unknown state":
+    for node in [%*{"cmd": "list"}, %*{"cmd": "list", "state": "DONE"}]:
+      check request(node).rejects("'state' must be QUEUED, RUNNING or FINISHED")
 
-runTests()
+  test "unknown simIds are refused":
+    for cmd in ["get", "cancel", "release"]:
+      check request(%*{"cmd": cmd, "simId": 999}).rejects("Unknown simId: 999")
+
+  test "a missing or non-integer simId is refused":
+    check request(%*{"cmd": "get"}).rejects("'simId' must be an integer")
+    check request(%*{"cmd": "get", "simId": "1"}).rejects("'simId' must be an integer")
+
+  test "invalid commands are refused":
+    check request(%*{"cmd": "launch"}).rejects("Unknown cmd: launch")
+    check request(%*{"command": "ready"}).rejects("'cmd' must be a string")
+    check request("[1,2]").rejects("Request must be a JSON object")
+
+  test "malformed JSON is refused without raising":
+    for line in ["", "{", "not json", """{"cmd":"ready"} trailing"""]:
+      let response = request(line)
+      check response["ok"].getBool() == false
+      check response["error"].getStr().len > 0
+
+removeDir(dir)

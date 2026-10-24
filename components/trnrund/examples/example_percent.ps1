@@ -16,8 +16,8 @@ $DaemonPath, $RunnerPath, $SourceDeck | ForEach-Object {
     }
 }
 
-# trnrund answers each request line with exactly one reply line, in request
-# order, and writes nothing else to stdout.
+# trnrund answers each request line with exactly one response line before
+# reading the next, and writes nothing else to stdout.
 function Send-Request([hashtable] $Request) {
     $Daemon.StandardInput.WriteLine(($Request | ConvertTo-Json -Compress))
     $Line = $Daemon.StandardOutput.ReadLine()
@@ -31,15 +31,15 @@ function Send-Request([hashtable] $Request) {
     $Reply
 }
 
-# Asks for each unfinished run's latest state, keeps the finished ones, then
-# releases them so trnrund no longer holds them in memory.
+# Asks for each unfinished simulation's latest state, keeps the finished ones,
+# then releases them so trnrund no longer holds them in memory.
 $Pending = [Collections.Generic.List[int]]::new()
 $States = @{}
 $Percents = @{}
 $Finished = @{}
 function Update-Runs {
-    foreach ($RunId in @($Pending)) {
-        $Simulation = (Send-Request @{ cmd = 'get'; runId = $RunId }).run
+    foreach ($SimId in @($Pending)) {
+        $Simulation = (Send-Request @{ cmd = 'get'; simId = $SimId }).simulation
         $Name = $Simulation.label
         $Percents[$Name] = $Simulation.percent
         if ($States[$Name] -ne $Simulation.state) {
@@ -48,8 +48,8 @@ function Update-Runs {
         }
         if ($Simulation.state -eq 'FINISHED') {
             $Finished[$Name] = $Simulation
-            Send-Request @{ cmd = 'release'; runId = $RunId } | Out-Null
-            $Pending.Remove($RunId) | Out-Null
+            Send-Request @{ cmd = 'release'; simId = $SimId } | Out-Null
+            $Pending.Remove($SimId) | Out-Null
         }
     }
 }
@@ -69,7 +69,7 @@ New-Item -ItemType Directory -Path $RunDirectory | Out-Null
 $Daemon = $null
 try {
     $StartInfo = [Diagnostics.ProcessStartInfo]::new($DaemonPath)
-    $StartInfo.Arguments = "--trnrun:`"$RunnerPath`" --maxConcurrent:$ConcurrencyLimit"
+    $StartInfo.Arguments = "--trnrun:`"$RunnerPath`" --workers:$ConcurrencyLimit"
     $StartInfo.UseShellExecute = $false
     $StartInfo.RedirectStandardInput = $true
     $StartInfo.RedirectStandardOutput = $true
@@ -80,7 +80,7 @@ try {
         "started, with max concurrency $ConcurrencyLimit"
     )
 
-    # add replies with the runId the daemon assigned, not when the run starts.
+    # add replies with the simId the daemon assigned, not when the run starts.
     # This example names runs by label. Wait for its state
     # to leave QUEUED before adding another, keeping at most one queued run.
     1..$RunCount | ForEach-Object {
@@ -98,7 +98,7 @@ try {
                 '--guiVisibility:auto'
                 '--watchTmp:true'
             )
-        }).runId)
+        }).simId)
 
         Update-Runs
         while (-not $States.ContainsKey($Name) -or $States[$Name] -eq 'QUEUED') {
@@ -128,7 +128,6 @@ try {
         }
     }
 
-    Send-Request @{ cmd = 'shutdown' } | Out-Null
     # trnrund exits once its stdin closes; nothing else is left to read.
     $Daemon.StandardInput.Close()
     $Daemon.StandardOutput.ReadToEnd() | Out-Null

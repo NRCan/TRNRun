@@ -1,83 +1,59 @@
-## Starts the trnrund daemon, which runs TRNSYS simulations for one client.
+## Starts trnrund, which runs TRNRun simulations for one client.
 ##
-## The client exchanges one JSON object per line over stdin and stdout, see
-## `protocol`, and asks for the state and logs of its runs, which the daemon
-## keeps in memory, see `store`. When the client closes stdin, the daemon exits
-## at once, and the Job Object kills any TRNRun process still going.
+## The client writes one JSON request per stdin line and reads exactly one JSON
+## response per stdout line before sending the next. Diagnostics go to stderr.
+## Closing stdin cancels every simulation and exits.
 
-import std/[os, winlean]
-import ./[cli, job, messages, protocol, scheduler, server, threadstart]
+import std/os
+import ./[cli, job, pipe, scheduler, protocol, validate]
 
-var
-  daemonScheduler: Scheduler
-    ## Global so its channels outlive `main`; the reader and workers point into them.
-  reader: Thread[ptr Channel[Message]]
-    ## Global so it outlives `main`. Never joined: it blocks on stdin until exit.
+const PollMs = 10 ## Longest idle wait between checks for finished simulations; a request ends it.
 
-proc readRequests(inbox: ptr Channel[Message]) {.thread.} =
-  ## Posts each stdin line to the scheduler, then reports that the client left.
+proc serve(scheduler: var Scheduler) =
+  ## Answers requests until the client closes stdin, keeping simulations moving meanwhile.
   var line = ""
+  while true:
+    scheduler.update()
+    case poll(line)
+    of prNothing: waitForLine(PollMs)
+    of prLine: respond(scheduler.handleRequest(line))
+    of prClosed: return
+
+proc run(input: CliInput): int =
+  ## Serves the client with `input` until it closes stdin and returns the exit code.
+  ##
+  ## Returns 0 once the client closes stdin. Returns 1 after writing the error
+  ## to stderr if the job guard or pipe cannot be set up, or a fault stops the
+  ## serve loop. Never raises a `CatchableError`.
+  result = 0
+  var scheduler = initScheduler(input.trnrunPath, input.maxWorkers)
   try:
-    while stdin.readLine(line):
-      inbox[].send(Message(kind: mkRequest, line: line))
-  except IOError:
-    discard # A broken pipe means the client is gone, like a closed one.
-  inbox[].send(Message(kind: mkClosed))
-
-proc writeLines(lines: seq[string]): bool {.nimcall, gcsafe, raises: [].} =
-  ## Writes reply lines to the client; false once it is gone.
-  # `WriteFile` bypasses the C runtime's buffer, so a write cancelled at exit
-  # leaves nothing for the exit to flush and block on.
-  var
-    text = ""
-    written = 0'i32
-  for line in lines:
-    text.add(line)
-    text.add('\n')
-  let output = getStdHandle(STD_OUTPUT_HANDLE)
-  writeFile(output, addr text[0], int32(text.len), addr written, nil) != 0 and
-    written == int32(text.len)
-
-proc keepStdHandlesPrivate() =
-  ## Stops TRNRun children inheriting the client's pipes, so stdout ends with the daemon.
-  for kind in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE]:
-    let handle = getStdHandle(kind)
-    if handle != 0 and handle != INVALID_HANDLE_VALUE:
-      discard setHandleInformation(handle, HANDLE_FLAG_INHERIT, 0)
-
-proc main() =
-  ## Parses the command line, then serves the client until it leaves.
-  let command = parseCommandLine(commandLineParams())
-  case command.action
-  of caHelp:
-    echo HelpText
-  of caVersion:
-    echo NimblePkgVersion
-  of caServe:
-    let input = command.input
-    keepStdHandlesPrivate()
+    # Windows kills every TRNRun this daemon started once it exits, however it exits.
     initJobGuard()
-    daemonScheduler = newScheduler(input.trnrunPath, input.maxConcurrent)
-    reader.startThread(readRequests, daemonScheduler.requestInbox)
-    daemonScheduler.serve(writeLines)
+    openPipe()
+    scheduler.serve()
+  except CatchableError as error:
+    diagnose(error.msg)
+    result = 1
 
-proc writeError(message: string) =
-  ## Reports a fatal diagnostic for humans. Clients must not parse stderr.
+proc main(): int =
+  ## Runs what the command line asks for and returns the exit code.
   try:
-    stderr.writeLine(message)
-    stderr.flushFile()
-  except IOError:
-    discard
+    let command = parseCommandLine(commandLineParams())
+    case command.action
+    of caHelp:
+      echo HelpText
+      return 0
+    of caVersion:
+      echo NimblePkgVersion
+      return 0
+    of caServe:
+      var input = command.input
+      input.trnrunPath = validateFile(input.trnrunPath, "TRNRun")
+      return run(input) # Never raises: `run` turns its own failures into exit code 1.
+  except InputError as error:
+    diagnose(error.msg)
+    return 2
 
 when isMainModule:
-  let exitCode =
-    try:
-      main()
-      0
-    except InputError as error:
-      writeError(error.msg)
-      2
-    except CatchableError as error:
-      writeError(error.msg)
-      1
-  quit(exitCode)
+  quit(main())

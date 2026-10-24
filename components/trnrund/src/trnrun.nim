@@ -1,107 +1,75 @@
-## Launches TRNRun processes and captures their output.
+## Launches one TRNRun process, reads its output lines, and stops it.
 ##
-## `launch` runs on the scheduler thread, which then owns the `Process` and
-## cancels a run by killing it. `captureOutput` runs on a worker thread: it
-## blocks reading TRNRun's merged stdout and stderr until the pipe ends, which
-## happens when TRNRun exits or is killed, then waits for the exit code. TRNRun
-## validates the deck itself and reports a missing one as an `ERROR` status.
-##
-## Launching on one thread keeps launches from overlapping, so no TRNRun
-## inherits the pipe of another, which would keep that pipe open. Children
-## inherit the daemon's kill-on-close Job Object, so they cannot outlive it.
-## Killing TRNRun also stops its TrnEXE, which TRNRun keeps in a kill-on-close
-## Job Object of its own.
+## TRNRun writes its events to stdout, merged here with stderr into one pipe.
+## Nothing waits on that pipe: the caller polls `readLines` and `exitCode`, and
+## must keep reading so TRNRun never blocks on a full pipe.
 
-import std/[options, oserrors, osproc, strutils, winlean]
+import std/[options, osproc, streams, strutils]
 
-type
-  OutputCallback* = proc(line: string) {.gcsafe, raises: [].}
-    ## Receives one output line, without its line break.
-
-  Launched* = object
-    ## A started TRNRun, with the handles its capture needs.
-    process*: Process ## Owned by the launching thread; close it after the capture ends.
-    output*: Handle ## Read end of the merged output; closed with `process`.
-    waitHandle*: Handle ## For `captureOutput`, which closes it.
-
-  CaptureResult* = tuple
-    ## How TRNRun ended, as `captureOutput` saw it.
-    exitCode: Option[int] ## None when it could not be read.
-    error: string ## Capture failure; empty otherwise.
+type Trnrun* = object
+  ## One started TRNRun and its output not yet ended by a line break.
+  process: Process
+  pending: string
 
 const
-  ErrorBrokenPipe = 109'i32 # Missing from winlean: the writing end closed.
   ReadSize = 4096
-  WaitAccess = SYNCHRONIZE or PROCESS_QUERY_LIMITED_INFORMATION or PROCESS_TERMINATE
+  KillWaitMs = 5000 ## How long `kill` waits for TRNRun to exit before giving up.
 
-proc launch*(
-    runId: int, deckFile, trnrunPath: string, trnrunArgs: openArray[string]
-): Launched =
-  ## Starts TRNRun on `deckFile` with `trnrunArgs` and `--runId:<runId>`; `OSError` on failure.
-  let process = startProcess(trnrunPath, args = @[deckFile] & @trnrunArgs & @["--runId:" & $runId],
-    options = {poStdErrToStdOut, poDaemon})
-  # The scheduler's `Process` keeps TRNRun's process ID from being reused meanwhile.
-  let waitHandle = openProcess(WaitAccess, 0, process.processID.DWORD)
-  if waitHandle == 0:
-    let error = osLastError()
-    try:
-      try:
-        if process.running:
-          process.kill()
-      finally:
-        process.close()
-    except CatchableError:
-      discard
-    raiseOSError(error, "Cannot wait for TRNRun")
-  Launched(process: process, output: Handle(process.outputHandle), waitHandle: waitHandle)
+proc launch*(trnrunPath, deckFile: string, trnrunArgs: seq[string]): Trnrun =
+  ## Starts `trnrunPath` on `deckFile` with `trnrunArgs` and no console; `OSError` on failure.
+  let process = startProcess(
+    trnrunPath,
+    args = @[deckFile] & trnrunArgs,
+    options = {poStdErrToStdOut, poDaemon},
+  )
+  return Trnrun(process: process)
 
-proc forwardLines(pending: var string, onOutput: OutputCallback) =
-  ## Forwards each complete line in `pending`, without its line break, keeping the rest.
-  var start = 0
-  while true:
-    let newline = pending.find('\n', start)
-    if newline < 0:
-      break
-    var stop = newline
-    if stop > start and pending[stop - 1] == '\r':
-      dec stop
-    onOutput(pending[start..<stop])
-    start = newline + 1
-  if start > 0:
-    pending.delete(0..<start)
+proc drain(self: var Trnrun) =
+  ## Appends everything TRNRun wrote so far to `pending`; never blocks.
+  while self.process.hasData:
+    let start = self.pending.len
+    self.pending.setLen(start + ReadSize)
+    let count = self.process.outputStream.readData(addr self.pending[start], ReadSize)
+    self.pending.setLen(start + count)
 
-proc captureOutput*(output, process: Handle, onOutput: OutputCallback): CaptureResult =
-  ## Forwards every output line until the pipe ends, including a last line
-  ## without a line break, then waits for TRNRun to exit and closes `process`.
-  ##
-  ## A failed read kills TRNRun, so it cannot block on a full pipe, and is
-  ## reported as the error. `onOutput` runs on the calling thread.
-  result = (exitCode: none(int), error: "")
+proc takeLines(pending: var string): seq[string] =
+  ## Removes the complete lines from the start of `pending` and returns them without line breaks.
+  result = @[]
   var
-    buffer = default(array[ReadSize, char])
-    pending = ""
-  while true:
-    var read = 0'i32
-    if readFile(output, addr buffer[0], ReadSize.int32, addr read, nil) == 0:
-      let error = osLastError()
-      if error.int32 notin [ErrorBrokenPipe, ERROR_HANDLE_EOF.int32]:
-        result.error = "Cannot read TRNRun output: " & osErrorMsg(error)
-        discard terminateProcess(process, 1)
-      break
-    if read == 0:
-      break
-    let start = pending.len
-    pending.setLen(start + read)
-    copyMem(addr pending[start], addr buffer[0], read)
-    forwardLines(pending, onOutput)
-  if pending.len > 0:
-    pending.add('\n')
-    forwardLines(pending, onOutput)
+    lineStart = 0
+    lineEnd = pending.find('\n')
+  while lineEnd >= 0:
+    result.add(pending[lineStart..<lineEnd])
+    lineStart = lineEnd + 1
+    lineEnd = pending.find('\n', lineStart)
+  if lineStart > 0:
+    pending.delete(0..<lineStart)
 
-  discard waitForSingleObject(process, INFINITE)
-  var exitCode = 0'i32
-  if getExitCodeProcess(process, exitCode) != 0:
-    result.exitCode = some(exitCode.int)
-  elif result.error.len == 0:
-    result.error = "Cannot read the TRNRun exit code: " & osErrorMsg(osLastError())
-  discard closeHandle(process)
+proc readLines*(self: var Trnrun): seq[string] =
+  ## The complete lines TRNRun wrote since the last call, without line breaks; never blocks.
+  self.drain()
+  return self.pending.takeLines()
+
+proc readLastLines*(self: var Trnrun): seq[string] =
+  ## `readLines`, plus a last line without a line break; call once TRNRun exited.
+  result = self.readLines()
+  if self.pending.len > 0:
+    result.add(move self.pending)
+
+proc exitCode*(self: Trnrun): Option[int] =
+  ## TRNRun's exit code, or none while it runs; never blocks.
+  # Windows reports a process that exited with 259 (`STILL_ACTIVE`) as running; TRNRun never does.
+  let code = self.process.peekExitCode()
+  return if code == -1: none(int) else: some(code)
+
+proc kill*(self: Trnrun) =
+  ## Kills TRNRun and waits for it to exit; `OSError` if it cannot be killed.
+  # TRNRun keeps TrnEXE in a kill-on-close Job Object, so killing TRNRun stops both.
+  self.process.kill()
+  # On Windows `kill` ignores a failed TerminateProcess, so an unbounded wait could hang the daemon.
+  if self.process.waitForExit(KillWaitMs) == -1:
+    raise newException(OSError, "TRNRun still running " & $KillWaitMs & " ms after being killed")
+
+proc close*(self: Trnrun) {.inline.} =
+  ## Releases TRNRun's handles and pipes; call once it exited.
+  self.process.close()

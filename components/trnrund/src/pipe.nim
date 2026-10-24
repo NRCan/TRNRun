@@ -66,7 +66,7 @@ proc poll*(line: var string): PollResult =
 proc diagnose*(message: string) =
   ## Writes a diagnostic to stderr, which stays free of protocol traffic.
   try:
-    stderr.writeLine("trnrund2: ", message)
+    stderr.writeLine("trnrund: ", message)
   except IOError:
     discard
 

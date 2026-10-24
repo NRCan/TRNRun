@@ -1,9 +1,9 @@
-## Runs 20 copies of one slow deck through the TRNRun daemon and reports each result.
+## Runs 20 copies of one deck through trnrund and reports each result.
 ##
 ## Exercises the client protocol against real TRNSYS: adds every copy, polls
-## the runs with `list`, prints state changes, and keeps finished reports
-## before releasing their runs. Build both executables first, then run from the
-## `trnrund` directory:
+## each simulation with `get`, prints state changes, and keeps finished reports
+## before releasing their simulations. Build both executables first, then run
+## from the `trnrund` directory:
 ##
 ##   cd ../trnrun
 ##   nimble bin
@@ -15,9 +15,9 @@ import std/[json, monotimes, os, osproc, streams, strutils, tables, terminal, ti
 
 # Manual-run configuration.
 const
-  DeckFilename = "test_slow_wo_plot_w_tracking.dck"
-  CopyCount = 20
-  MaxConcurrent = 5
+  DeckFilename = "example_wo_plot_w_tracking.dck"
+  CopyCount = 50
+  Workers = 25
   PollMs = 500
   TimeoutMs = 3_600_000
   RemoveStagedCopies = true
@@ -43,10 +43,10 @@ const
 
 proc formatSeconds(milliseconds: int64): string =
   ## `milliseconds` as seconds, with one decimal.
-  formatFloat(milliseconds.float / 1_000.0, ffDecimal, 1)
+  return formatFloat(milliseconds.float / 1_000.0, ffDecimal, 1)
 
 proc stageDecks(sourceDeck, stagingDirectory: string): seq[string] =
-  ## Copies `sourceDeck` `CopyCount` times, one numbered deck per run.
+  ## Copies `sourceDeck` `CopyCount` times, one numbered deck per simulation.
   result = @[]
   let
     sourceName = sourceDeck.splitFile().name
@@ -54,8 +54,8 @@ proc stageDecks(sourceDeck, stagingDirectory: string): seq[string] =
 
   for copyIndex in 1..CopyCount:
     let
-      runName = sourceName & "_" & align($copyIndex, copyNumberWidth, '0')
-      stagedDeck = stagingDirectory / (runName & ".dck")
+      simName = sourceName & "_" & align($copyIndex, copyNumberWidth, '0')
+      stagedDeck = stagingDirectory / (simName & ".dck")
     copyFile(sourceDeck, stagedDeck)
     result.add(stagedDeck.absolutePath().normalizedPath())
 
@@ -77,58 +77,58 @@ proc request(daemon: Process, request: JsonNode): JsonNode =
     )
 
 proc runDaemon(daemon: Process, deckFiles: openArray[string]): Table[string, JsonNode] =
-  ## Adds every deck, then polls each unfinished run with `get` until it
-  ## finished, releasing it once reported. Reports are keyed by label, the
+  ## Adds every deck, then polls each unfinished simulation with `get` until
+  ## it finished, releasing it once reported. Reports are keyed by label, the
   ## deck's name, and include a logCount.
   result = initTable[string, JsonNode]()
   var pending: seq[int] = @[]
   for deckFile in deckFiles:
-    # add replies with the runId the daemon assigned; the label names the run in reports.
+    # add replies with the simId the daemon assigned; the label names the simulation in reports.
     pending.add(daemon.request(%*{
       "cmd": "add",
       "deckFile": deckFile,
       "trnrunArgs": TrnrunArgs,
       "label": deckFile.splitFile().name,
-    })["runId"].getInt())
+    })["simId"].getInt())
 
   var states = initTable[string, string]()
   let deadline = getMonoTime() + initDuration(milliseconds = TimeoutMs)
 
   proc note(name, state: string) =
-    ## Prints the state of run `name` when it changed since the last poll.
+    ## Prints the state of simulation `name` when it changed since the last poll.
     if states.getOrDefault(name) != state:
       states[name] = state
       styledWriteLine(stdout, fgWhite, "  " & name & ": " & state)
 
   while result.len < deckFiles.len:
     if not daemon.running:
-      raise newException(IOError, "trnrund exited before all runs finished")
+      raise newException(IOError, "trnrund exited before all simulations finished")
     if getMonoTime() >= deadline:
-      raise newException(IOError, "Timed out waiting for runs")
+      raise newException(IOError, "Timed out waiting for simulations")
     var unfinished: seq[int] = @[]
-    for runId in pending:
-      let run = daemon.request(%*{"cmd": "get", "runId": runId})["run"]
-      let name = run["label"].getStr()
-      note(name, run["state"].getStr())
-      if run["state"].getStr() == "FINISHED":
+    for simId in pending:
+      let simulation = daemon.request(%*{"cmd": "get", "simId": simId})["simulation"]
+      let name = simulation["label"].getStr()
+      note(name, simulation["state"].getStr())
+      if simulation["state"].getStr() == "FINISHED":
         result[name] = %*{
-          "status": run["trnrunStatus"].getStr("NO STATUS"),
-          "succeeded": run["succeeded"].getBool(),
-          "error": run["error"].getStr(),
-          "logCount": run["logs"].len,
-          "warnings": run["warnings"].getInt(),
-          "fatals": run["fatals"].getInt(),
+          "status": simulation["trnrunStatus"].getStr("NO STATUS"),
+          "succeeded": simulation["succeeded"].getBool(),
+          "error": simulation["error"].getStr(),
+          "logCount": simulation["logs"].len,
+          "warnings": simulation["warnings"].getInt(),
+          "fatals": simulation["fatals"].getInt(),
         }
-        discard daemon.request(%*{"cmd": "release", "runId": runId})
+        discard daemon.request(%*{"cmd": "release", "simId": simId})
       else:
-        unfinished.add(runId)
+        unfinished.add(simId)
     pending = unfinished
 
     if result.len < deckFiles.len:
       sleep(PollMs)
 
 proc reportRun(name: string, collected: Table[string, JsonNode]): bool =
-  ## Prints one run's verdict and returns whether it succeeded.
+  ## Prints one simulation's verdict and returns whether it succeeded.
   if name notin collected:
     styledWriteLine(stdout, fgRed, "FAIL - " & name & ": MISSING")
     return false
@@ -160,9 +160,8 @@ proc main(): int =
     componentsDirectory = daemonRoot.parentDir()
     daemonExecutable = daemonRoot / "build" / "trnrund.exe"
     runnerExecutable = componentsDirectory / "trnrun" / "build" / "trnrun.exe"
-    sourceDeck = testsDirectory / "dck" / DeckFilename
-    stagingDirectory = testsDirectory / "runs" /
-      ("manual_daemon_" & $getCurrentProcessId())
+    sourceDeck = daemonRoot / "examples" / "dck" / DeckFilename
+    stagingDirectory = getTempDir() / ("trnrund_manual_daemon_" & $getCurrentProcessId())
 
   for executable in [daemonExecutable, runnerExecutable, TrnexePath]:
     if not fileExists(executable):
@@ -181,8 +180,7 @@ proc main(): int =
     styledWriteLine(
       stdout,
       fgCyan,
-      "Running " & $deckFiles.len & " copies through trnrund with max concurrency " &
-        $MaxConcurrent,
+      "Running " & $deckFiles.len & " copies through trnrund with " & $Workers & " workers",
     )
     styledWriteLine(stdout, fgWhite, "  Source:  " & sourceDeck)
     styledWriteLine(stdout, fgWhite, "  Staging: " & stagingDirectory)
@@ -195,12 +193,11 @@ proc main(): int =
     let daemon = startProcess(
       daemonExecutable,
       workingDir = daemonRoot,
-      args = ["--trnrun:" & runnerExecutable, "--maxConcurrent:" & $MaxConcurrent],
+      args = ["--trnrun:" & runnerExecutable, "--workers:" & $Workers],
       options = {},
     )
     try:
       collected = daemon.runDaemon(deckFiles)
-      discard daemon.request(%*{"cmd": "shutdown"})
       daemon.inputStream.close() # The daemon exits once stdin closes.
       daemonExitCode = daemon.waitForExit()
     except CatchableError as error:
@@ -229,7 +226,7 @@ proc main(): int =
       styledWriteLine(
         stdout,
         fgGreen,
-        "PASS - All runs completed in " & formatSeconds(durationMs) & "s",
+        "PASS - All simulations completed in " & formatSeconds(durationMs) & "s",
       )
       return 0
 

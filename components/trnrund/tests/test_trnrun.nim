@@ -1,77 +1,56 @@
-import std/[monotimes, options, os, osproc, times, unittest]
+import std/[monotimes, options, os, times, unittest]
 
 import ../src/trnrun
-import ./[fake_deck, fake_trnrun]
+import ./fake_trnrun
 
-proc runRecorded(
-    deckFile: string,
-    trnrunArgs: openArray[string] = [],
-    killAfterFirstLine = false,
-): tuple[outcome: CaptureResult, lines: seq[string]] =
-  ## Launches TRNRun as run 7 and captures it on this thread, recording every line.
-  let launched = launch(7, deckFile, getAppFilename(), trnrunArgs)
-  defer: launched.process.close()
-  var lines: seq[string] = @[]
+proc waitForExit(trnrun: var Trnrun): seq[string] =
+  ## Reads lines until TRNRun exits, then its last ones; fails after 5 seconds.
+  result = @[]
+  let deadline = getMonoTime() + initDuration(seconds = 5)
+  while trnrun.exitCode().isNone and getMonoTime() < deadline:
+    result.add(trnrun.readLines())
+    sleep(10)
+  check trnrun.exitCode().isSome
+  result.add(trnrun.readLastLines())
 
-  proc onOutput(line: string) {.gcsafe, raises: [].} =
-    ## Records one output line.
-    lines.add(line)
+let dir = createDeckDir()
 
-  if killAfterFirstLine:
-    launched.process.kill() # Before reading: the pipe then ends without output.
-  let outcome = captureOutput(launched.output, launched.waitHandle, onOutput)
-  result = (outcome: outcome, lines: lines)
+suite "trnrun":
+  test "reads every output line, including a last one without a line break":
+    var trnrun = launch(getAppFilename(), createDeck(dir, "done-a.dck"), @[])
+    let lines = trnrun.waitForExit()
+    trnrun.close()
+    check trnrun.exitCode() == some(0)
+    check lines.len == 2_000 + 8
+    check lines[^1] == """{"kind":"STATUS","status":"DONE","message":"finished"}"""
+    check lines[^4] == "not an event"
 
-proc runTests() =
-  ## Runs the launch and capture tests in a temporary directory.
-  let testDirectory = getTempDir() / "trnrund_trnrun_tests"
-  if dirExists(testDirectory):
-    removeDir(testDirectory)
-  createDir(testDirectory)
-  defer:
-    if dirExists(testDirectory):
-      removeDir(testDirectory)
+  test "passes the deck, then trnrunArgs":
+    let deckFile = createDeck(dir, "args-b.dck")
+    var trnrun = launch(getAppFilename(), deckFile, @["--pollMs:50"])
+    discard trnrun.waitForExit()
+    trnrun.close()
+    check readFile(deckFile.changeFileExt("args")) == deckFile & "\n--pollMs:50"
 
-  suite "TRNRun process":
-    test "forwards every output line, then returns the exit code":
-      let (outcome, lines) = runRecorded(createDeck(testDirectory, "done.dck"))
+  test "reports the exit code":
+    var trnrun = launch(getAppFilename(), createDeck(dir, "fail-c.dck"), @[])
+    discard trnrun.waitForExit()
+    check trnrun.exitCode() == some(1)
+    trnrun.close()
 
-      check outcome == (exitCode: some(0), error: "")
-      check lines == @DoneLines
+  test "kill stops a running TRNRun":
+    let deckFile = createDeck(dir, "wait-d.dck")
+    var trnrun = launch(getAppFilename(), deckFile, @[])
+    check trnrun.exitCode().isNone
+    trnrun.kill()
+    check trnrun.exitCode().isSome
+    trnrun.close()
+    releaseDeck(deckFile)
+    sleep(300)
+    check not fileExists(deckFile.changeFileExt("finished"))
 
-    test "merges stderr into the forwarded output":
-      let (outcome, lines) = runRecorded(createDeck(testDirectory, "streams.dck"))
+  test "launch raises OSError when TRNRun is missing":
+    expect OSError:
+      discard launch(dir / "missing.exe", createDeck(dir, "done-e.dck"), @[])
 
-      check outcome == (exitCode: some(3), error: "")
-      check lines == @["to stdout", "to stderr"]
-
-    test "passes the deck, the extra arguments, then the runId":
-      let deckFile = createDeck(testDirectory, "args.dck")
-      let (outcome, lines) = runRecorded(deckFile, trnrunArgs = ["--pollMs:50", "--clean:true"])
-
-      check outcome.exitCode == some(0)
-      check lines == @[deckFile, "--pollMs:50", "--clean:true", "--runId:7"]
-
-    test "raises when TRNRun cannot start":
-      expect OSError:
-        discard launch(1, createDeck(testDirectory, "done.dck"),
-          testDirectory / "missing-trnrun.exe", [])
-
-    test "ends the capture once TRNRun is killed":
-      let deckFile = createDeck(testDirectory, "gate-killed.dck")
-      let started = getMonoTime()
-      let (outcome, lines) = runRecorded(deckFile, killAfterFirstLine = true)
-
-      check outcome.exitCode.isSome
-      check outcome.error == ""
-      check lines.len == 0
-      check getMonoTime() - started < initDuration(seconds = 5) # The gate waits 10 s.
-      check not fileExists(deckFile.changeFileExt("released"))
-
-    test "forwards a last line without a line break":
-      let (outcome, lines) = runRecorded(createDeck(testDirectory, "partial.dck"))
-
-      check outcome.exitCode == some(0)
-      check lines == @["complete", "", "last"]
-
-runTests()
+removeDir(dir)

@@ -1,12 +1,16 @@
 # TRNRun Daemon
 
-`trnrund.exe` is a Windows daemon that runs TRNSYS simulations through
+`trnrund.exe` is a Windows command-line daemon that runs TRNSYS simulations
+through
 [TRNRun Runner](https://github.com/NRCan/TRNRun/tree/main/components/trnrun)
-on behalf of one client application. It reads requests as JSON Lines from
-stdin, runs them on a bounded pool of `trnrun.exe` processes, keeps their
-progress, results, and logs in memory, and answers for them on stdout. The
-JSON protocol below is the whole interface: a client sends requests and reads
-their replies, nothing else.
+on behalf of one client application. The client sends JSON requests over stdin
+and reads one JSON response per request from stdout. It:
+
+- queues simulations and limits how many `trnrun.exe` processes run at once
+- keeps each simulation's progress, result, and TRNSYS logs in memory until the
+  client releases it
+- validates decks and runner options when a simulation is added
+- kills every runner it started when stdin closes or the daemon dies
 
 ## Table of Contents
 
@@ -15,9 +19,7 @@ their replies, nothing else.
 - [Quick start](#quick-start)
 - [Settings](#settings)
 - [Request protocol](#request-protocol)
-- [Runs and logs](#runs-and-logs)
-- [Following runs](#following-runs)
-- [Shutdown and failures](#shutdown-and-failures)
+- [Simulation fields](#simulation-fields)
 - [Exit codes](#exit-codes)
 - [Examples](#examples)
 - [See also](#see-also)
@@ -26,7 +28,7 @@ their replies, nothing else.
 
 ### Runtime
 
-- Windows 10 or later, x64
+- Windows x64
 - [`trnrun.exe`](https://github.com/NRCan/TRNRun/tree/main/components/trnrun)
   executable
 - TRNSYS 17 or 18 for actual simulation runs
@@ -41,38 +43,48 @@ their replies, nothing else.
 ## Installation
 
 Download and extract `trnrund-v<version>-win_amd64.zip` from
-[GitHub Releases](https://github.com/NRCan/TRNRun/releases). The daemon does
-not bundle the runner; install `trnrun.exe` beside `trnrund.exe` or provide its
-path with `--trnrun`.
+[GitHub Releases](https://github.com/NRCan/TRNRun/releases). The daemon does not
+bundle the runner; place `trnrun.exe` beside `trnrund.exe` or pass its path with
+`--trnrun`.
 
-Or build from source:
+Or build from source, run the following from the repository root:
 
 ```powershell
 Set-Location components/trnrund
-nimble install -d
 nimble bin
 ```
 
-The executable is written to `components/trnrund/build/trnrund.exe` relative
-to the repository root.
+The executable is written to `components/trnrund/build/trnrund.exe` relative to
+the repository root. `nimble test` runs the tests against a fake runner, so it
+needs neither TRNRun nor TRNSYS.
 
 ## Quick start
 
-Start the daemon with a runner and a concurrency limit:
+Start the daemon with redirected stdin and stdout, then send one request and
+read one response at a time:
 
 ```powershell
-trnrund --trnrun:"C:\bin\trnrun.exe" --maxConcurrent:2
+$StartInfo = [Diagnostics.ProcessStartInfo]::new('trnrund.exe', '--workers:4')
+$StartInfo.UseShellExecute = $false
+$StartInfo.RedirectStandardInput = $true
+$StartInfo.RedirectStandardOutput = $true
+$Daemon = [Diagnostics.Process]::Start($StartInfo)
+
+function Send-Request([hashtable] $Request) {
+    $Daemon.StandardInput.WriteLine(($Request | ConvertTo-Json -Compress))
+    $Daemon.StandardOutput.ReadLine() | ConvertFrom-Json
+}
+
+$SimId = (Send-Request @{ cmd = 'add'; deckFile = 'C:\models\building-a.dck' }).simId
+do {
+    Start-Sleep -Seconds 1
+    $Simulation = (Send-Request @{ cmd = 'get'; simId = $SimId }).simulation
+} while ($Simulation.state -ne 'FINISHED')
+Send-Request @{ cmd = 'release'; simId = $SimId } | Out-Null
+
+$Daemon.StandardInput.Close()
+$Daemon.WaitForExit()
 ```
-
-Then write one request per line to its stdin:
-
-```json
-{"id":1,"cmd":"ready"}
-{"id":2,"cmd":"add","deckFile":"C:\\models\\building-a.dck","trnrunArgs":["--watchTmp:true"],"waitFor":"FINISHED"}
-{"id":3,"cmd":"shutdown"}
-```
-
-Close stdin to make the daemon exit.
 
 For option and version information:
 
@@ -83,304 +95,173 @@ trnrund --version
 
 ## Settings
 
-Options accept either `--name:value` or `--name=value`. Relative TRNRun and
-deck paths resolve from the daemon's working directory.
+Options accept either `--name:value` or `--name=value`.
 
-- _`--trnrun`_ (`path`, default: `trnrun.exe` beside `trnrund.exe`)
+- _`--trnrun`_ (`string`, default: `trnrun.exe` beside `trnrund.exe`)
 
-  TRNRun executable used for every run. It must be an existing file.
+  Path to the runner executable used for every simulation. The file must exist
+  when the daemon starts.
 
-- _`--maxConcurrent`_ (`integer`, default: `max(logical processors - 1, 1)`)
+- _`--workers`_ (`integer`, default: `max(logical processors - 1, 1)`)
 
   Maximum number of simulations running at once. The value must be at least
-  `1`.
+  `1`. Further simulations wait in the queue.
 
 ## Request protocol
 
-The client writes one JSON request per line to stdin. The daemon writes one
-reply per request to stdout, and nothing else. Replies come in request order,
-except for an [`add`](#add) that waits for its run: its reply comes once its
-run gets there, and later replies are not held behind it. stderr gets one
-line only, before a fatal exit. The protocol version is `2`, reported by
-[`ready`](#ready).
+Write one JSON object per line to daemon stdin, then read exactly one JSON
+response line from stdout before sending the next request. Stdout carries
+nothing else; diagnostics go to stderr.
 
-A request may include an `id` (any JSON value). The reply echoes it as its
-first field, so a client can match each reply to its request. Only an `add`
-with `waitFor` waits on a simulation; every other request replies at once.
-
-Runs and their logs live in memory: they are lost when the daemon exits, and
-run IDs start at 1 on each start. `runId` only grows within one daemon and is
-never reused.
-
-Each command below shows a request line and its reply line, with the run and
-log objects shortened. The `cmd` field picks the command:
-
-- [`ready`](#ready): get the protocol version.
-- [`add`](#add): queue a simulation.
-- [`get`](#get): read one run with all its logs.
-- [`release`](#release): delete a finished run the client has saved.
-- [`cancel`](#cancel): stop one run.
-- [`shutdown`](#shutdown): stop new work.
-
-### `ready`
-
-Reports the protocol and daemon versions and the concurrency limit, so a
-client can check that it speaks the same protocol.
-
-```jsonc
-// stdin
-{"id":1,"cmd":"ready"}
-// stdout
-{"id":1,"ok":true,"protocolVersion":2,"version":"0.9.0","maxConcurrent":4}
+```json
+{"cmd":"add","deckFile":"C:\\models\\building-a.dck","label":"building-a","trnrunArgs":["--guiVisibility:min"]}
+{"ok":true,"simId":1}
 ```
 
-- **stdin**: no fields besides `cmd`.
-- **stdout**:
-  - `protocolVersion`: changes whenever a command, field, or object changes
-    what clients read.
-  - `version`: the daemon's version.
-  - `maxConcurrent`: most simulations running at once.
+Every response contains `ok`. When `ok` is `false`, it also contains `error`, a
+human-readable message.
 
-### `add`
+Closing stdin cancels every simulation and exits. If the daemon itself dies,
+even by crashing, Windows kills every `trnrun.exe` and `TrnEXE` it started.
 
-Queues a simulation as `QUEUED`, starts it at once if a slot is free, and
-replies with its `runId` and [run](#runs).
+### Commands
 
-```jsonc
-// stdin
-{"id":2,"cmd":"add","deckFile":"model.dck","trnrunArgs":["--watchTmp:true"],"label":"case A"}
-// stdout
-{"id":2,"ok":true,"runId":7,"run":{"runId":7,"label":"case A","state":"RUNNING"}}
+- _`ready`_
+
+  Answers `{"ok":true}`. Use it to confirm the daemon is up.
+
+- _`add`_ (`deckFile`, optional `label` and `trnrunArgs`)
+
+  Queues a simulation and answers `{"ok":true,"simId":1}`. `deckFile` is an
+  existing `.dck` or `.trd` file; relative paths resolve from the daemon's
+  working directory. `label` is any string returned with the simulation.
+  `trnrunArgs` is an array of runner options such as `["--watchTmp:true"]`.
+  Each option is checked by the runner's own option parser, so an unknown
+  option or bad value is refused here; a deck path, `--deckFile`, `--help`, and
+  `--version` are refused too. The response confirms queuing only, not that the
+  simulation started or finished. A `simId` is never reused.
+
+- _`get`_ (`simId`)
+
+  Answers `{"ok":true,"simulation":{...}}` with every
+  [simulation field](#simulation-fields). Refuses an unknown `simId`.
+
+- _`list`_ (`state`, optional `withLogs`)
+
+  Answers `{"ok":true,"simulations":[...]}` with every simulation not yet
+  released in `state` (`QUEUED`, `RUNNING`, or `FINISHED`), oldest first. Each
+  is shaped as `get` returns it, but without `logs` unless `withLogs` is
+  `true`; the log counts stay. Polling `FINISHED` and releasing what it returns
+  collects a batch in one request per poll.
+
+- _`cancel`_ (`simId`)
+
+  Stops a `QUEUED` or `RUNNING` simulation and answers `{"ok":true}`. Refuses
+  one that is `FINISHED` or unknown.
+
+- _`release`_ (`simId`)
+
+  Forgets a `FINISHED` simulation and its logs and answers `{"ok":true}`.
+  Refuses one that is still `QUEUED` or `RUNNING` (cancel it first) or unknown.
+
+## Simulation fields
+
+`get` returns the object below. A value the runner has not reported yet is
+`null`.
+
+```json
+{"simId":1,"label":"building-a","state":"FINISHED","trnrunStatus":"DONE","trnrunMessage":"","percent":1.0,"simTime":8760.0,"elapsedMs":5321.0,"etaMs":0.0,"notices":2,"warnings":1,"fatals":0,"succeeded":true,"exitCode":0,"error":null,"submittedAt":"2026-10-22T14:03:12.345Z","startedAt":"2026-10-22T14:03:12.351Z","finishedAt":"2026-10-22T14:03:17.702Z","deckFile":"C:\\models\\building-a.dck","trnrunArgs":["--guiVisibility:min"],"startTime":0.0,"stopTime":8760.0,"timeStep":1.0,"setting":{...},"logs":[{"severity":"Warning","time":12.0,"unitId":5,"typeId":56,"messageCode":null,"message":"...","information":null}]}
 ```
 
-- **stdin**:
-  - `deckFile`: an existing `.dck` or `.trd` file; extensions are
-    case-insensitive.
-  - `trnrunArgs` (optional): TRNRun options, such as `--watchTmp:true`. `add`
-    checks them with TRNRun's own parser and rejects the run if TRNRun would
-    refuse one, so a typo fails at once instead of when the run starts. The
-    daemon passes the deck and `runId` itself, so `trnrunArgs` cannot hold a
-    deck path, `--deckFile`, `--runId`, `--help`, or `--version`.
-  - `label` (optional): a text tag kept with the run, for the client's own
-    use. It does not need to be unique.
-  - `waitFor` (optional, default `QUEUED`): when to reply. `QUEUED` replies at
-    once, `RUNNING` once the run starts, and `FINISHED` once it finishes. A
-    later state also counts, so a run cancelled or failed before it started
-    answers a `RUNNING` wait. An `add` that waits must have an `id`.
-- **stdout**:
-  - `runId`: the ID the daemon assigned.
-  - `run`: the run as it is when the reply is sent, so a `FINISHED` wait
-    returns the outcome without a separate `get`.
+- _`simId`_, _`label`_, _`deckFile`_, _`trnrunArgs`_
 
-A waiting `add` still gets its reply after a `shutdown`, once its run
-finishes or is cancelled. When stdin closes, waiting adds get no reply.
+  The identifier assigned by `add` and the values the client sent with it.
+  `deckFile` is the resolved absolute path.
 
-### `get`
+- _`state`_ (`string`)
 
-Replies with one run and all its logs.
+  `QUEUED` while waiting for a worker, `RUNNING` once the runner started, and
+  `FINISHED` once it completed, failed, or was cancelled.
 
-```jsonc
-// stdin
-{"id":3,"cmd":"get","runId":7}
-// stdout
-{"id":3,"ok":true,"run":{"runId":7,"state":"FINISHED","logs":[{"severity":"Notice","simTime":0}]}}
-```
+- _`succeeded`_ (`boolean`)
 
-- **stdin**:
-  - `runId`: the run to read. An unknown or released `runId` is rejected.
-- **stdout**:
-  - `run`: the [run](#runs), with every log entry so far in `logs`.
+  Set once `FINISHED`. `true` only with runner status `DONE`, exit code `0`,
+  and no `error`.
 
-### `release`
+- _`trnrunStatus`_, _`trnrunMessage`_ (`string`)
 
-Deletes a finished run, with its logs, once the client has saved what it
-needs. The daemon keeps every run until it is released, so a long batch
-should release its runs as they finish.
+  The runner's last
+  [`STATUS`](https://github.com/NRCan/TRNRun/tree/main/components/trnrun#status-events)
+  event. `CANCELLED` when cancelled, `ERROR` when the runner could not start or
+  exited without a final status.
 
-```jsonc
-// stdin
-{"id":5,"cmd":"release","runId":7}
-// stdout
-{"id":5,"ok":true}
-```
+- _`percent`_, _`simTime`_, _`elapsedMs`_, _`etaMs`_ (`number`)
 
-- **stdin**:
-  - `runId`: the run to delete. It must be `FINISHED`, or the request is
-    rejected. An unknown or already released `runId` is skipped, so a client
-    can safely send the same request again.
-- **stdout**: no fields besides `ok`.
+  The runner's last
+  [`PROGRESS`](https://github.com/NRCan/TRNRun/tree/main/components/trnrun#progress-events)
+  event. `percent` is in `[0, 1]` and `simTime` is in simulation hours.
 
-A released run is unknown afterwards: `get` and `cancel` reject it.
+- _`startTime`_, _`stopTime`_, _`timeStep`_ (`number`)
 
-### `cancel`
+  Simulation period from the runner's
+  [`CONFIG`](https://github.com/NRCan/TRNRun/tree/main/components/trnrun#config-events)
+  event, in simulation hours.
 
-Stops one queued or running run.
+- _`setting`_ (`object`)
 
-```jsonc
-// stdin
-{"id":6,"cmd":"cancel","runId":7}
-// stdout
-{"id":6,"ok":true}
-```
+  The runner's
+  [`SETTING`](https://github.com/NRCan/TRNRun/tree/main/components/trnrun#setting-events)
+  event: the effective settings applied to the run.
 
-- **stdin**:
-  - `runId`: the run to stop. Only an unknown or released `runId` is
-    rejected.
-- **stdout**: no fields besides `ok`, once the cancel is recorded.
+- _`notices`_, _`warnings`_, _`fatals`_ (`integer`), _`logs`_ (`array`)
 
-### `shutdown`
+  TRNSYS
+  [`LOG`](https://github.com/NRCan/TRNRun/tree/main/components/trnrun#log-events)
+  entries, counted by severity and kept oldest first.
 
-Stops accepting runs and cancels queued ones. The daemon keeps answering
-requests, so a client can collect the last results, and exits only when stdin
-closes.
+- _`exitCode`_ (`integer`)
 
-```jsonc
-// stdin
-{"id":7,"cmd":"shutdown","cancelRunning":false}
-// stdout
-{"id":7,"ok":true}
-```
+  The runner's
+  [exit code](https://github.com/NRCan/TRNRun/tree/main/components/trnrun#exit-codes);
+  `null` if it was cancelled or never started.
 
-- **stdin**:
-  - `cancelRunning` (optional, default `false`): kill running runs instead of
-    letting them finish.
-- **stdout**: no fields besides `ok`, at once.
+- _`error`_ (`string`)
 
-### Errors
+  Why the daemon failed or cancelled the run, such as
+  `Interrupted: cancelled by the client`.
 
-A rejected request, such as malformed JSON, an unknown `cmd`, or invalid
-fields, gets `ok: false` and an `error` message, with its `id` if it had one:
+- _`submittedAt`_, _`startedAt`_, _`finishedAt`_ (`string`)
 
-```jsonc
-// stdin
-{"id":8,"cmd":"cancel","runId":99}
-// stdout
-{"id":8,"ok":false,"error":"Unknown runId: 99"}
-```
-
-## Runs and logs
-
-### Runs
-
-A run object has these fields. A value TRNRun has not reported yet is `null`,
-as are `exitCode` until TRNRun exits and `error` when there is none.
-
-| Field | Type | Meaning |
-| ------ | ---- | ------- |
-| `runId` | integer | Assigned by the daemon and returned by `add` |
-| `label` | string | The `label` it was added with, or `null` |
-| `state` | string | `QUEUED`, `RUNNING`, or `FINISHED` |
-| `trnrunStatus`, `trnrunMessage` | string | TRNRun's latest `STATUS`; not `state`. `PENDING`, `LAUNCHING`, or `RUNNING` while it runs, then `DONE`, `CANCELLED`, `ERROR`, `TIMEOUT`, or `STALLED` |
-| `percent`, `simTime`, `elapsedMs`, `etaMs` | number | TRNRun's latest `PROGRESS` |
-| `notices`, `warnings`, `fatals` | integer | Log entries so far, by severity |
-| `succeeded` | boolean | `true` if it finished with `DONE`, exit code 0, and no error, else `false`; `null` until `FINISHED` |
-| `exitCode` | integer | TRNRun's exit code |
-| `error` | string | Execution error reported by the daemon |
-| `submittedAt`, `startedAt`, `finishedAt` | string | Timestamps, see [Timestamps](#timestamps) |
-| `deckFile` | string | Absolute deck path |
-| `trnrunArgs` | array of strings | The `trnrunArgs` it was added with |
-| `startTime`, `stopTime`, `timeStep` | number | TRNRun's `CONFIG`: simulated hours |
-| `setting` | object | TRNRun's latest `SETTING` event, without its `kind` and `timestamp` |
-| `logs` | array of objects | Every [log entry](#logs) so far, oldest first |
-
-`setting` holds the options trnrund knows, one key per TRNRun option; its keys
-change only with the protocol version.
-
-### Logs
-
-A log object is one TRNRun `LOG` event of its run:
-
-| Field | Type | Meaning |
-| ------ | ---- | ------- |
-| `severity` | string | `Notice`, `Warning`, or `Fatal` |
-| `simTime` | number | Simulated time of the entry |
-| `unitId`, `typeId`, `messageCode` | integer | TRNSYS unit, type, and message code; `null` if none |
-| `message`, `information` | string | TRNSYS text; `null` if none |
-
-### Timestamps
-
-The timestamps are UTC ISO 8601 text with milliseconds, such as
-`2026-10-09T14:03:12.345Z`, which sort chronologically as text. `startedAt` is
-`null` until TRNRun starts, and stays `null` for a run that never did;
-`finishedAt` is `null` until the run is `FINISHED`.
-
-### Completion
-
-A run is done once `state` is `FINISHED`, after TRNRun exits. Do not use
-`trnrunStatus` `DONE` or `percent` `1` instead: TRNRun can report them before
-it exits, and output may still follow. `FINISHED` includes failed and
-cancelled runs; `succeeded` tells them apart, and its logs are then complete.
-A `FINISHED` run never changes again.
-
-## Following runs
-
-A client polls: it remembers the `runId` each `add` replied with, and sends
-`get` for each unfinished run every second or so. Each reply is one
-consistent view of the run and all its logs. Once a run is `FINISHED`, its
-logs are complete, so the client can save it and `release` it. The daemon's
-memory then stays flat however long the batch.
-
-## Shutdown and failures
-
-- [`cancel`](#cancel) finishes a queued run as `FINISHED` and `CANCELLED`,
-  with the error `Not started: cancelled by the client`, before its reply. A
-  running run has its TRNRun killed, and TRNRun's own Job Object then stops
-  TrnEXE; the run becomes `FINISHED` and `CANCELLED` shortly after the reply,
-  with the error `Interrupted: cancelled by the client`, a `null` exit code,
-  and its slot freed for the next queued run. A finished run is left
-  unchanged, so a run that finishes just before its cancel keeps its real
-  outcome. If TRNRun reported a terminal status, such as `DONE`, just before
-  it was killed, that status is kept, but `succeeded` is still false.
-- [`shutdown`](#shutdown) finishes queued runs as `FINISHED` and `CANCELLED`,
-  with the error `Not started: the daemon shut down`. Running runs finish, or
-  with `cancelRunning` are killed with the error
-  `Interrupted: the daemon shut down`. The daemon keeps answering every
-  request: `get`, `release`, and `cancel` work, `shutdown` can be sent
-  again with `cancelRunning`, and `add` is rejected.
-- The daemon exits only when stdin closes, also during a `shutdown`, without
-  waiting for running simulations: it kills them, and their state is lost
-  with every other run's. The same happens if stdout can no longer be
-  written. A client that wants the final results collects them before it
-  closes stdin.
-- However the daemon exits, a client still reading stdout gets every reply
-  left to write; one that is not reading holds the exit up for at most a
-  second. TRNRun children do not inherit the daemon's stdin, stdout, or
-  stderr.
-- A kill-on-close Windows Job Object terminates remaining TRNRun descendants
-  when the daemon exits, even if it crashes.
-- A run whose TRNRun cannot be started finishes at once, from `QUEUED`, with
-  the launch error and a daemon `ERROR` status.
+  UTC ISO 8601 timestamps with millisecond precision.
 
 ## Exit codes
 
 | Exit code | Meaning |
 | --- | --- |
-| `0` | Normal exit after stdin closed. Help and version also return `0`. Individual runs may still have failed. |
-| `1` | Fatal failure: an unexpected fault in the daemon. |
-| `2` | Invalid option or startup validation error. |
+| `0` | Stdin closed and every simulation was cancelled. Help and version also return `0`. Individual simulations may still have failed. |
+| `1` | Unexpected fatal failure. |
+| `2` | Invalid option, positional argument, or missing runner executable. |
 
-Run outcomes do not become the daemon's exit code. Read `succeeded` and
-`exitCode` in each run instead.
+Simulation outcomes do not become the daemon exit code. Inspect each
+simulation's `succeeded`, `trnrunStatus`, and `exitCode` instead.
 
 ## Examples
 
 PowerShell examples are available in
 [`examples`](https://github.com/NRCan/TRNRun/tree/main/components/trnrund/examples).
-They expect `build/trnrund.exe` and `../trnrun/build/trnrun.exe` to exist, and
-poll each run with `get`. Real simulations need TRNSYS.
+They expect
+`build/trnrund.exe` and `../trnrun/build/trnrun.exe` to exist and use the
+default TRNSYS 18 executable path.
 
 - [`example_concurrent.ps1`](https://github.com/NRCan/TRNRun/blob/main/components/trnrund/examples/example_concurrent.ps1)
-  submits the full batch immediately.
+  adds every simulation at once and lets the daemon queue them.
 - [`example_waiting.ps1`](https://github.com/NRCan/TRNRun/blob/main/components/trnrund/examples/example_waiting.ps1)
-  waits for each run to leave `QUEUED` before submitting the next.
+  adds the next simulation only once the previous one has started.
 - [`example_percent.ps1`](https://github.com/NRCan/TRNRun/blob/main/components/trnrund/examples/example_percent.ps1)
-  does the same and also prints progress.
+  does the same while printing each simulation's progress.
 
-The scripts name runs with `label` and release them once finished.
-
-[`tests/manual_daemon.nim`](https://github.com/NRCan/TRNRun/blob/main/components/trnrund/tests/manual_daemon.nim)
-runs 20 copies of a deck through real TRNSYS; adjust its configuration for your
-installation.
+All scripts create ten temporary deck copies and allow up to five simultaneous
+runs.
 
 ## See also
 

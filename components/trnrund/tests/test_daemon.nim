@@ -6,12 +6,12 @@ const TestVersion = "daemon-test-version"
 
 let
   dir = createDeckDir()
-  daemonExe = dir / "trnrund2.exe"
+  daemonExe = dir / "trnrund.exe"
   build = execCmdEx(
     "nim c --hints:off -d:NimblePkgVersion=" & TestVersion &
       " --nimcache:" & quoteShell(dir / "nimcache") &
       " --out:" & quoteShell(daemonExe) &
-      " " & quoteShell(currentSourcePath.parentDir / "../src/trnrund2.nim")
+      " " & quoteShell(currentSourcePath.parentDir / "../src/trnrund.nim")
   )
   trnrunOption = "--trnrun:" & getAppFilename()
 
@@ -50,14 +50,14 @@ suite "daemon":
       let daemon = startDaemon(args)
       check daemon.waitForExit(10_000) == 2
       check daemon.outputStream.readAll() == ""
-      check daemon.errorStream.readAll().startsWith("trnrund2: ")
+      check daemon.errorStream.readAll().startsWith("trnrund: ")
       daemon.close()
 
   test "prints help and version, even without a TRNRun, and exits 0":
     let missing = "--trnrun:" & dir / "missing.exe"
     for (args, expected) in [
-      (@["-h", missing], "trnrund2 - run TRNSYS simulations"),
-      (@["--help"], "trnrund2 - run TRNSYS simulations"),
+      (@["-h", missing], "trnrund - run TRNSYS simulations"),
+      (@["--help"], "trnrund - run TRNSYS simulations"),
       (@["-v", missing], TestVersion),
       (@["--version"], TestVersion),
     ]:

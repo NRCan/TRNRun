@@ -1,90 +1,46 @@
-import std/[os, strutils, unittest]
+import std/[os, unittest]
 
 import ../src/validate
-import ./fake_deck
+import ./fake_trnrun
 
-proc raisesInputError(validation: proc(), expected: string): bool =
-  ## Whether `validation` raises an `InputError` whose message holds `expected`.
-  result = false
-  try:
-    validation()
-  except InputError as error:
-    result = error.msg.contains(expected)
+let dir = createDeckDir()
 
-proc runTests() =
-  ## Runs the validation tests in a temporary directory.
-  let testDirectory = getTempDir() / "trnrund_validate_tests"
-  if dirExists(testDirectory):
-    removeDir(testDirectory)
-  createDir(testDirectory)
-  defer:
-    if dirExists(testDirectory):
-      removeDir(testDirectory)
+suite "validate":
+  test "validateFile returns an existing file absolute and normalized":
+    let file = createDeck(dir, "a.dck")
+    check validateFile(dir / "sub" / ".." / "a.dck", "Deck file") == file
 
-  suite "input validation":
-    test "accepts existing DCK and TRD files case-insensitively":
-      let
-        dckFile = createDeck(testDirectory, "validation.DCK")
-        trdFile = createDeck(testDirectory, "validation.TRd")
+  test "validateFile rejects a missing file, naming it":
+    expect InputError:
+      discard validateFile(dir / "missing.exe", "TRNRun")
+    try:
+      discard validateFile(dir / "missing.exe", "TRNRun")
+    except InputError as error:
+      check error.msg == "TRNRun not found: '" & dir / "missing.exe" & "'"
 
-      check validateDeck(dckFile) == dckFile.absolutePath().normalizedPath()
-      check validateDeck(trdFile) == trdFile.absolutePath().normalizedPath()
+  test "validateDeck accepts .dck and .trd in any case":
+    for name in ["b.dck", "c.TRD"]:
+      check validateDeck(createDeck(dir, name)) == dir / name
 
-    test "resolves a relative deck from the working directory":
-      let
-        deckFile = createDeck(testDirectory, "relative.dck")
-        previousDirectory = getCurrentDir()
-      setCurrentDir(testDirectory)
-      defer: setCurrentDir(previousDirectory)
+  test "validateDeck rejects another file type":
+    expect InputError:
+      discard validateDeck(createDeck(dir, "d.txt"))
 
-      check validateDeck("relative.dck") == deckFile.absolutePath().normalizedPath()
+  test "validateTrnrunArgs accepts TRNRun options":
+    validateTrnrunArgs([])
+    validateTrnrunArgs(["--guiVisibility:min", "--pollMs:50", "--clean:true", "--runId:x"])
 
-    test "rejects missing and unsupported deck files with InputError":
-      let
-        missingDeck = testDirectory / "missing.dck"
-        unsupportedDeck = createDeck(testDirectory, "unsupported.txt")
+  test "validateTrnrunArgs rejects what TRNRun or the daemon would not take":
+    for args in [
+      @["other.dck"],
+      @["--deckFile:other.dck"],
+      @["--help"],
+      @["-v"],
+      @["--bogus:1"],
+      @["--pollMs:0"],
+      @["--clean:maybe"],
+    ]:
+      expect InputError:
+        validateTrnrunArgs(args)
 
-      check raisesInputError(
-        proc() = discard validateDeck(missingDeck), "Deck file not found:"
-      )
-      check raisesInputError(
-        proc() = discard validateDeck(unsupportedDeck), "Expected .dck or .trd"
-      )
-
-    test "validates the TRNRun path":
-      check validateFile(getAppFilename(), "TRNRun") ==
-        getAppFilename().absolutePath().normalizedPath()
-
-      let missingTrnrun = testDirectory / "missing-trnrun.exe"
-      check raisesInputError(
-        proc() = discard validateFile(missingTrnrun, "TRNRun"), "TRNRun not found:"
-      )
-
-    test "accepts the TRNRun options clients set":
-      validateTrnrunArgs([])
-      validateTrnrunArgs([
-        "--trnexePath:C:/Program Files/TRNSYS/TrnEXE64.exe", "--guiVisibility:hidden",
-        "--watchTmp:true", "--pollMs=50", "--severity:Warning", "--writeEvents:false",
-      ])
-
-    test "rejects TRNRun arguments TRNRun or the daemon would refuse":
-      let cases = [
-        (args: @["--watchTMP:true"], expected: "Unknown option in trnrunArgs: 'watchTMP'"),
-        (args: @["-x"], expected: "Unknown option in trnrunArgs: 'x'"),
-        (args: @["--pollMs:fast"], expected: "Invalid value for 'pollMs' in trnrunArgs:"),
-        (args: @["--watchTmp:yes please"], expected: "Invalid value for 'watchTmp' in trnrunArgs:"),
-        (args: @["--guiVisibility:loud"],
-          expected: "Invalid value for 'guiVisibility' in trnrunArgs:"),
-        (args: @["--deckFile:other.dck"], expected: "Option not allowed in trnrunArgs: 'deckFile'"),
-        (args: @["--deckFile=other.dck"], expected: "Option not allowed in trnrunArgs: 'deckFile'"),
-        (args: @["--runId:other"], expected: "Option not allowed in trnrunArgs: 'runId'"),
-        (args: @["--help"], expected: "Option not allowed in trnrunArgs: 'help'"),
-        (args: @["-v"], expected: "Option not allowed in trnrunArgs: 'v'"),
-        (args: @["other.dck"], expected: "Unexpected argument in trnrunArgs: 'other.dck'"),
-      ]
-      for testCase in cases:
-        checkpoint($testCase.args)
-        let args = testCase.args
-        check raisesInputError(proc() = validateTrnrunArgs(args), testCase.expected)
-
-runTests()
+removeDir(dir)
