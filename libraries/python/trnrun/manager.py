@@ -28,6 +28,17 @@ class SimulationManager:
     Nothing runs in the background: ``add(wait_for=...)`` and ``wait()``
     refresh every ``poll_interval`` seconds while they block, and that is when
     the display moves. Call ``refresh()`` yourself to move it otherwise.
+
+    Attributes
+    ----------
+    daemon : Daemon
+        The trnrund this manager owns; usable directly for other commands.
+    display : Display or None
+        Live terminal display, or None when disabled.
+    poll_interval : float
+        Seconds between refreshes while blocking.
+    simulations : dict of int to Simulation
+        Every simulation added, by simId.
     """
 
     def __init__(
@@ -39,11 +50,30 @@ class SimulationManager:
         trnrund_path: str | Path = BIN / "trnrund.exe",
         trnrun_path: str | Path = BIN / "trnrun.exe",
     ) -> None:
-        """Start trnrund with ``workers`` simulations at once, by default the CPU count minus one."""
+        """Start trnrund.
+
+        Parameters
+        ----------
+        workers : int, optional
+            Simulations run at once; trnrund's default, the CPU count minus one, when None.
+        display : bool, optional
+            Show the simulations live in the terminal or notebook.
+        poll_interval : float, optional
+            Seconds between refreshes while ``add`` or ``wait`` blocks.
+        trnrund_path : str or Path, optional
+            trnrund executable; the bundled one by default.
+        trnrun_path : str or Path, optional
+            TRNRun executable trnrund launches per simulation; the bundled one by default.
+
+        Raises
+        ------
+        DaemonExitedError
+            If trnrund exits before answering.
+        """
         self.daemon: Daemon = Daemon(workers=workers, trnrund_path=trnrund_path, trnrun_path=trnrun_path)
         self.display: Display | None = Display() if display else None
         self.poll_interval: float = poll_interval
-        self.simulations: dict[int, Simulation] = {}  # Every simulation added, by simId.
+        self.simulations: dict[int, Simulation] = {}
 
     def add(
         self,
@@ -55,12 +85,31 @@ class SimulationManager:
     ) -> Simulation:
         """Queue a deck and return its simulation.
 
-        ``wait_for`` blocks until the simulation is at least ``QUEUED``,
-        ``RUNNING`` or ``FINISHED``; None returns at once. trnrund queues it
-        before answering, so ``QUEUED`` returns at once too. A simulation that
-        ends without starting, such as a cancelled one, counts as past
-        ``RUNNING``. ValueError for another ``wait_for``, before anything is
-        queued; RequestError if trnrund refuses the deck or ``settings``.
+        Parameters
+        ----------
+        deck_file : str or Path
+            Deck to run; a relative path resolves from Python's working directory.
+        settings : SimulationSettings, optional
+            TRNRun options; None keeps every TRNRun default.
+        label : str, optional
+            Free text stored with the simulation, shown instead of the deck path.
+        wait_for : SimulationState or str, optional
+            Block until the simulation is at least ``QUEUED``, ``RUNNING`` or
+            ``FINISHED``; None returns at once. trnrund queues it before
+            answering, so ``QUEUED`` returns at once too. A simulation that ends
+            without starting, such as a cancelled one, counts as past ``RUNNING``.
+
+        Returns
+        -------
+        Simulation
+            The simulation, kept current by every later ``refresh()``.
+
+        Raises
+        ------
+        ValueError
+            If ``wait_for`` is not a state, before anything is queued.
+        RequestError
+            If trnrund refuses the deck or ``settings``.
         """
         if wait_for is not None:
             _ = _rank(wait_for)
@@ -91,16 +140,31 @@ class SimulationManager:
         until: StateName = SimulationState.FINISHED,
         timeout: float | None = None,
     ) -> None:
-        """Block until ``simulations``, by default every one added, are at least ``until``.
+        """Block until simulations reach a state, refreshing every ``poll_interval`` seconds.
 
-        TimeoutError if they are not after ``timeout`` seconds.
+        Parameters
+        ----------
+        *simulations : Simulation
+            Simulations to wait for, matched by simId; every one added by default.
+        until : SimulationState or str, optional
+            Least state each must reach: ``QUEUED``, ``RUNNING`` or ``FINISHED``.
+        timeout : float, optional
+            Seconds to wait at most; None waits forever.
+
+        Raises
+        ------
+        ValueError
+            If ``until`` is not a state.
+        TimeoutError
+            If they have not reached ``until`` after ``timeout`` seconds.
         """
         rank = _rank(until)
         targets = simulations or tuple(self.simulations.values())
         deadline = None if timeout is None else time.monotonic() + timeout
         while True:
             self.refresh()
-            if all(_rank(sim.state) >= rank for sim in targets):
+            # By simId: a Simulation not returned by add() is never updated in place.
+            if all(_rank(self.simulations.get(sim.sim_id, sim).state) >= rank for sim in targets):
                 return
             if deadline is not None and time.monotonic() >= deadline:
                 raise TimeoutError(f"Simulations not {until} after {timeout} s")

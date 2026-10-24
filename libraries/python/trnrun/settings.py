@@ -2,7 +2,9 @@
 
 from dataclasses import dataclass, fields
 from pathlib import Path
-from typing import ClassVar, cast
+from typing import ClassVar, Literal, cast
+
+from trnrun.simulation import LogSeverity
 
 
 @dataclass
@@ -34,14 +36,14 @@ class SimulationSettings:
         Delete TRNSYS output artifacts after a successful run (``--clean``).
     kill_on_timeout, kill_on_stall : bool, optional
         Kill TRNSYS on a timeout or a stall (``--killOnTimeout``, ``--killOnStall``).
-    severity : str, optional
+    severity : LogSeverity or str, optional
         Minimum log severity: Notice, Warning or Fatal (``--severity``).
     write_events : bool, optional
         Write the events to a .jsonl file beside the deck (``--writeEvents``).
     """
 
     trnexe_path: str | Path | None = None
-    gui_visibility: str | None = None
+    gui_visibility: Literal["keep", "auto", "min", "minAuto", "hidden"] | None = None
     wait_for_gui: bool | None = None
     wait_for_lst: bool | None = None
     wait_for_tmp: bool | None = None
@@ -55,10 +57,9 @@ class SimulationSettings:
     clean_on_success: bool | None = None
     kill_on_timeout: bool | None = None
     kill_on_stall: bool | None = None
-    severity: str | None = None
+    severity: LogSeverity | Literal["Notice", "Warning", "Fatal"] | None = None
     write_events: bool | None = None
 
-    # TRNRun flag of each field.
     _FLAGS: ClassVar[dict[str, str]] = {
         "trnexe_path": "trnexePath",
         "gui_visibility": "guiVisibility",
@@ -80,7 +81,19 @@ class SimulationSettings:
     }
 
     def to_cli_args(self) -> list[str]:
-        """Return unquoted argv entries for the fields that are set, with trnexe_path made absolute."""
+        """Build the TRNRun flags of the fields that are set.
+
+        Returns
+        -------
+        list of str
+            Unquoted argv entries such as ``--watchTmp:true``, in field order;
+            ``trnexe_path`` is made absolute from Python's working directory.
+
+        Raises
+        ------
+        FileNotFoundError
+            If ``trnexe_path`` is set but is not a file.
+        """
         args: list[str] = []
         for settings_field in fields(self):
             name = settings_field.name

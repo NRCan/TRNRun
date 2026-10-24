@@ -1,13 +1,12 @@
 """SimulationSettings: the TRNRun flags it builds, and trnrund accepting every one."""
 
-from collections.abc import Callable
 from dataclasses import fields
 from pathlib import Path
 
 import pytest
 
-from tests.conftest import PYTHON
-from trnrun import Daemon, SimulationSettings
+from tests.conftest import PYTHON, DeckWriter, requires_trnrund
+from trnrun import Daemon, LogSeverity, SimulationSettings
 
 
 def test_default_settings_pass_nothing() -> None:
@@ -18,6 +17,7 @@ def test_default_settings_pass_nothing() -> None:
 def test_settings_pass_only_the_fields_set() -> None:
     """Unset fields are left out, whatever their position."""
     assert SimulationSettings(poll_ms=10, severity="Fatal").to_cli_args() == ["--pollMs:10", "--severity:Fatal"]
+    assert SimulationSettings(severity=LogSeverity.WARNING).to_cli_args() == ["--severity:Warning"]
 
 
 def test_every_setting_has_a_flag() -> None:
@@ -40,7 +40,8 @@ def test_missing_trnexe_fails_before_queuing(tmp_path: Path) -> None:
         _ = SimulationSettings(trnexe_path=tmp_path).to_cli_args()
 
 
-def test_trnrund_accepts_every_setting(deck: Callable[..., Path]) -> None:
+@requires_trnrund
+def test_trnrund_accepts_every_setting(deck: DeckWriter) -> None:
     """Every flag passes trnrund's check of TRNRun's options, and is stored as built."""
     settings = SimulationSettings(
         trnexe_path=PYTHON,

@@ -168,7 +168,25 @@ def _parse_log(log: dict[str, Any]) -> LogEvent:
 
 
 def parse_simulation(sim: dict[str, Any]) -> Simulation:
-    """Parse a simulation object of a trnrund response; a value TRNRun has not reported yet stays None."""
+    """Parse a simulation object of a trnrund response.
+
+    Parameters
+    ----------
+    sim : dict
+        Simulation object as trnrund sends it, with camelCase keys; ``logs`` may be absent.
+
+    Returns
+    -------
+    Simulation
+        The record; a value TRNRun has not reported yet stays None.
+
+    Raises
+    ------
+    ValueError
+        If the state, status or a log severity is unknown.
+    KeyError
+        If a field is missing.
+    """
     status = sim["trnrunStatus"]
     return Simulation(
         sim_id=sim["simId"],

@@ -1,3 +1,5 @@
+"""Hatch build hook: check the bundled executables and tag the wheel for Windows."""
+
 import subprocess
 from pathlib import Path
 
@@ -8,7 +10,22 @@ class CustomBuildHook(BuildHookInterface):
     """Validate native executables included in Windows wheels."""
 
     def initialize(self, version: str, build_data: dict[str, object]) -> None:
-        """Validate bundled executables and configure the wheel tag."""
+        """Validate bundled executables and configure the wheel tag.
+
+        Parameters
+        ----------
+        version : str
+            Build version, such as ``standard`` or ``editable``; an editable build is not checked.
+        build_data : dict
+            Hatch build data, updated with the platform tag.
+
+        Raises
+        ------
+        FileNotFoundError
+            If ``trnrun.exe`` or ``trnrund.exe`` is missing from ``trnrun/bin``.
+        ValueError
+            If an executable's ``--version`` differs from the package version.
+        """
         if version == "editable":
             return
 

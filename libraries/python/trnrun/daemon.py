@@ -8,6 +8,7 @@ raw response; see trnrund's README for each command.
 import json
 import subprocess
 import threading
+from collections.abc import Mapping
 from contextlib import suppress
 from pathlib import Path
 from types import TracebackType
@@ -42,7 +43,24 @@ class Daemon:
         trnrund_path: str | Path = BIN / "trnrund.exe",
         trnrun_path: str | Path = BIN / "trnrun.exe",
     ) -> None:
-        """Start trnrund and check it answers; ``workers`` defaults to the CPU count minus one."""
+        """Start trnrund and check it answers.
+
+        Parameters
+        ----------
+        workers : int, optional
+            Simulations run at once; trnrund's default, the CPU count minus one, when None.
+        trnrund_path : str or Path, optional
+            trnrund executable; the bundled one by default.
+        trnrun_path : str or Path, optional
+            TRNRun executable trnrund launches per simulation; the bundled one by default.
+
+        Raises
+        ------
+        FileNotFoundError
+            If ``trnrund_path`` does not exist.
+        DaemonExitedError
+            If trnrund exits before answering, such as for an invalid option.
+        """
         args = [str(trnrund_path), f"--trnrun:{Path(trnrun_path).absolute()}"]
         if workers is not None:
             args.append(f"--workers:{workers}")
@@ -66,8 +84,26 @@ class Daemon:
             self.close()
             raise
 
-    def request(self, request: dict[str, Any]) -> dict[str, Any]:
-        """Send one raw request and return its response; RequestError if trnrund refuses it."""
+    def request(self, request: Mapping[str, object]) -> dict[str, Any]:
+        """Send one raw request and return its response.
+
+        Parameters
+        ----------
+        request : Mapping
+            Request object, such as ``{"cmd": "ready"}``; see trnrund's README.
+
+        Returns
+        -------
+        dict
+            trnrund's response, its ``ok`` true.
+
+        Raises
+        ------
+        RequestError
+            If trnrund refuses the request.
+        DaemonExitedError
+            If trnrund stopped answering.
+        """
         with self._lock:
             try:
                 _ = self._stdin.write(json.dumps(request) + "\n")
@@ -89,7 +125,29 @@ class Daemon:
         *,
         label: str | None = None,
     ) -> int:
-        """Queue a deck and return its simId; ``settings`` None keeps every TRNRun default."""
+        """Queue a deck and return its simId.
+
+        Parameters
+        ----------
+        deck_file : str or Path
+            Deck to run; a relative path resolves from Python's working directory.
+        settings : SimulationSettings, optional
+            TRNRun options; None keeps every TRNRun default.
+        label : str, optional
+            Free text stored with the simulation.
+
+        Returns
+        -------
+        int
+            simId of the queued simulation.
+
+        Raises
+        ------
+        RequestError
+            If trnrund refuses the deck or ``settings``.
+        FileNotFoundError
+            If ``settings.trnexe_path`` does not exist.
+        """
         args = [] if settings is None else settings.to_cli_args()
         request = {"cmd": "add", "deckFile": str(Path(deck_file).absolute()), "trnrunArgs": args}
         if label is not None:
@@ -143,6 +201,19 @@ class Daemon:
 
     # Last on purpose: defined earlier, this method would shadow `list` in the annotations below it.
     def list(self, state: StateName, *, with_logs: bool = False) -> list[Simulation]:
-        """Return every unreleased simulation in ``state``, oldest first; without logs unless ``with_logs``."""
+        """Return every unreleased simulation in ``state``, oldest first.
+
+        Parameters
+        ----------
+        state : SimulationState or str
+            ``QUEUED``, ``RUNNING`` or ``FINISHED``.
+        with_logs : bool, optional
+            Include each simulation's log entries; ``logs`` is empty otherwise.
+
+        Returns
+        -------
+        list of Simulation
+            Simulations in ``state``.
+        """
         response = self.request({"cmd": "list", "state": state, "withLogs": with_logs})
         return [parse_simulation(sim) for sim in response["simulations"]]

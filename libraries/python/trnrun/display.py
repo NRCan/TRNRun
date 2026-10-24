@@ -15,7 +15,6 @@ from rich.text import Text
 
 from trnrun.simulation import Simulation, SimulationStatus
 
-# Final statuses are coloured; the others stay plain.
 _STATUS_STYLES: dict[SimulationStatus, str] = {
     SimulationStatus.DONE: "green",
     SimulationStatus.CANCELLED: "yellow",
@@ -50,7 +49,18 @@ def _truncate_left(text: str, width: int) -> str:
 
 
 def render(sim: Simulation) -> Text:
-    """Render one simulation as one line; values not reported yet render as placeholders."""
+    """Render one simulation as one line.
+
+    Parameters
+    ----------
+    sim : Simulation
+        Simulation to render; values not reported yet render as placeholders.
+
+    Returns
+    -------
+    Text
+        ID, name, status, log counts, elapsed time, ETA and progress bar; final statuses are coloured.
+    """
     name = sim.label or str(sim.deck_file)
     percent = sim.percent or 0.0
     filled = min(max(int(_BAR_WIDTH * percent), 0), _BAR_WIDTH)
@@ -109,7 +119,6 @@ class _NotebookOutput:
 
     def __init__(self) -> None:
         """Prepare the output area; it is published with the first line."""
-        # Only created inside a notebook kernel, where IPython is always installed.
         from IPython.display import HTML, DisplayHandle  # noqa: PLC0415 - not a dependency outside notebooks
 
         self._html: type[HTML] = HTML
@@ -153,14 +162,28 @@ class Display:
     """
 
     def __init__(self, console: Console | None = None) -> None:
-        """Draw on ``console``, a new one by default."""
+        """Prepare the display; nothing shows until the first update.
+
+        Parameters
+        ----------
+        console : Console, optional
+            Console to draw on, a new one by default; a Jupyter console gets the HTML output area.
+        """
         console = console or Console()
         self._output: _TerminalOutput | _NotebookOutput = (
             _NotebookOutput() if console.is_jupyter else _TerminalOutput(console)
         )
 
     def update(self, running: list[Simulation], finished: list[Simulation]) -> None:
-        """Print the newly finished simulations, then redraw the running ones."""
+        """Print the newly finished simulations, then redraw the running ones.
+
+        Parameters
+        ----------
+        running : list of Simulation
+            Simulations shown as live lines; they replace the previous ones.
+        finished : list of Simulation
+            Simulations printed once above the live lines; pass each only once.
+        """
         for sim in finished:
             self._output.print(render(sim))
         self._output.show([render(sim) for sim in running])

@@ -35,9 +35,6 @@ from trnrun import (
     TrnrunError,
 )
 
-# -----------------------------------------------------------------------------
-# Configuration
-# -----------------------------------------------------------------------------
 HERE = Path(__file__).resolve().parent
 
 TRNEXE_PATH = Path(r"C:\TRNSYS18\Exe\TrnEXE64.exe")
@@ -72,9 +69,6 @@ OUTCOME_COLORS = {
 SEVERITY_COLORS = {LogSeverity.NOTICE: "#374151", LogSeverity.WARNING: "#b45309", LogSeverity.FATAL: "#b91c1c"}
 
 
-# -----------------------------------------------------------------------------
-# Helpers
-# -----------------------------------------------------------------------------
 def copy_dck(src: Path | str, dst_dir: Path | str, n: int) -> list[Path]:
     """Copy ``src`` into ``dst_dir`` ``n`` times with a zero-padded suffix."""
     src = Path(src)
@@ -147,9 +141,6 @@ def format_log(sim_id: int, log: LogEvent) -> str:
     return f"[{sim_id:>3}] {log.time:>10,.2f} h  {log.severity:<7}  {source}{log.message or ''}{information}\n"
 
 
-# -----------------------------------------------------------------------------
-# Dashboard
-# -----------------------------------------------------------------------------
 class Dashboard:
     """A window following a daemon's simulations: table, overall progress, details, and logs."""
 
@@ -170,9 +161,6 @@ class Dashboard:
         self.footer: ttk.Label = ttk.Label(root, anchor="w", padding=(8, 2))
         self.footer.pack(fill="x", side="bottom")
 
-    # -----------------------------------------------------------------
-    # Layout
-    # -----------------------------------------------------------------
     def _build_toolbar(self) -> None:
         """Build the summary, overall progress bar, and action buttons."""
         bar = ttk.Frame(self.root, padding=8)
@@ -232,9 +220,6 @@ class Dashboard:
         scrollbar.pack(side="right", fill="y")
         widget.pack(side="left", fill="both", expand=True)
 
-    # -----------------------------------------------------------------
-    # Actions
-    # -----------------------------------------------------------------
     def add(self, deck: Path) -> None:
         """Submit a deck and show it as the daemon first reports it."""
         try:
@@ -286,11 +271,8 @@ class Dashboard:
         # Ends mainloop; leaving the with block in main() then interrupts unfinished simulations.
         self.root.destroy()
 
-    # -----------------------------------------------------------------
-    # Following the daemon
-    # -----------------------------------------------------------------
     def tick(self) -> None:
-        """List running and finished simulations, redraw what changed, release finished ones, and schedule the next tick."""
+        """Follow the daemon once: redraw what changed, release finished simulations, schedule the next tick."""
         try:
             running = self.daemon.list(SimulationState.RUNNING, with_logs=True)
             finished = self.daemon.list(SimulationState.FINISHED, with_logs=True)
@@ -322,9 +304,6 @@ class Dashboard:
         self.footer["text"] = f"Up {format_duration(uptime)}   |   {WORKERS} workers"
         self.root.after(POLL_MS, self.tick)
 
-    # -----------------------------------------------------------------
-    # Drawing
-    # -----------------------------------------------------------------
     def _selected(self) -> list[int]:
         """Return the simIds selected in the table."""
         return [int(iid) for iid in self.tree.selection()]
@@ -430,9 +409,6 @@ class Dashboard:
         self.log_text.see("end")
 
 
-# -----------------------------------------------------------------------------
-# Entry point
-# -----------------------------------------------------------------------------
 def main() -> None:
     """Copy the master deck, submit every copy, and follow them in the dashboard."""
     dck_files = copy_dck(MASTER_DCK, DCK_FOLDER, n=SIM_COUNT)
