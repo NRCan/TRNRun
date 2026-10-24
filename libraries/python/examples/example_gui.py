@@ -223,7 +223,7 @@ class Dashboard:
     def add(self, deck: Path) -> None:
         """Submit a deck and show it as the daemon first reports it."""
         try:
-            sim = self.daemon.get(self.daemon.add(deck, SETTINGS, label=deck.stem))
+            sim = self.daemon.simulation(self.daemon.add(deck, SETTINGS, label=deck.stem))
         except TrnrunError as error:  # Rejected, or trnrund exited.
             _ = messagebox.showerror("TRNRun", f"{deck.name} was not added:\n{error}", parent=self.root)
             return
@@ -274,8 +274,8 @@ class Dashboard:
     def tick(self) -> None:
         """Follow the daemon once: redraw what changed, release finished simulations, schedule the next tick."""
         try:
-            running = self.daemon.list(SimulationState.RUNNING, with_logs=True)
-            finished = self.daemon.list(SimulationState.FINISHED, with_logs=True)
+            running = self.daemon.simulations(SimulationState.RUNNING, with_logs=True)
+            finished = self.daemon.simulations(SimulationState.FINISHED, with_logs=True)
             # One that finished between the two lists is in both; the finished one wins.
             sims = list({sim.sim_id: sim for sim in running + finished}.values())
             for sim in finished:  # Their logs are complete; this window keeps them.

@@ -9,8 +9,6 @@ and reads one JSON response per request from stdout. It:
 - queues simulations and limits how many `trnrun.exe` processes run at once
 - keeps each simulation's progress, result, and TRNSYS logs in memory until the
   client releases it
-- validates decks and runner options when a simulation is added
-- kills every runner it started when stdin closes or the daemon dies
 
 ## Table of Contents
 
@@ -32,10 +30,11 @@ and reads one JSON response per request from stdout. It:
 - [`trnrun.exe`](https://github.com/NRCan/TRNRun/tree/main/components/trnrun)
   executable
 - TRNSYS 17 or 18 for actual simulation runs
+- Optional: [Type3830 Progress Tracker](https://github.com/NRCan/TRNRun/tree/main/components/type3830) for progress, ETA, cancellation, and stall detection
 
 ### Development
 
-- [Nim](https://nim-lang.org/install.html) 2.2.12 or newer
+- [Nim](https://nim-lang.org/install.html) 2.2.12
 - [Zig](https://ziglang.org/download/) 0.17.0 as the Windows C compiler and
   resource compiler
 - [just](https://github.com/casey/just) for repository-root recipes
@@ -43,9 +42,7 @@ and reads one JSON response per request from stdout. It:
 ## Installation
 
 Download and extract `trnrund-v<version>-win_amd64.zip` from
-[GitHub Releases](https://github.com/NRCan/TRNRun/releases). The daemon does not
-bundle the runner; place `trnrun.exe` beside `trnrund.exe` or pass its path with
-`--trnrun`.
+[GitHub Releases](https://github.com/NRCan/TRNRun/releases). 
 
 Or build from source, run the following from the repository root:
 
@@ -54,9 +51,8 @@ Set-Location components/trnrund
 nimble bin
 ```
 
-The executable is written to `components/trnrund/build/trnrund.exe` relative to
-the repository root. `nimble test` runs the tests against a fake runner, so it
-needs neither TRNRun nor TRNSYS.
+The executable is written to `components/trnrun/build/trnrun.exe` relative to
+the repository root.
 
 ## Quick start
 
@@ -64,23 +60,20 @@ Start the daemon with redirected stdin and stdout, then send one request and
 read one response at a time:
 
 ```powershell
-$StartInfo = [Diagnostics.ProcessStartInfo]::new('trnrund.exe', '--workers:4')
-$StartInfo.UseShellExecute = $false
-$StartInfo.RedirectStandardInput = $true
-$StartInfo.RedirectStandardOutput = $true
-$Daemon = [Diagnostics.Process]::Start($StartInfo)
+$Daemon = [Diagnostics.Process]::Start([Diagnostics.ProcessStartInfo]@{
+    FileName = 'trnrund.exe'
+    UseShellExecute = $false
+    RedirectStandardInput = $true
+    RedirectStandardOutput = $true
+})
 
-function Send-Request([hashtable] $Request) {
-    $Daemon.StandardInput.WriteLine(($Request | ConvertTo-Json -Compress))
-    $Daemon.StandardOutput.ReadLine() | ConvertFrom-Json
-}
-
-$SimId = (Send-Request @{ cmd = 'add'; deckFile = 'C:\models\building-a.dck' }).simId
+$Daemon.StandardInput.WriteLine('{"cmd":"add","deckFile":"C:\\models\\building-a.dck"}')
+$SimId = ($Daemon.StandardOutput.ReadLine() | ConvertFrom-Json).simId
 do {
     Start-Sleep -Seconds 1
-    $Simulation = (Send-Request @{ cmd = 'get'; simId = $SimId }).simulation
+    $Daemon.StandardInput.WriteLine('{"cmd":"simulation","simId":' + $SimId + '}')
+    $Simulation = ($Daemon.StandardOutput.ReadLine() | ConvertFrom-Json).simulation
 } while ($Simulation.state -ne 'FINISHED')
-Send-Request @{ cmd = 'release'; simId = $SimId } | Out-Null
 
 $Daemon.StandardInput.Close()
 $Daemon.WaitForExit()
@@ -109,67 +102,147 @@ Options accept either `--name:value` or `--name=value`.
 
 ## Request protocol
 
-Write one JSON object per line to daemon stdin, then read exactly one JSON
-response line from stdout before sending the next request. Stdout carries
-nothing else. Stderr is written only just before the daemon exits, so a client
-may leave it unread until then; a simulation that fails reports why in its
-`error` field.
-
-```json
-{"cmd":"add","deckFile":"C:\\models\\building-a.dck","label":"building-a","trnrunArgs":["--guiVisibility:min"]}
-{"ok":true,"simId":1}
-```
-
-Every response contains `ok`. When `ok` is `false`, it also contains `error`, a
-human-readable message.
+The client writes one JSON request per line to stdin, then reads exactly one
+reply line from stdout before sending the next.
 
 Closing stdin cancels every simulation and exits. If the daemon itself dies,
 even by crashing, Windows kills every `trnrun.exe` and `TrnEXE` it started.
 
-### Commands
+Each command below shows a request line and its reply line.
 
-- _`ready`_
+The `cmd` field picks the command:
 
-  Answers `{"ok":true}`. Use it to confirm the daemon is up.
+- [`ready`](#ready): check the daemon is up.
+- [`add`](#add): queue a simulation.
+- [`simulation`](#simulation): get one simulation.
+- [`simulations`](#simulations): get every simulation in a state.
+- [`cancel`](#cancel): stop one simulation.
+- [`release`](#release): forget one finished simulation.
 
-- _`add`_ (`deckFile`, optional `label` and `trnrunArgs`)
+### `ready`
 
-  Queues a simulation and answers `{"ok":true,"simId":1}`. `deckFile` is an
-  existing `.dck` or `.trd` file; relative paths resolve from the daemon's
-  working directory. `label` is any string returned with the simulation.
-  `trnrunArgs` is an array of runner options such as `["--watchTmp:true"]`.
-  Each option is checked by the runner's own option parser, so an unknown
-  option or bad value is refused here; a deck path, `--deckFile`, `--help`, and
-  `--version` are refused too. The response confirms queuing only, not that the
-  simulation started or finished. A `simId` is never reused.
+Confirms the daemon is up and reading requests.
 
-- _`get`_ (`simId`)
+```jsonc
+// stdin
+{"cmd":"ready"}
+// stdout
+{"ok":true}
+```
 
-  Answers `{"ok":true,"simulation":{...}}` with every
-  [simulation field](#simulation-fields). Refuses an unknown `simId`.
+- **stdin**: no fields besides `cmd`.
+- **stdout**: no fields besides `ok`.
 
-- _`list`_ (`state`, optional `withLogs`)
+### `add`
 
-  Answers `{"ok":true,"simulations":[...]}` with every simulation not yet
-  released in `state` (`QUEUED`, `RUNNING`, or `FINISHED`), oldest first. Each
-  is shaped as `get` returns it, but without `logs` unless `withLogs` is
-  `true`; the log counts stay. Polling `FINISHED` and releasing what it returns
-  collects a batch in one request per poll.
+Queues a simulation, starts it at once if a worker is free, and replies with
+its `simId`. The reply does not mean the simulation has started; read `state`
+with [`simulation`](#simulation).
 
-- _`cancel`_ (`simId`)
+```jsonc
+// stdin
+{"cmd":"add","deckFile":"C:\\models\\building-a.dck","trnrunArgs":["--guiVisibility:min"],"label":"building-a"}
+// stdout
+{"ok":true,"simId":1}
+```
 
-  Stops a `QUEUED` or `RUNNING` simulation and answers `{"ok":true}`. Refuses
-  one that is `FINISHED` or unknown.
+- **stdin**:
+  - `deckFile`: an existing `.dck` or `.trd` file; relative paths resolve from
+    the daemon's working directory.
+  - `trnrunArgs` (optional): runner options, such as `--watchTmp:true`.
+  - `label` (optional): a text tag returned with the simulation, for the
+    client's own use. It does not need to be unique.
+- **stdout**:
+  - `simId`: the ID the daemon assigned, an integer never reused.
 
-- _`release`_ (`simId`)
+### `simulation`
 
-  Forgets a `FINISHED` simulation and its logs and answers `{"ok":true}`.
-  Refuses one that is still `QUEUED` or `RUNNING` (cancel it first) or unknown.
+Returns one simulation that is not yet released.
+
+```jsonc
+// stdin
+{"cmd":"simulation","simId":1,"withLogs":false}
+// stdout
+{"ok":true,"simulation":{"simId":1,"label":"building-a","state":"RUNNING",...}}
+```
+
+- **stdin**:
+  - `simId`: the simulation to get.
+  - `withLogs` (optional, default `false`): include `logs`. The log counts are
+    always included.
+- **stdout**:
+  - `simulation`: every [simulation field](#simulation-fields), without `logs`
+    unless `withLogs` is `true`.
+
+### `simulations`
+
+Returns every simulation not yet released in one state, oldest first. Polling
+`FINISHED` and releasing what it returns collects a batch in one request per
+poll.
+
+```jsonc
+// stdin
+{"cmd":"simulations","state":"FINISHED","withLogs":false}
+// stdout
+{"ok":true,"simulations":[{"simId":1,"label":"building-a","state":"FINISHED",...}]}
+```
+
+- **stdin**:
+  - `state`: `QUEUED`, `RUNNING`, or `FINISHED`.
+  - `withLogs` (optional, default `false`): include `logs`, as for
+    [`simulation`](#simulation).
+- **stdout**:
+  - `simulations`: an array of simulations, each shaped as
+    [`simulation`](#simulation) returns it.
+
+### `cancel`
+
+Stops one `QUEUED` or `RUNNING` simulation.
+
+```jsonc
+// stdin
+{"cmd":"cancel","simId":1}
+// stdout
+{"ok":true}
+```
+
+- **stdin**:
+  - `simId`: the simulation to stop. One that is `FINISHED` or unknown is
+    refused.
+- **stdout**: no fields besides `ok`.
+
+### `release`
+
+Forgets one `FINISHED` simulation.
+
+```jsonc
+// stdin
+{"cmd":"release","simId":1}
+// stdout
+{"ok":true}
+```
+
+- **stdin**:
+  - `simId`: the simulation to forget. One that is still `QUEUED` or
+    `RUNNING` (cancel it first) or unknown is refused.
+- **stdout**: no fields besides `ok`.
+
+### Errors
+
+A refused request, such as malformed JSON, an unknown `cmd`, or invalid
+fields, gets `ok: false` and an `error` message for humans:
+
+```jsonc
+// stdin
+{"cmd":"release","simId":1}
+// stdout
+{"ok":false,"error":"Cannot release simulation 1: it is RUNNING"}
+```
 
 ## Simulation fields
 
-`get` returns the object below. A value the runner has not reported yet is
-`null`.
+`simulation` with `withLogs` returns the object below. A value the runner has
+not reported yet is `null`.
 
 ```json
 {"simId":1,"label":"building-a","state":"FINISHED","trnrunStatus":"DONE","trnrunMessage":"","percent":1.0,"simTime":8760.0,"elapsedMs":5321.0,"etaMs":0.0,"notices":2,"warnings":1,"fatals":0,"succeeded":true,"exitCode":0,"error":null,"submittedAt":"2026-10-22T14:03:12.345Z","startedAt":"2026-10-22T14:03:12.351Z","finishedAt":"2026-10-22T14:03:17.702Z","deckFile":"C:\\models\\building-a.dck","trnrunArgs":["--guiVisibility:min"],"startTime":0.0,"stopTime":8760.0,"timeStep":1.0,"setting":{...},"logs":[{"severity":"Warning","time":12.0,"unitId":5,"typeId":56,"messageCode":null,"message":"...","information":null}]}
@@ -261,9 +334,6 @@ default TRNSYS 18 executable path.
   adds the next simulation only once the previous one has started.
 - [`example_percent.ps1`](https://github.com/NRCan/TRNRun/blob/main/components/trnrund/examples/example_percent.ps1)
   does the same while printing each simulation's progress.
-
-All scripts create ten temporary deck copies and allow up to five simultaneous
-runs.
 
 ## See also
 

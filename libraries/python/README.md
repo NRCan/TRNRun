@@ -19,11 +19,11 @@ from trnrun import Daemon, SimulationSettings
 
 with Daemon(workers=4) as daemon:
     sim_id = daemon.add("building-a.dck", SimulationSettings(gui_visibility="min"), label="a")
-    sim = daemon.get(sim_id)             # Simulation(sim_id=1, deck='building-a.dck', state=QUEUED, ...)
-    running = daemon.list("RUNNING")     # without logs unless with_logs=True
-    daemon.cancel(sim_id)                # QUEUED or RUNNING only
-    daemon.release(sim_id)               # FINISHED only: trnrund forgets it
-    daemon.request({"cmd": "ready"})     # any raw request, raw dict response
+    sim = daemon.simulation(sim_id)          # Simulation(sim_id=1, deck='building-a.dck', state=QUEUED, ...)
+    running = daemon.simulations("RUNNING")  # without logs unless with_logs=True
+    daemon.cancel(sim_id)                    # QUEUED or RUNNING only
+    daemon.release(sim_id)                   # FINISHED only: trnrund forgets it
+    daemon.request({"cmd": "ready"})         # any raw request, raw dict response
 ```
 
 `Simulation` is a dataclass of trnrund's

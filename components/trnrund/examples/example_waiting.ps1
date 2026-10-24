@@ -38,7 +38,7 @@ $States = @{}
 $Finished = @{}
 function Update-Runs {
     foreach ($SimId in @($Pending)) {
-        $Simulation = (Send-Request @{ cmd = 'get'; simId = $SimId }).simulation
+        $Simulation = (Send-Request @{ cmd = 'simulation'; simId = $SimId }).simulation
         $Name = $Simulation.label
         if ($States[$Name] -ne $Simulation.state) {
             $States[$Name] = $Simulation.state

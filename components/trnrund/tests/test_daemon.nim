@@ -30,8 +30,8 @@ proc add(daemon: Process, deckFile: string): int =
   return daemon.request(%*{"cmd": "add", "deckFile": deckFile})["simId"].getInt()
 
 proc simulation(daemon: Process, simId: int): JsonNode =
-  ## The simulation `simId` as `get` returns it.
-  return daemon.request(%*{"cmd": "get", "simId": simId})["simulation"]
+  ## The simulation `simId` as `simulation` returns it.
+  return daemon.request(%*{"cmd": "simulation", "simId": simId})["simulation"]
 
 suite "daemon":
   test "builds":

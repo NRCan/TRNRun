@@ -26,11 +26,11 @@ systems that need reliable lifecycle signals:
 - Windows x64
 - TRNSYS 17 or 18
 - Optional: [Type3830 Progress Tracker](https://github.com/NRCan/TRNRun/tree/main/components/type3830)
-  for progress, ETA, cancellation, and stall detection
+ for progress, ETA, cancellation, and stall detection
 
 ### Development
 
-- [Nim](https://nim-lang.org/install.html) 2.2.12 or newer
+- [Nim](https://nim-lang.org/install.html) 2.2.12
 - [Zig](https://ziglang.org/download/) 0.17.0 as the Windows C compiler and
   resource compiler
 - [just](https://github.com/casey/just) for repository-root recipes

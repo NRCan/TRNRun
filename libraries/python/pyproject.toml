@@ -53,3 +53,5 @@ artifacts = [
 
 [tool.basedpyright]
 pythonVersion = "3.12"
+reportAny = false
+reportExplicitAny = false

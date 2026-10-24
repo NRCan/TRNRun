@@ -1,7 +1,7 @@
 ## Runs 20 copies of one deck through trnrund and reports each result.
 ##
 ## Exercises the client protocol against real TRNSYS: adds every copy, polls
-## each simulation with `get`, prints state changes, and keeps finished reports
+## each simulation with `simulation`, prints state changes, and keeps finished reports
 ## before releasing their simulations. Build both executables first, then run
 ## from the `trnrund` directory:
 ##
@@ -77,7 +77,7 @@ proc request(daemon: Process, request: JsonNode): JsonNode =
     )
 
 proc runDaemon(daemon: Process, deckFiles: openArray[string]): Table[string, JsonNode] =
-  ## Adds every deck, then polls each unfinished simulation with `get` until
+  ## Adds every deck, then polls each unfinished simulation with `simulation` until
   ## it finished, releasing it once reported. Reports are keyed by label, the
   ## deck's name, and include a logCount.
   result = initTable[string, JsonNode]()
@@ -107,7 +107,7 @@ proc runDaemon(daemon: Process, deckFiles: openArray[string]): Table[string, Jso
       raise newException(IOError, "Timed out waiting for simulations")
     var unfinished: seq[int] = @[]
     for simId in pending:
-      let simulation = daemon.request(%*{"cmd": "get", "simId": simId})["simulation"]
+      let simulation = daemon.request(%*{"cmd": "simulation", "simId": simId})["simulation"]
       let name = simulation["label"].getStr()
       note(name, simulation["state"].getStr())
       if simulation["state"].getStr() == "FINISHED":
@@ -115,7 +115,7 @@ proc runDaemon(daemon: Process, deckFiles: openArray[string]): Table[string, Jso
           "status": simulation["trnrunStatus"].getStr("NO STATUS"),
           "succeeded": simulation["succeeded"].getBool(),
           "error": simulation["error"].getStr(),
-          "logCount": simulation["logs"].len,
+          "logCount": simulation["notices"].getInt() + simulation["warnings"].getInt() + simulation["fatals"].getInt(),
           "warnings": simulation["warnings"].getInt(),
           "fatals": simulation["fatals"].getInt(),
         }

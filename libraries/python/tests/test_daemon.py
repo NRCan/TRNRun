@@ -24,20 +24,20 @@ pytestmark = requires_trnrund
 
 
 def _wait_until(daemon: Daemon, sim_id: int, state: SimulationState) -> Simulation:
-    """Poll ``get`` until the simulation is in ``state``; fail after 10 s."""
+    """Poll ``simulation`` until the simulation is in ``state``; fail after 10 s."""
     deadline = time.monotonic() + 10
-    while (sim := daemon.get(sim_id)).state is not state:
+    while (sim := daemon.simulation(sim_id)).state is not state:
         assert time.monotonic() < deadline, f"simulation {sim_id} still {sim.state}"
         time.sleep(0.01)
     return sim
 
 
 def test_daemon_runs_a_deck_to_the_end(deck: DeckWriter) -> None:
-    """add, get, list and release follow one simulation from queued to forgotten."""
+    """add, simulation, simulations and release follow one simulation from queued to forgotten."""
     with Daemon(workers=1, trnrun_path=PYTHON) as daemon:
         sim_id = daemon.add(deck(), label="one")
         _ = _wait_until(daemon, sim_id, SimulationState.FINISHED)
-        [sim] = daemon.list(SimulationState.FINISHED, with_logs=True)
+        [sim] = daemon.simulations(SimulationState.FINISHED, with_logs=True)
         assert (sim.sim_id, sim.label, sim.succeeded, sim.exit_code, sim.warnings) == (sim_id, "one", True, 0, 1)
         assert sim.status is SimulationStatus.DONE
         assert (sim.start_time, sim.stop_time, sim.time_step) == (0, 10, 1)
@@ -47,9 +47,11 @@ def test_daemon_runs_a_deck_to_the_end(deck: DeckWriter) -> None:
         assert sim.started_at is not None
         assert sim.finished_at is not None
         assert sim.submitted_at <= sim.started_at <= sim.finished_at
-        assert daemon.list("FINISHED")[0].logs == []  # Without with_logs.
+        assert daemon.simulations("FINISHED")[0].logs == []  # Without with_logs.
+        assert daemon.simulation(sim_id, with_logs=True) == sim
+        assert daemon.simulation(sim_id).logs == []
         daemon.release(sim_id)
-        assert daemon.list("FINISHED") == []
+        assert daemon.simulations("FINISHED") == []
 
 
 def test_add_resolves_the_deck_from_pythons_directory(deck: DeckWriter, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -57,7 +59,7 @@ def test_add_resolves_the_deck_from_pythons_directory(deck: DeckWriter, monkeypa
     path = deck()
     monkeypatch.chdir(path.parent)
     with Daemon(trnrun_path=PYTHON) as daemon:
-        sim = daemon.get(daemon.add(path.name))
+        sim = daemon.simulation(daemon.add(path.name))
     assert (sim.deck_file, sim.label) == (path, None)
 
 
@@ -65,7 +67,7 @@ def test_add_passes_settings_as_trnrun_args(deck: DeckWriter) -> None:
     """The settings' flags are stored with the simulation."""
     settings = SimulationSettings(watch_tmp=True, severity="Fatal")
     with Daemon(trnrun_path=PYTHON) as daemon:
-        sim = daemon.get(daemon.add(deck(), settings))
+        sim = daemon.simulation(daemon.add(deck(), settings))
     assert sim.trnrun_args == ["--watchTmp:true", "--severity:Fatal"]
 
 
@@ -74,7 +76,7 @@ def test_add_refuses_a_bad_setting(deck: DeckWriter) -> None:
     with Daemon(trnrun_path=PYTHON) as daemon:
         with pytest.raises(RequestError, match="guiVisibility"):
             _ = daemon.add(deck(), SimulationSettings(gui_visibility="nope"))  # pyright: ignore[reportArgumentType]
-        assert daemon.list("QUEUED") == []
+        assert daemon.simulations("QUEUED") == []
 
 
 def test_a_failed_runner_is_reported(deck: DeckWriter) -> None:
@@ -98,7 +100,7 @@ def test_cancel_queued_and_running(deck: DeckWriter) -> None:
             assert (sim.status, sim.succeeded, sim.exit_code) == (SimulationStatus.CANCELLED, False, None)
             assert sim.error is not None
             assert "cancelled" in sim.error
-        assert daemon.get(queued).started_at is None
+        assert daemon.simulation(queued).started_at is None
 
 
 def test_cancel_and_release_refuse_the_wrong_state(deck: DeckWriter) -> None:
@@ -112,7 +114,7 @@ def test_cancel_and_release_refuse_the_wrong_state(deck: DeckWriter) -> None:
         with pytest.raises(RequestError):
             daemon.cancel(sim_id)
         daemon.release(sim_id)
-        for request in (daemon.cancel, daemon.release, daemon.get):
+        for request in (daemon.cancel, daemon.release, daemon.simulation):
             with pytest.raises(RequestError, match="Unknown simId"):
                 _ = request(sim_id)
 
@@ -130,7 +132,7 @@ def test_requests_from_threads_take_turns(deck: DeckWriter) -> None:
     with Daemon(trnrun_path=PYTHON) as daemon:
         sim_ids = [daemon.add(deck()) for _ in range(4)]
         with ThreadPoolExecutor(8) as pool:
-            sims = list(pool.map(daemon.get, sim_ids * 50))
+            sims = list(pool.map(daemon.simulation, sim_ids * 50))
     assert [sim.sim_id for sim in sims] == sim_ids * 50
 
 
@@ -142,7 +144,7 @@ def test_daemon_errors(tmp_path: Path) -> None:
     daemon.close()
     daemon.close()
     with pytest.raises(DaemonExitedError, match="code 0"):
-        _ = daemon.get(1)
+        _ = daemon.simulation(1)
     assert issubclass(RequestError, TrnrunError)
     assert issubclass(DaemonExitedError, TrnrunError)
 

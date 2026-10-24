@@ -46,7 +46,7 @@ class SimulationManager:
         *,
         workers: int | None = None,
         display: bool = True,
-        poll_interval: float = 0.5,
+        poll_interval: float = 0.1,
         trnrund_path: str | Path = BIN / "trnrund.exe",
         trnrun_path: str | Path = BIN / "trnrun.exe",
     ) -> None:
@@ -114,15 +114,15 @@ class SimulationManager:
         if wait_for is not None:
             _ = _rank(wait_for)
         sim_id = self.daemon.add(deck_file, settings, label=label)
-        sim = self.simulations[sim_id] = self.daemon.get(sim_id)
+        sim = self.simulations[sim_id] = self.daemon.simulation(sim_id)
         if wait_for is not None:
             self.wait(sim, until=wait_for)
         return sim
 
     def refresh(self) -> None:
         """Update every simulation from trnrund once, collect the finished ones, and redraw."""
-        running = self.daemon.list("RUNNING")
-        finished = self.daemon.list("FINISHED", with_logs=True)
+        running = self.daemon.simulations("RUNNING")
+        finished = self.daemon.simulations("FINISHED", with_logs=True)
         done = {sim.sim_id for sim in finished}
         running = [sim for sim in running if sim.sim_id not in done]  # It finished between the two lists.
         for latest in running + finished:

@@ -44,7 +44,7 @@ def test_refresh_releases_finished_simulations(deck: DeckWriter) -> None:
     """Once collected, a finished simulation is released from trnrund but kept here."""
     with _manager() as manager:
         sim = manager.add(deck(), wait_for="FINISHED")
-        assert manager.daemon.list("FINISHED") == []
+        assert manager.daemon.simulations("FINISHED") == []
         assert manager.simulations == {sim.sim_id: sim}
 
 
@@ -61,7 +61,7 @@ def test_a_cancelled_queued_simulation_counts_past_running(deck: DeckWriter) -> 
 def test_manager_waits_on_a_simulation_it_did_not_add(deck: DeckWriter) -> None:
     """Wait follows a Simulation from the daemon by simId, though that object is never updated."""
     with _manager() as manager:
-        sim = manager.daemon.get(manager.daemon.add(deck()))
+        sim = manager.daemon.simulation(manager.daemon.add(deck()))
         manager.wait(sim, timeout=10)
         assert manager.simulations[sim.sim_id].succeeded
 
@@ -73,7 +73,7 @@ def test_manager_rejects_bad_states_before_queuing(deck: DeckWriter) -> None:
             _ = manager.add(deck(), wait_for="DONE")  # pyright: ignore[reportArgumentType]
         with pytest.raises(ValueError, match="not a valid SimulationState"):
             manager.wait(until="DONE")  # pyright: ignore[reportArgumentType]
-        assert manager.daemon.list("QUEUED") == []
+        assert manager.daemon.simulations("QUEUED") == []
         assert manager.simulations == {}
 
 

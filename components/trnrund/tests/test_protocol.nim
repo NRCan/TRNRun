@@ -30,8 +30,8 @@ suite "protocol":
     return add(%*{"cmd": "add", "deckFile": deckFile})
 
   proc simulation(simId: int): JsonNode =
-    ## The `get` response's simulation for `simId`.
-    return request(%*{"cmd": "get", "simId": simId})["simulation"]
+    ## The `simulation` response's simulation for `simId`, logs included.
+    return request(%*{"cmd": "simulation", "simId": simId, "withLogs": true})["simulation"]
 
   proc rejects(response: JsonNode, error: string): bool =
     ## Whether `response` is a refusal with exactly `error`.
@@ -61,7 +61,7 @@ suite "protocol":
     check simulation["trnrunArgs"] == %*["--pollMs:50"]
     check simulation["state"].getStr() == "RUNNING"
 
-  test "get returns every field of the simulation":
+  test "simulation returns every field of the simulation":
     let simId = add(%*{"cmd": "add", "deckFile": createDeck(dir, "done-b.dck")})
     var simulation = simulation(simId)
     for _ in 1..500:
@@ -87,6 +87,16 @@ suite "protocol":
       "message": "first",
       "information": nil,
     }
+
+  test "simulation includes logs only when withLogs is true":
+    let simId = add(createDeck(dir, "wait-h.dck"))
+    for withLogs in [newJNull(), newJBool(false)]:
+      let withoutLogs = request(%*{"cmd": "simulation", "simId": simId, "withLogs": withLogs})["simulation"]
+      check not withoutLogs.hasKey("logs")
+      withoutLogs["logs"] = simulation(simId)["logs"]
+      check withoutLogs == simulation(simId)
+    check request(%*{"cmd": "simulation", "simId": simId, "withLogs": 1}).rejects(
+      "'withLogs' must be true or false")
 
   test "add queues past the worker limit":
     discard add(createDeck(dir, "wait-c1.dck"))
@@ -124,15 +134,15 @@ suite "protocol":
       "Cannot release simulation " & $simId & ": it is RUNNING")
     discard request(%*{"cmd": "cancel", "simId": simId})
     check request(%*{"cmd": "release", "simId": simId}) == %*{"ok": true}
-    check request(%*{"cmd": "get", "simId": simId}).rejects("Unknown simId: " & $simId)
+    check request(%*{"cmd": "simulation", "simId": simId}).rejects("Unknown simId: " & $simId)
 
-  test "list returns the simulations in a state, oldest first":
+  test "simulations returns those in a state, oldest first":
     let
       running = add(createDeck(dir, "wait-g1.dck"))
       queued = [add(createDeck(dir, "wait-g2.dck")), add(createDeck(dir, "wait-g3.dck"))]
     proc simIds(state: string): seq[int] =
-      ## The simIds `list` returns for `state`.
-      let response = request(%*{"cmd": "list", "state": state})
+      ## The simIds `simulations` returns for `state`.
+      let response = request(%*{"cmd": "simulations", "state": state})
       check response["ok"].getBool()
       result = @[]
       for simulation in response["simulations"]:
@@ -142,34 +152,34 @@ suite "protocol":
     check running notin simIds("FINISHED")
     discard request(%*{"cmd": "cancel", "simId": running})
     check running in simIds("FINISHED")
-    let listed = request(%*{"cmd": "list", "state": "RUNNING"})["simulations"][0]
+    let listed = request(%*{"cmd": "simulations", "state": "RUNNING"})["simulations"][0]
     check not listed.hasKey("logs")
 
-  test "list includes logs only when withLogs is true":
+  test "simulations includes logs only when withLogs is true":
     let simId = add(createDeck(dir, "wait-l.dck"))
     proc listed(withLogs: JsonNode): JsonNode =
-      ## The one running simulation `list` returns with `withLogs`.
-      return request(%*{"cmd": "list", "state": "RUNNING", "withLogs": withLogs})["simulations"][0]
+      ## The one running simulation `simulations` returns with `withLogs`.
+      return request(%*{"cmd": "simulations", "state": "RUNNING", "withLogs": withLogs})["simulations"][0]
     check listed(newJBool(true)) == simulation(simId)
     for withLogs in [newJNull(), newJBool(false)]:
       let withoutLogs = listed(withLogs)
       check not withoutLogs.hasKey("logs")
       withoutLogs["logs"] = simulation(simId)["logs"]
       check withoutLogs == simulation(simId)
-    check request(%*{"cmd": "list", "state": "RUNNING", "withLogs": 1}).rejects(
+    check request(%*{"cmd": "simulations", "state": "RUNNING", "withLogs": 1}).rejects(
       "'withLogs' must be true or false")
 
-  test "list refuses a missing or unknown state":
-    for node in [%*{"cmd": "list"}, %*{"cmd": "list", "state": "DONE"}]:
+  test "simulations refuses a missing or unknown state":
+    for node in [%*{"cmd": "simulations"}, %*{"cmd": "simulations", "state": "DONE"}]:
       check request(node).rejects("'state' must be QUEUED, RUNNING or FINISHED")
 
   test "unknown simIds are refused":
-    for cmd in ["get", "cancel", "release"]:
+    for cmd in ["simulation", "cancel", "release"]:
       check request(%*{"cmd": cmd, "simId": 999}).rejects("Unknown simId: 999")
 
   test "a missing or non-integer simId is refused":
-    check request(%*{"cmd": "get"}).rejects("'simId' must be an integer")
-    check request(%*{"cmd": "get", "simId": "1"}).rejects("'simId' must be an integer")
+    check request(%*{"cmd": "simulation"}).rejects("'simId' must be an integer")
+    check request(%*{"cmd": "simulation", "simId": "1"}).rejects("'simId' must be an integer")
 
   test "invalid commands are refused":
     check request(%*{"cmd": "launch"}).rejects("Unknown cmd: launch")

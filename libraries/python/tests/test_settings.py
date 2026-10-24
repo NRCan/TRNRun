@@ -65,4 +65,4 @@ def test_trnrund_accepts_every_setting(deck: DeckWriter) -> None:
     assert len(settings.to_cli_args()) == len(fields(SimulationSettings))
     with Daemon(workers=1, trnrun_path=PYTHON) as daemon:
         sim_id = daemon.add(deck(), settings)
-        assert daemon.get(sim_id).trnrun_args == settings.to_cli_args()
+        assert daemon.simulation(sim_id).trnrun_args == settings.to_cli_args()

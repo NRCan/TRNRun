@@ -106,11 +106,6 @@ proc releaseCmd(scheduler: var Scheduler, request: JsonNode): JsonNode =
   let simId = request.simId()
   return if scheduler.release(simId): %*{"ok": true} else: scheduler.refusal(simId, "release")
 
-proc getCmd(scheduler: Scheduler, request: JsonNode): JsonNode =
-  ## Answers `get`: returns the simulation, or says it is unknown.
-  let simId = request.simId()
-  return if simId in scheduler: %*{"ok": true, "simulation": scheduler[simId]} else: scheduler.refusal(simId, "get")
-
 proc toJsonWithoutLogs(simulation: Simulation): JsonNode =
   ## `%simulation` without its `logs` key, never serializing the logs.
   result = newJObject()
@@ -118,8 +113,18 @@ proc toJsonWithoutLogs(simulation: Simulation): JsonNode =
     when name != "logs":
       result[name] = %value
 
-proc listCmd(scheduler: Scheduler, request: JsonNode): JsonNode =
-  ## Answers `list`: returns the simulations in the requested state, without `logs` unless `withLogs`.
+proc simulationCmd(scheduler: Scheduler, request: JsonNode): JsonNode =
+  ## Answers `simulation`: returns the simulation, without `logs` unless `withLogs`, or says it is unknown.
+  let
+    simId = request.simId()
+    withLogs = request.withLogs()
+  if simId notin scheduler:
+    return scheduler.refusal(simId, "get")
+  let simulation = if withLogs: %scheduler[simId] else: scheduler[simId].toJsonWithoutLogs()
+  return %*{"ok": true, "simulation": simulation}
+
+proc simulationsCmd(scheduler: Scheduler, request: JsonNode): JsonNode =
+  ## Answers `simulations`: returns the simulations in the requested state, without `logs` unless `withLogs`.
   let
     state = request.state()
     withLogs = request.withLogs()
@@ -139,8 +144,8 @@ proc dispatch(scheduler: var Scheduler, request: JsonNode): JsonNode =
   of "add": return scheduler.addCmd(request)
   of "cancel": return scheduler.cancelCmd(request)
   of "release": return scheduler.releaseCmd(request)
-  of "get": return scheduler.getCmd(request)
-  of "list": return scheduler.listCmd(request)
+  of "simulation": return scheduler.simulationCmd(request)
+  of "simulations": return scheduler.simulationsCmd(request)
   else: raise newException(InputError, "Unknown cmd: " & cmd)
 
 proc handleRequest*(scheduler: var Scheduler, line: string): string =

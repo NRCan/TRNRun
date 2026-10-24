@@ -69,12 +69,11 @@ class Daemon:
             args,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,  # trnrund writes there only before a fatal exit; read then.
+            stderr=subprocess.PIPE,
             text=True,
             encoding="utf-8",
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
-        # Never None: Popen was given PIPE for each.
         self._stdin: IO[str] = cast("IO[str]", self._process.stdin)
         self._stdout: IO[str] = cast("IO[str]", self._process.stdout)
         self._stderr: IO[str] = cast("IO[str]", self._process.stderr)
@@ -83,6 +82,29 @@ class Daemon:
         except BaseException:
             self.close()
             raise
+
+    def __enter__(self) -> Self:
+        """Return this daemon for a with block."""
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        """Close the daemon when leaving a with block."""
+        self.close()
+
+    def close(self) -> None:
+        """Close stdin, so trnrund kills its runs and exits, and wait for it; safe to call again."""
+        with suppress(OSError):
+            self._stdin.close()
+        try:
+            _ = self._process.wait(_CLOSE_WAIT)
+        except subprocess.TimeoutExpired:
+            self._process.kill()
+            _ = self._process.wait()
 
     def request(self, request: Mapping[str, object]) -> dict[str, Any]:
         """Send one raw request and return its response.
@@ -154,53 +176,30 @@ class Daemon:
             request["label"] = label
         return self.request(request)["simId"]
 
-    def get(self, sim_id: int) -> Simulation:
-        """Return one simulation, logs included."""
-        return parse_simulation(self.request({"cmd": "get", "simId": sim_id})["simulation"])
+    def simulation(self, sim_id: int, *, with_logs: bool = False) -> Simulation:
+        """Return one simulation.
 
-    def cancel(self, sim_id: int) -> None:
-        """Stop a queued or running simulation; RequestError if it already finished."""
-        _ = self.request({"cmd": "cancel", "simId": sim_id})
+        Parameters
+        ----------
+        sim_id : int
+            simId returned by ``add``.
+        with_logs : bool, optional
+            Include its log entries; ``logs`` is empty otherwise.
 
-    def release(self, sim_id: int) -> None:
-        """Forget a finished simulation and its logs; RequestError if it has not finished."""
-        _ = self.request({"cmd": "release", "simId": sim_id})
+        Returns
+        -------
+        Simulation
+            The simulation as trnrund last saw it.
 
-    def close(self) -> None:
-        """Close stdin, so trnrund kills its runs and exits, and wait for it; safe to call again."""
-        # A crashed trnrund leaves a flush that fails; the stream is closed regardless.
-        with suppress(OSError):
-            self._stdin.close()
-        try:
-            _ = self._process.wait(_CLOSE_WAIT)
-        except subprocess.TimeoutExpired:
-            self._process.kill()
-            _ = self._process.wait()
+        Raises
+        ------
+        RequestError
+            If ``sim_id`` is unknown or was released.
+        """
+        request = {"cmd": "simulation", "simId": sim_id, "withLogs": with_logs}
+        return parse_simulation(self.request(request)["simulation"])
 
-    def __enter__(self) -> Self:
-        """Return this daemon for a with block."""
-        return self
-
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_value: BaseException | None,
-        traceback: TracebackType | None,
-    ) -> None:
-        """Close the daemon when leaving a with block."""
-        self.close()
-
-    def _exit_message(self) -> str:
-        """Describe why trnrund stopped answering, once its stdout ended."""
-        try:
-            code = self._process.wait(_CLOSE_WAIT)
-        except subprocess.TimeoutExpired:
-            return "trnrund closed its output but did not exit"
-        stderr = self._stderr.read().strip()
-        return f"trnrund exited with code {code}" + (f": {stderr}" if stderr else "")
-
-    # Last on purpose: defined earlier, this method would shadow `list` in the annotations below it.
-    def list(self, state: StateName, *, with_logs: bool = False) -> list[Simulation]:
+    def simulations(self, state: StateName, *, with_logs: bool = False) -> list[Simulation]:
         """Return every unreleased simulation in ``state``, oldest first.
 
         Parameters
@@ -215,5 +214,22 @@ class Daemon:
         list of Simulation
             Simulations in ``state``.
         """
-        response = self.request({"cmd": "list", "state": state, "withLogs": with_logs})
+        response = self.request({"cmd": "simulations", "state": state, "withLogs": with_logs})
         return [parse_simulation(sim) for sim in response["simulations"]]
+
+    def cancel(self, sim_id: int) -> None:
+        """Stop a queued or running simulation; RequestError if it already finished."""
+        _ = self.request({"cmd": "cancel", "simId": sim_id})
+
+    def release(self, sim_id: int) -> None:
+        """Forget a finished simulation and its logs; RequestError if it has not finished."""
+        _ = self.request({"cmd": "release", "simId": sim_id})
+
+    def _exit_message(self) -> str:
+        """Describe why trnrund stopped answering, once its stdout ended."""
+        try:
+            code = self._process.wait(_CLOSE_WAIT)
+        except subprocess.TimeoutExpired:
+            return "trnrund closed its output but did not exit"
+        stderr = self._stderr.read().strip()
+        return f"trnrund exited with code {code}" + (f": {stderr}" if stderr else "")

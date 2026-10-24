@@ -22,8 +22,8 @@ Options:
 Read one JSON request per stdin line and write one JSON response per stdout
 line, and nothing else; the client waits for each response before the next:
   {"cmd":"add","deckFile":"model.dck"}  ->  {"ok":true,"simId":1}
-Commands: ready, add, get, cancel, release. Simulations and their logs stay
-in memory until released. Closing stdin cancels every simulation and exits.
+Commands: ready, add, simulation, simulations, cancel, release. Simulations
+and their logs stay in memory until released. Closing stdin cancels every simulation and exits.
 See README.md for the protocol.
 
 Exit codes: 0 ok  1 fatal  2 usage error"""

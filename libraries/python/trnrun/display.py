@@ -5,8 +5,9 @@ HTML output area that IPython replaces in place, without widgets or clearing
 other cell output.
 """
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from io import StringIO
+from typing import Protocol
 
 from rich.console import Console, Group
 from rich.live import Live
@@ -110,6 +111,16 @@ class _TerminalOutput:
             live.stop()
 
 
+class _DisplayHandle(Protocol):
+    """The part of IPython's untyped ``DisplayHandle`` used here."""
+
+    def display(self, obj: object) -> object:
+        """Publish ``obj`` as a new output area."""
+
+    def update(self, obj: object) -> None:
+        """Replace the output area with ``obj``."""
+
+
 class _NotebookOutput:
     """One HTML output area, replaced in place; printed lines go to stdout with ANSI colours.
 
@@ -122,9 +133,9 @@ class _NotebookOutput:
         from IPython.display import HTML, DisplayHandle  # noqa: PLC0415 - not a dependency outside notebooks
 
         self._html: type[HTML] = HTML
-        self._new_handle: type[DisplayHandle] = DisplayHandle
+        self._new_handle: Callable[[], _DisplayHandle] = DisplayHandle
         self._printer: Console = Console(force_jupyter=False, force_terminal=True, color_system="standard")
-        self._handle: DisplayHandle | None = None
+        self._handle: _DisplayHandle | None = None
         self._last_html: str | None = None
 
     def show(self, lines: Sequence[Text]) -> None:

@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, override
 
 
 class SimulationState(StrEnum):
@@ -98,7 +98,7 @@ class Simulation:
     notices, warnings, fatals : int
         Log entries so far, by severity.
     logs : list of LogEvent
-        Log entries, oldest first; empty when trnrund sent none, as ``list`` does without ``with_logs``.
+        Log entries, oldest first; empty when trnrund sent none, as ``simulations`` does without ``with_logs``.
     succeeded : bool or None
         Whether it finished with ``DONE``, exit code 0 and no error.
     exit_code : int or None
@@ -135,6 +135,7 @@ class Simulation:
     started_at: datetime | None = None
     finished_at: datetime | None = None
 
+    @override
     def __repr__(self) -> str:
         """Summarize, such as ``Simulation(sim_id=3, deck='a.dck', state=RUNNING, status=RUNNING, 42%)``."""
         percent = "" if self.percent is None else f", {self.percent:.0%}"
