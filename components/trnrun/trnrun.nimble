@@ -1,14 +1,14 @@
 import std/strutils
 
 # Package
-version = "0.6.2"
+version = "0.8.0"
 author = "Alex Lachance"
 description = "Process wrapper for TRNSYS TrnEXE with simulation monitoring and status reporting"
 license = "MIT"
 srcDir = "src"
 
 # Dependencies
-requires "nim >= 2.2.10"
+requires "nim >= 2.2.12"
 
 # Build configuration
 const

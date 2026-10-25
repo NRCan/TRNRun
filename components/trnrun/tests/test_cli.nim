@@ -53,7 +53,7 @@ suite "CLI options":
         cleanOnSuccess: true,
         killOnTimeout: true,
         killOnStall: true,
-        severity: Warning,
+        severity: sevWarning,
         writeEvents: true,
       ),
     )
@@ -93,4 +93,45 @@ suite "CLI options":
     expect ValueError:
       discard input.applyOption("pollMs", "not-a-number")
     expect ValueError:
+      discard input.applyOption("pollMs", "0")
+    expect ValueError:
+      discard input.applyOption("detectTimeout", "-1")
+    expect ValueError:
+      discard input.applyOption("stallTimeout", "-5")
+    expect ValueError:
       discard input.applyOption("severity", "Debug")
+
+suite "command line":
+  test "runs with the defaults when given no arguments":
+    check parseCommandLine([]) == CliCommand(action: caRun, input: DefaultCliInput)
+
+  test "takes the deck from the positional argument and applies options":
+    var expected = DefaultCliInput
+    expected.deckFile = "model.dck"
+    expected.runId = "run-42"
+    expected.settings.pollMs = 50
+    check parseCommandLine(["model.dck", "--runId:run-42", "--pollMs:50"]) ==
+      CliCommand(action: caRun, input: expected)
+
+  test "stops at the first help or version option":
+    for (args, action) in [
+      (@["-h"], caHelp), (@["--help"], caHelp), (@["-v"], caVersion), (@["--version"], caVersion),
+      (@["--help", "--doesNotExist"], caHelp), (@["--version", "a.dck", "b.dck"], caVersion),
+    ]:
+      checkpoint($args)
+      check parseCommandLine(args).action == action
+
+  test "raises ValueError for unknown options, extra arguments, and bad values":
+    for (args, message) in [
+      (@["--doesNotExist"], "Unknown option: --doesNotExist"),
+      (@["-x"], "Unknown option: -x"),
+      (@["a.dck", "b.dck"], "Unexpected argument: b.dck"),
+      (@["--deckFile:a.dck", "b.dck"], "Unexpected argument: b.dck"),
+      (@["--guiVisibility:visible", "--help"], "Invalid guiVisibility: visible"),
+    ]:
+      checkpoint($args)
+      try:
+        discard parseCommandLine(args)
+        fail()
+      except ValueError as error:
+        check error.msg == message

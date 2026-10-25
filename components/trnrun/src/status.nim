@@ -27,10 +27,7 @@ func status*(outcome: SimResult): SimStatus =
   of simInvalid: statusError
 
 func exitCode*(outcome: SimResult): int =
-  ## Maps a final simulation result to a conventional process exit code.
-  ##
-  ## `simInvalid` keeps the usage-error code so bad inputs stay distinct from
-  ## a simulation that started and then failed.
+  ## Maps a final result to a process exit code; `simInvalid` keeps usage-error code 2.
   case outcome
   of simDone: 0
   of simCancelled: 130
@@ -47,10 +44,5 @@ proc statusEvent*(
   ## Creates a timestamped lifecycle event; `message` is empty by default.
   SimulationEvent(
     kind: eventStatus,
-    statusData: StatusEvent(
-      timestamp: timestamp,
-      status: status,
-      message: message,
-    ),
+    statusData: StatusEvent(timestamp: timestamp, status: status, message: message),
   )
-

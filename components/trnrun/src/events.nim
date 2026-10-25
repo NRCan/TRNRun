@@ -1,5 +1,8 @@
 ## Defines typed simulation events and their JSON payload serialization.
 ##
+## Also owns `RunnerSettings`, since the `SETTING` event serializes it field by
+## field; defaults and helpers live in `settings`.
+##
 ## Events are delivery-independent. Sinks may add sequence or routing metadata
 ## without changing the event payload.
 
@@ -7,23 +10,9 @@ import std/[json, math, options, times]
 
 const EventTimestampFormat = "yyyy-MM-dd'T'HH:mm:ss"
 
-var
-  eventTimeFormat {.threadvar.}: TimeFormat
-  eventTimeFormatInitialized {.threadvar.}: bool
-
-proc getEventTimeFormat(): TimeFormat {.gcsafe.} =
-  ## Reuses a parsed timestamp format without sharing GC-managed state between
-  ## threads.
-  if not eventTimeFormatInitialized:
-    eventTimeFormat = initTimeFormat(EventTimestampFormat)
-    eventTimeFormatInitialized = true
-  eventTimeFormat
-
 proc formatEventTimestamp(timestamp: DateTime): string {.gcsafe.} =
-  timestamp.format(getEventTimeFormat())
-
-proc parseEventTimestamp(value: string): DateTime {.gcsafe.} =
-  value.parse(getEventTimeFormat())
+  ## Formats `timestamp` in the wire format, parsed once at compile time.
+  timestamp.format(EventTimestampFormat)
 
 type
   SimStatus* = enum
@@ -39,14 +28,23 @@ type
 
   LogSeverity* = enum
     ## Severity of a TRNSYS log entry. Values are part of the wire protocol.
-    Notice = "Notice"
-    Warning = "Warning"
-    Fatal = "Fatal"
+    sevNotice = "Notice"
+    sevWarning = "Warning"
+    sevFatal = "Fatal"
 
-  SettingEvent* = object ## Runner settings applied to a simulation.
-    timestamp*: DateTime
+  TrnexeGuiVisibility* = enum
+    ## TrnEXE window mode; minimized modes launch visible, then minimize through Win32.
+    guiKeepOpen = "keepOpen" # Visible; window stays open after the run.
+    guiAutoClose = "autoClose" # Visible; window closes when the run finishes.
+    guiMinimized = "minimized" # Minimized; window stays open after the run.
+    guiMinimizedAuto = "minimizedAuto" # Minimized; closes after the run.
+    guiHidden = "hidden" # No window at all.
+
+  RunnerSettings* = object
+    ## Settings controlling TRNSYS launch detection and runtime monitoring.
+    ## Field names and order are the `SETTING` event's wire keys.
     trnexePath*: string
-    guiVisibility*: string
+    guiVisibility*: TrnexeGuiVisibility
     waitForGui*: bool
     waitForLst*: bool
     waitForTmp*: bool
@@ -62,6 +60,10 @@ type
     killOnStall*: bool
     severity*: LogSeverity
     writeEvents*: bool
+
+  SettingEvent* = object ## Runner settings applied to a simulation.
+    timestamp*: DateTime
+    settings*: RunnerSettings
 
   StatusEvent* = object ## A simulation lifecycle transition with outcome details.
     timestamp*: DateTime
@@ -92,8 +94,7 @@ type
     information*: Option[string]
 
   SimulationEventKind* = enum
-    ## Discriminant for a structured simulation event. Values are JSON `kind`
-    ## tags.
+    ## Discriminant for a structured simulation event; values are JSON `kind` tags.
     eventSetting = "SETTING"
     eventStatus = "STATUS"
     eventConfig = "CONFIG"
@@ -119,28 +120,15 @@ proc addIfSome[T](node: JsonNode, key: string, value: Option[T]) =
     node[key] = %value.get()
 
 proc `%`(event: SettingEvent): JsonNode =
+  ## Serializes the applied runner settings.
   result = newJObject()
   result["kind"] = %($eventSetting)
   result["timestamp"] = %event.timestamp.formatEventTimestamp()
-  result["trnexePath"] = %event.trnexePath
-  result["guiVisibility"] = %event.guiVisibility
-  result["waitForGui"] = %event.waitForGui
-  result["waitForLst"] = %event.waitForLst
-  result["waitForTmp"] = %event.waitForTmp
-  result["detectTimeoutMs"] = %event.detectTimeoutMs
-  result["extraDelayMs"] = %event.extraDelayMs
-  result["watchLog"] = %event.watchLog
-  result["watchTmp"] = %event.watchTmp
-  result["watchTimeoutMs"] = %event.watchTimeoutMs
-  result["stallTimeoutMs"] = %event.stallTimeoutMs
-  result["pollMs"] = %event.pollMs
-  result["cleanOnSuccess"] = %event.cleanOnSuccess
-  result["killOnTimeout"] = %event.killOnTimeout
-  result["killOnStall"] = %event.killOnStall
-  result["severity"] = %($event.severity)
-  result["writeEvents"] = %event.writeEvents
+  for key, value in event.settings.fieldPairs:
+    result[key] = %value
 
 proc `%`(event: StatusEvent): JsonNode =
+  ## Serializes a lifecycle transition.
   result = newJObject()
   result["kind"] = %($eventStatus)
   result["timestamp"] = %event.timestamp.formatEventTimestamp()
@@ -148,6 +136,7 @@ proc `%`(event: StatusEvent): JsonNode =
   result["message"] = %event.message
 
 proc `%`(event: ConfigEvent): JsonNode =
+  ## Serializes the fixed simulation parameters.
   result = newJObject()
   result["kind"] = %($eventConfig)
   result["timestamp"] = %event.timestamp.formatEventTimestamp()
@@ -179,6 +168,7 @@ proc `%`(event: LogEvent): JsonNode =
   result.addIfSome("information", event.information)
 
 proc `%`(event: SimulationEvent): JsonNode =
+  ## Dispatches to the serializer for the active event kind.
   case event.kind
   of eventSetting:
     %event.settingData

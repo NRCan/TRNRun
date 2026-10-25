@@ -1,16 +1,16 @@
 # TRNRun Queue
 
-`trnrunq.exe` is a Windows process supervisor for running batches of TRNSYS
+`trnrunq.exe` is a Windows command-line queue that runs batches of TRNSYS
 simulations through
-[TRNRun Runner](https://github.com/NRCan/TRNRun/tree/main/components/trnrun). It
-reads JSON Lines requests
-from stdin, dispatches them to a bounded worker pool, and writes all queue and
-simulation events to one stdout stream. Its responsibilities are to:
+[TRNRun Runner](https://github.com/NRCan/TRNRun/tree/main/components/trnrun).
+It reads simulation requests as JSON Lines from stdin, runs them on a bounded
+pool of `trnrun.exe` processes, and writes queue and runner events to a single
+stdout stream. It:
 
-- accept simulation requests incrementally without loading the full batch
-- limit the number of `trnrun.exe` processes running at the same time
-- report when each request is accepted and completed
-- forward runner events unchanged and identify each run by `runId`
+- accepts requests as they arrive, without loading the full batch first
+- limits how many `trnrun.exe` processes run at the same time
+- reports when each request is accepted and completed
+- forwards runner events unchanged, each carrying the request's `runId`
 
 ## Table of Contents
 
@@ -22,6 +22,7 @@ simulation events to one stdout stream. Its responsibilities are to:
 - [Output protocol](#output-protocol)
 - [Exit codes](#exit-codes)
 - [Examples](#examples)
+- [See also](#see-also)
 
 ## Requirements
 
@@ -34,9 +35,9 @@ simulation events to one stdout stream. Its responsibilities are to:
 
 ### Development
 
-- [Nim](https://nim-lang.org/install.html) 2.2.10 or newer
-- [Zig](https://ziglang.org/download/) as the Windows C compiler and resource
-  compiler
+- [Nim](https://nim-lang.org/install.html) 2.2.12 or newer
+- [Zig](https://ziglang.org/download/) 0.17.0 as the Windows C compiler and
+  resource compiler
 - [just](https://github.com/casey/just) for repository-root recipes
 
 ## Installation
@@ -226,3 +227,12 @@ TRNSYS 18 executable path.
 
 Both scripts create ten temporary deck copies and allow up to five simultaneous
 runs.
+
+## See also
+
+- [TRNRun Runner](https://github.com/NRCan/TRNRun/tree/main/components/trnrun):
+  runs a single TRNSYS simulation and reports its lifecycle as a JSON Lines
+  event stream.
+- [TRNRun Daemon](https://github.com/NRCan/TRNRun/tree/main/components/trnrund):
+  runs simulations on behalf of a client application and answers for their
+  progress, results, and logs over stdin and stdout.

@@ -1,14 +1,14 @@
 import std/strutils
 
 # Package
-version = "0.6.2"
+version = "0.8.0"
 author = "Alex Lachance"
 description = "Bounded concurrent launcher for TRNRun simulations"
 license = "MIT"
 srcDir = "src"
 
 # Dependencies
-requires "nim >= 2.2.10"
+requires "nim >= 2.2.12"
 
 # Build configuration
 const
@@ -19,7 +19,6 @@ const
   resourceScript = exeName & ".rc"
   iconFile = "../../assets/trnrun-mark.ico"
   matlabBinDir = "../../libraries/matlab/toolbox/bin"
-  pythonBinDir = "../../libraries/python/trnrun/bin"
   target = "x86_64-windows-gnu"
   zigcc = "scripts/zigcc.bat"
 
@@ -96,10 +95,8 @@ proc deployPackage() =
     distDir & "/" & exeName & "-v" & version & "-win_amd64/" & exeName & ".exe"
 
   mkDir matlabBinDir
-  mkDir pythonBinDir
 
   cpFile(packagedExe, matlabBinDir & "/" & exeName & ".exe")
-  cpFile(packagedExe, pythonBinDir & "/" & exeName & ".exe")
 
 # Tasks
 task bin, "Build the release executable":

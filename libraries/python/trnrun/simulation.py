@@ -1,234 +1,218 @@
-"""State for one simulation submitted through TRNRun Queue.
+"""One simulation as trnrund reports it: its lifecycle, TRNRun status, and TRNSYS logs.
 
-A per-simulation lock synchronizes reader-thread updates and state reads. Use
-``snapshot()`` to read multiple fields coherently. Runner outcomes and queue
-completion metadata are retained without synthesizing events.
+``parse_simulation`` turns a simulation object of a response into a record,
+its fields as flat as trnrund's; only its logs are a list of ``LogEvent``.
 """
 
-from __future__ import annotations
-
-from _thread import LockType
-from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime
+from enum import StrEnum
 from pathlib import Path
-from threading import Lock
+from typing import Any, Literal, override
 
-from trnrun.config import SimulationConfig
-from trnrun.events import (
-    ConfigEvent,
-    LogEvent,
-    ProgressEvent,
-    QueueEvent,
-    SettingEvent,
-    SimulationStatus,
-    StatusEvent,
-    TrnRunEvent,
-)
+
+class SimulationState(StrEnum):
+    """Daemon lifecycle, ``QUEUED → RUNNING → FINISHED``; one that never starts goes straight to ``FINISHED``."""
+
+    QUEUED = "QUEUED"
+    RUNNING = "RUNNING"
+    FINISHED = "FINISHED"
+
+
+type StateName = SimulationState | Literal["QUEUED", "RUNNING", "FINISHED"]
+
+
+class SimulationStatus(StrEnum):
+    """Runner-reported simulation status."""
+
+    PENDING = "PENDING"
+    LAUNCHING = "LAUNCHING"
+    RUNNING = "RUNNING"
+    DONE = "DONE"
+    CANCELLED = "CANCELLED"
+    ERROR = "ERROR"
+    TIMEOUT = "TIMEOUT"
+    STALLED = "STALLED"
+
+
+class LogSeverity(StrEnum):
+    """Severity of a TRNSYS log entry."""
+
+    NOTICE = "Notice"
+    WARNING = "Warning"
+    FATAL = "Fatal"
 
 
 @dataclass(frozen=True)
-class SimulationSnapshot:
-    """Immutable display state captured under the simulation lock.
+class LogEvent:
+    """One TRNSYS log entry; the fields after ``time`` are None unless TRNSYS attached them.
 
-    Log history and detailed runner/queue metadata stay on ``Simulation``.
-    Capturing this view never copies logs, regardless of history size.
+    Attributes
+    ----------
+    time : float
+        Simulation time of the message, in simulated hours.
+    unit_id, type_id : int or None
+        Unit, and its type, that emitted the message.
     """
 
-    id: int
-    deck_path: Path
-    is_accepted: bool
-    is_finished: bool
-    status: SimulationStatus | None
-    progress: ProgressEvent | None
-    config_event: ConfigEvent | None
-    log_count: int
-    notices: int
-    warnings: int
-    fatals: int
-
-    @property
-    def is_running(self) -> bool:
-        """Return whether the simulation is waiting or running."""
-        return not self.is_finished
-
-    @property
-    def succeeded(self) -> bool:
-        """Return whether a completed run has the terminal status `DONE`."""
-        return self.is_finished and self.status is SimulationStatus.DONE
+    severity: LogSeverity
+    time: float
+    unit_id: int | None = None
+    type_id: int | None = None
+    message_code: int | None = None
+    message: str | None = None
+    information: str | None = None
 
 
+@dataclass(repr=False)
 class Simulation:
-    """Synchronized event state for one queued simulation.
+    """One simulation as trnrund reported it; a field is None where trnrund sent ``null``.
 
-    Individual state reads are safe; use ``snapshot()`` for a coherent view of
-    multiple fields. Public input attributes ``id``, ``deck_path``, and ``config``
-    remain caller-owned and should not be mutated concurrently.
+    Not frozen: a ``SimulationManager`` updates the one ``add()`` returned in place on
+    each ``refresh()``. Nothing runs in the background, so it only changes
+    during a manager call. ``dataclasses.replace(sim)`` takes a snapshot.
+
+    Attributes
+    ----------
+    sim_id : int
+        ``simId`` the daemon assigned; never reused.
+    state : SimulationState
+        Daemon lifecycle.
+    deck_file : Path
+        Absolute deck path.
+    label : str or None
+        Label it was added with.
+    trnrun_args : list of str
+        TRNRun options it was added with.
+    status, status_message : SimulationStatus or None, str or None
+        TRNRun's latest status and its detail. TRNRun can report ``DONE``
+        before ``state`` is ``FINISHED``.
+    sim_time, percent : float or None
+        Latest simulation time, in simulated hours, and completion as a fraction from 0 to 1.
+    elapsed_ms, eta_ms : float or None
+        Wall-clock milliseconds elapsed since the start, and estimated remaining.
+    start_time, stop_time, time_step : float or None
+        The deck's start, stop and time step, in simulated hours.
+    setting : dict or None
+        Settings TRNRun applied, its defaults included, keyed by TRNRun's camelCase names.
+    notices, warnings, fatals : int
+        Log entries so far, by severity.
+    logs : list of LogEvent
+        Log entries, oldest first; empty when trnrund sent none, as ``simulations`` does without ``with_logs``.
+    succeeded : bool or None
+        Whether it finished with ``DONE``, exit code 0 and no error.
+    exit_code : int or None
+        TRNRun's exit code.
+    error : str or None
+        Why the daemon failed or cancelled it.
+    submitted_at, started_at, finished_at : datetime or None
+        UTC times; ``started_at`` stays None for a simulation that never started.
     """
 
-    def __init__(
-        self,
-        deck_path: str | Path,
-        config: SimulationConfig,
-        sim_id: int,
-    ) -> None:
-        """Initialize a pending simulation with complete log history."""
-        self.id: int = sim_id
-        self.deck_path: Path = Path(deck_path)
-        self.config: SimulationConfig = config
+    sim_id: int
+    state: SimulationState
+    deck_file: Path
+    label: str | None = None
+    trnrun_args: list[str] = field(default_factory=list[str])
+    status: SimulationStatus | None = None
+    status_message: str | None = None
+    sim_time: float | None = None
+    percent: float | None = None
+    elapsed_ms: float | None = None
+    eta_ms: float | None = None
+    start_time: float | None = None
+    stop_time: float | None = None
+    time_step: float | None = None
+    setting: dict[str, Any] | None = None
+    notices: int = 0
+    warnings: int = 0
+    fatals: int = 0
+    logs: list[LogEvent] = field(default_factory=list[LogEvent])
+    succeeded: bool | None = None
+    exit_code: int | None = None
+    error: str | None = None
+    submitted_at: datetime | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
 
-        self._lock: LockType = Lock()
-        self._accepted: bool = False
-        self._completion_event: QueueEvent | None = None
-        self._status_event: StatusEvent | None = None
-        self._progress_event: ProgressEvent | None = None
-        self._config_event: ConfigEvent | None = None
-        self._setting_event: SettingEvent | None = None
-        # ponytail: Full history uses O(n) memory; spool to disk if logs outgrow RAM.
-        self._logs: list[LogEvent] = []
-        self._severity_counts: Counter[str] = Counter()
-
-    def apply_event(self, event: TrnRunEvent) -> bool:
-        """Apply one runner or queue event, returning whether it was applied.
-
-        Duplicate acceptance, unrecognized queue events, and all events after
-        completion return False without changing state. Queue completion records
-        metadata; success still depends on the runner's terminal status.
-        """
-        with self._lock:
-            if self._completion_event is not None:
-                return False
-
-            match event:
-                case StatusEvent():
-                    self._status_event = event
-                case ConfigEvent():
-                    self._config_event = event
-                case SettingEvent():
-                    self._setting_event = event
-                case ProgressEvent():
-                    self._progress_event = event
-                case LogEvent():
-                    self._logs.append(event)
-                    self._severity_counts[event.severity.lower()] += 1
-                case QueueEvent(event="ACCEPTED") if not self._accepted:
-                    self._accepted = True
-                case QueueEvent(event="COMPLETED"):
-                    self._completion_event = event
-                case QueueEvent():
-                    return False
-
-            return True
-
-    def snapshot(self) -> SimulationSnapshot:
-        """Capture coherent display state without copying log history."""
-        with self._lock:
-            return SimulationSnapshot(
-                id=self.id,
-                deck_path=self.deck_path,
-                is_accepted=self._accepted,
-                is_finished=self._completion_event is not None,
-                status=self._status_event.status if self._status_event is not None else None,
-                progress=self._progress_event,
-                config_event=self._config_event,
-                log_count=len(self._logs),
-                notices=self._severity_counts["notice"],
-                warnings=self._severity_counts["warning"],
-                fatals=self._severity_counts["fatal"],
-            )
-
-    @property
-    def completion_event(self) -> QueueEvent | None:
-        """Return QUEUE/COMPLETED metadata, or None if not received.
-
-        The event's exit_code is None when the runner could not be launched.
-        A missing event instead means the run has not been marked finished.
-        """
-        with self._lock:
-            return self._completion_event
-
-    @property
-    def status(self) -> SimulationStatus | None:
-        """Return the latest runner status."""
-        with self._lock:
-            return self._status_event.status if self._status_event is not None else None
-
-    @property
-    def status_event(self) -> StatusEvent | None:
-        """Return the latest status event, including its metadata."""
-        with self._lock:
-            return self._status_event
-
-    @property
-    def progress(self) -> ProgressEvent | None:
-        """Return the latest progress event."""
-        with self._lock:
-            return self._progress_event
-
-    @property
-    def config_event(self) -> ConfigEvent | None:
-        """Return the latest simulation configuration event."""
-        with self._lock:
-            return self._config_event
-
-    @property
-    def setting_event(self) -> SettingEvent | None:
-        """Return the latest runner setting event."""
-        with self._lock:
-            return self._setting_event
-
-    @property
-    def logs(self) -> list[LogEvent]:
-        """Return a copy of all log events, oldest first."""
-        with self._lock:
-            return list(self._logs)
-
-    @property
-    def is_running(self) -> bool:
-        """Return whether the simulation is waiting or running."""
-        return not self.is_finished
-
-    @property
-    def is_accepted(self) -> bool:
-        """Return whether a queue worker picked the simulation up."""
-        with self._lock:
-            return self._accepted
+    @override
+    def __repr__(self) -> str:
+        """Summarize, such as ``Simulation(sim_id=3, deck='a.dck', state=RUNNING, status=RUNNING, 42%)``."""
+        percent = "" if self.percent is None else f", {self.percent:.0%}"
+        return (
+            f"Simulation(sim_id={self.sim_id}, deck={self.deck_file.name!r}, "
+            f"state={self.state}, status={self.status}{percent})"
+        )
 
     @property
     def is_finished(self) -> bool:
-        """Return whether the queue reported completion for this run."""
-        with self._lock:
-            return self._completion_event is not None
+        """Return whether the daemon finished it; its logs are then complete."""
+        return self.state is SimulationState.FINISHED
 
-    @property
-    def succeeded(self) -> bool:
-        """Return whether a completed run has the terminal status `DONE`."""
-        with self._lock:
-            return (
-                self._completion_event is not None
-                and self._status_event is not None
-                and self._status_event.status is SimulationStatus.DONE
-            )
 
-    @property
-    def log_count(self) -> int:
-        """Return the total received log count."""
-        with self._lock:
-            return len(self._logs)
+def _parse_timestamp(value: str | None) -> datetime | None:
+    """Parse a UTC timestamp, such as ``2026-10-09T14:03:12.345Z``."""
+    return None if value is None else datetime.fromisoformat(value)
 
-    @property
-    def notices(self) -> int:
-        """Return the notice count."""
-        with self._lock:
-            return self._severity_counts["notice"]
 
-    @property
-    def warnings(self) -> int:
-        """Return the warning count."""
-        with self._lock:
-            return self._severity_counts["warning"]
+def _parse_log(log: dict[str, Any]) -> LogEvent:
+    """Parse one log object of a simulation object."""
+    return LogEvent(
+        severity=LogSeverity(log["severity"]),
+        time=log["time"],
+        unit_id=log["unitId"],
+        type_id=log["typeId"],
+        message_code=log["messageCode"],
+        message=log["message"],
+        information=log["information"],
+    )
 
-    @property
-    def fatals(self) -> int:
-        """Return the fatal count."""
-        with self._lock:
-            return self._severity_counts["fatal"]
+
+def parse_simulation(sim: dict[str, Any]) -> Simulation:
+    """Parse a simulation object of a trnrund response.
+
+    Parameters
+    ----------
+    sim : dict
+        Simulation object as trnrund sends it, with camelCase keys; ``logs`` may be absent.
+
+    Returns
+    -------
+    Simulation
+        The record; a value TRNRun has not reported yet stays None.
+
+    Raises
+    ------
+    ValueError
+        If the state, status or a log severity is unknown.
+    KeyError
+        If a field is missing.
+    """
+    status = sim["trnrunStatus"]
+    return Simulation(
+        sim_id=sim["simId"],
+        state=SimulationState(sim["state"]),
+        deck_file=Path(sim["deckFile"]),
+        label=sim["label"],
+        trnrun_args=sim["trnrunArgs"],
+        status=None if status is None else SimulationStatus(status),
+        status_message=sim["trnrunMessage"],
+        sim_time=sim["simTime"],
+        percent=sim["percent"],
+        elapsed_ms=sim["elapsedMs"],
+        eta_ms=sim["etaMs"],
+        start_time=sim["startTime"],
+        stop_time=sim["stopTime"],
+        time_step=sim["timeStep"],
+        setting=sim["setting"],
+        notices=sim["notices"],
+        warnings=sim["warnings"],
+        fatals=sim["fatals"],
+        logs=[_parse_log(log) for log in sim.get("logs", [])],
+        succeeded=sim["succeeded"],
+        exit_code=sim["exitCode"],
+        error=sim["error"],
+        submitted_at=_parse_timestamp(sim["submittedAt"]),
+        started_at=_parse_timestamp(sim["startedAt"]),
+        finished_at=_parse_timestamp(sim["finishedAt"]),
+    )

@@ -8,24 +8,24 @@
 
 TRNRun is a tool for running [TRNSYS](https://www.trnsys.com/) simulations,
 designed to make batch runs easy to automate, monitor, and orchestrate from
-Python, MATLAB, or the command line.
+Python, MATLAB, .NET, or the command line.
 
 ## Components
 
-| Component                           | Role                                                                  |
-| ----------------------------------- | --------------------------------------------------------------------- |
-| [TRNRun Runner](components/trnrun/) | Runs and monitors one deck, emitting JSON Lines events.               |
-| [TRNRun Queue](components/trnrunq/) | Runs multiple decks with bounded concurrency and merges their events. |
-| [Type3830](components/type3830/)    | Reports simulation progress for monitoring and stall detection.       |
+| Component                            | Role                                                                  |
+| ------------------------------------ | --------------------------------------------------------------------- |
+| [TRNRun Runner](components/trnrun/)  | Runs and monitors one deck, emitting JSON Lines events.               |
+| [TRNRun Queue](components/trnrunq/)  | Runs multiple decks with bounded concurrency and merges their events. |
+| [TRNRun Daemon](components/trnrund/) | Queues and tracks simulations for one client over a JSON pipe.        |
+| [Type3830](components/type3830/)     | Reports simulation progress for monitoring and stall detection.       |
 
 ## Libraries
 
-| Client                      | Role                                                        |
-| --------------------------- | ----------------------------------------------------------- |
-| [Python](libraries/python/) | Python interface for running concurrent simulation batches. |
-| [MATLAB](libraries/matlab/) | MATLAB interface for running concurrent simulation batches. |
-
-Both libraries bundle the `trnrun` and `trnrunq` executables.
+| Client                      | Role                                                        | Bundles             |
+| --------------------------- | ----------------------------------------------------------- | ------------------- |
+| [Python](libraries/python/) | Python interface for running concurrent simulation batches. | `trnrun`, `trnrund` |
+| [MATLAB](libraries/matlab/) | MATLAB interface for running concurrent simulation batches. | `trnrun`, `trnrunq` |
+| [.NET](libraries/dotnet/)   | .NET interface for running concurrent simulation batches.   | `trnrun`, `trnrund` |
 
 ## Requirements
 
@@ -33,13 +33,14 @@ Both libraries bundle the `trnrun` and `trnrunq` executables.
 - TRNSYS 17 or 18
 - Python 3.12 or newer for the Python library
 - MATLAB R2021a or newer for the MATLAB library
+- .NET 10 for the .NET library
 
 Progress reporting requires the optional
 [Type3830 Progress Tracker](components/type3830/) in each deck.
 
 ## Python quick start
 
-Install the package with pip:
+Install the package:
 
 ```powershell
 pip install trnrun
@@ -51,20 +52,20 @@ Or with uv:
 uv add trnrun
 ```
 
+Use `SimulationManager(display=False)` to run without the progress display.
+
 Run a deck:
 
 ```python
-from trnrun import SimulationConfig, SimulationManager
+from trnrun import SimulationManager
 
-config = SimulationConfig(watch_tmp=True)
-
-with SimulationManager() as manager:
-    simulation = manager.add(r"C:\path\to\deck.dck", config)
-    manager.wait()
+with SimulationManager(workers=1) as manager:
+    simulation = manager.add(r"C:\path\to\deck.dck", watch_tmp=True)
+    manager.wait(simulation)
 ```
 
-See the [Python documentation](libraries/python/) for concurrent batches,
-monitoring, and configuration.
+See the [Python documentation](libraries/python/) for the thin `Daemon` client,
+concurrent batches, settings, and custom displays.
 
 ## MATLAB quick start
 
@@ -83,6 +84,27 @@ manager.shutdown();
 
 See the [MATLAB documentation](libraries/matlab/) for installation, concurrent
 batches, and result inspection.
+
+## .NET quick start
+
+Install the package:
+
+```powershell
+dotnet add package TRNRun
+```
+
+Run a deck:
+
+```csharp
+using TRNRun;
+
+await using TRNRunDaemon daemon = await TRNRunDaemon.StartAsync(workers: 1);
+long simId = await daemon.AddAsync(@"C:\path\to\deck.dck", new SimulationSettings { WatchTmp = true });
+Simulation simulation = await daemon.WaitForFinishedAsync(simId);
+```
+
+See the [.NET documentation](libraries/dotnet/) for concurrent batches,
+progress polling, and settings.
 
 ## Demo
 

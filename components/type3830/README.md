@@ -33,8 +33,8 @@ stall detection. Other applications can read the same text format directly.
 
 ### Development
 
-- [Nim](https://nim-lang.org/install.html) 2.2.10 or newer
-- [Zig](https://ziglang.org/download/) as the Windows C compiler
+- [Nim](https://nim-lang.org/install.html) 2.2.12 or newer
+- [Zig](https://ziglang.org/download/) 0.17.0 as the Windows C compiler
 - The TRNSYS import library for each target being built:
   - `C:\Trnsys17\Exe\TRNDll.lib` for TRNSYS 17
   - `C:\TRNSYS18\Exe\TRNDll64.lib` for TRNSYS 18

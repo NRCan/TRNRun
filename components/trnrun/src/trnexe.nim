@@ -3,17 +3,11 @@
 import std/[os, osproc]
 import ./settings
 
-
 type TrnexeLaunchError* = object of CatchableError
   ## Raised when TrnEXE fails to start.
 
-proc launchTrnexe*(
-    deckFile: string,
-    trnexePath: string,
-    guiVisibility: TrnexeGuiVisibility,
-): Process =
-  ## Spawns TrnEXE for `deckFile` and returns the process; raises
-  ## `TrnexeLaunchError` on failure.
+proc launchTrnexe*(deckFile, trnexePath: string, guiVisibility: TrnexeGuiVisibility): Process =
+  ## Spawns TrnEXE for `deckFile` in its directory; raises `TrnexeLaunchError` on failure.
   result = default(Process)
   var args = @[deckFile]
   let switch = guiVisibility.flag()
@@ -22,13 +16,10 @@ proc launchTrnexe*(
 
   try:
     return startProcess(
-      trnexePath,
+      command = trnexePath,
       workingDir = deckFile.parentDir(),
       args = args,
       options = {},
     )
   except OSError, IOError:
-    raise newException(
-      TrnexeLaunchError,
-      "Failed to launch TRNSYS: " & getCurrentExceptionMsg(),
-    )
+    raise newException(TrnexeLaunchError, "Failed to launch TRNSYS: " & getCurrentExceptionMsg())

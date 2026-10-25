@@ -8,9 +8,7 @@ dynamic = ["version"]
 description = "Run, monitor, and orchestrate batches of TRNSYS simulations"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = [
-    "rich>=14.2.0",
-]
+dependencies = ["rich>=14.2.0"]
 authors = [
     { name = "Natural Resources Canada / Ressources naturelles Canada" },
     { name = "CanmetENERGY in Varennes / CanmetÉNERGIE à Varennes" },
@@ -29,12 +27,16 @@ classifiers = [
     "Topic :: Scientific/Engineering",
     "Typing :: Typed",
 ]
+
 [project.urls]
 Homepage = "https://github.com/NRCan/TRNRun"
 Issues = "https://github.com/NRCan/TRNRun/issues"
 
 [dependency-groups]
-dev = ["pytest>=9.0.1", "ipykernel>=7.1.0"]
+dev = [
+    "ipykernel>=7.4.0",
+    "pytest>=9.0.1",
+]
 
 [tool.hatch.version]
 path = "trnrun/__init__.py"
@@ -46,8 +48,10 @@ path = "hatch_build.py"
 packages = ["trnrun"]
 artifacts = [
     "trnrun/bin/trnrun.exe",
-    "trnrun/bin/trnrunq.exe",
+    "trnrun/bin/trnrund.exe",
 ]
 
 [tool.basedpyright]
 pythonVersion = "3.12"
+reportAny = false
+reportExplicitAny = false

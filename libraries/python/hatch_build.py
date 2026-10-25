@@ -1,3 +1,5 @@
+"""Hatch build hook: check the bundled executables and tag the wheel for Windows."""
+
 import subprocess
 from pathlib import Path
 
@@ -15,7 +17,7 @@ class CustomBuildHook(BuildHookInterface):
         bin_dir = Path(self.root) / "trnrun" / "bin"
         executables = [
             bin_dir / "trnrun.exe",
-            bin_dir / "trnrunq.exe",
+            bin_dir / "trnrund.exe",
         ]
 
         missing = [executable for executable in executables if not executable.is_file()]

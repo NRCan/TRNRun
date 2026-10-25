@@ -1,209 +1,215 @@
-"""Simulation management through one TRNRun Queue process."""
+"""Launch many simulations on one trnrund, follow them, and show them in the terminal."""
 
-from __future__ import annotations
-
-import os
-from dataclasses import replace
+import time
 from pathlib import Path
-from threading import Condition
 from types import TracebackType
-from typing import Final, Self
+from typing import Any, Self
 
-from trnrun.config import BUNDLED_TRNRUNQ_PATH, SimulationConfig
-from trnrun.display import DisplayCallback, create_display
-from trnrun.events import EventParseError, TrnRunEvent, parse_stream_line
-from trnrun.process import QueueProcess
-from trnrun.simulation import Simulation
+from trnrun.daemon import BIN, Daemon
+from trnrun.display import Display
+from trnrun.settings import SimulationSettings
+from trnrun.simulation import Simulation, SimulationState, StateName
 
-DEFAULT_MAX_CONCURRENT: Final[int] = max((os.cpu_count() or 1) - 1, 1)
+_ORDER: list[SimulationState] = list(SimulationState)  # QUEUED, RUNNING, FINISHED, in order.
+
+
+def _rank(state: StateName) -> int:
+    """Position of ``state`` in the lifecycle; ValueError unless a ``SimulationState`` or its name."""
+    return _ORDER.index(SimulationState(state))
 
 
 class SimulationManager:
-    """Submit and monitor simulations through one TRNRun Queue process.
+    """Owns one trnrund and keeps a ``Simulation`` per run up to date.
 
-    Queue output is consumed on the ``QueueProcess`` reader thread. Display
-    callbacks must return promptly and must not call blocking manager methods.
-    GUI applications can inspect ``Simulation.snapshot()`` from their UI thread.
-    Shutdown is owner-controlled and must not be concurrent or reentrant.
+    ``refresh()`` updates each ``Simulation`` in place with trnrund's
+    latest, so one returned by ``add()`` stays current. Its ``logs`` are filled
+    in once it finishes; trnrund then forgets it.
+
+    Nothing runs in the background: ``add(wait_for=...)`` and ``wait()``
+    refresh every ``poll_interval`` seconds while they block, and that is when
+    the display moves. Call ``refresh()`` yourself to move it otherwise.
+
+    Attributes
+    ----------
+    daemon : Daemon
+        The trnrund this manager owns; usable directly for other commands.
+    display : Display or None
+        Live terminal display, or None when disabled.
+    poll_interval : float
+        Seconds between refreshes while blocking.
+    simulations : dict of int to Simulation
+        Every simulation added, by simId.
     """
 
     def __init__(
         self,
-        max_concurrent: int = DEFAULT_MAX_CONCURRENT,
-        refresh_interval: float = 1.0,
         *,
-        trnrunq_path: str | Path = BUNDLED_TRNRUNQ_PATH,
-        display: DisplayCallback | None = None,
+        workers: int | None = None,
+        display: bool = True,
+        poll_interval: float = 0.1,
+        trnrund_path: str | Path = BIN / "trnrund.exe",
+        trnrun_path: str | Path = BIN / "trnrun.exe",
     ) -> None:
-        self._condition: Condition = Condition()
-        self._simulations: dict[str, Simulation] = {}
-        self._next_id: int = 1
-        self._closed: bool = False
-        self._cleanup_complete: bool = False
-        self._reader_stopped: bool = False
+        """Start trnrund.
 
-        self._display: DisplayCallback = display if display is not None else create_display(refresh_interval)
-        self._process: QueueProcess = QueueProcess(trnrunq_path, max_concurrent, self._on_queue_output, self._on_queue_exit)
+        Parameters
+        ----------
+        workers : int, optional
+            Simulations run at once; trnrund's default, the CPU count minus one, when None.
+        display : bool, optional
+            Show the simulations live in the terminal or notebook.
+        poll_interval : float, optional
+            Seconds between refreshes while ``add`` or ``wait`` blocks.
+        trnrund_path : str or Path, optional
+            trnrund executable; the bundled one by default.
+        trnrun_path : str or Path, optional
+            TRNRun executable trnrund launches per simulation; the bundled one by default.
 
-    @property
-    def submitted(self) -> list[Simulation]:
-        """Return a copy of all tracked handles in submission order.
-
-        Includes pending, running, and completed simulations. Failed sends
-        are removed unless the queue already accepted the simulation.
+        Raises
+        ------
+        DaemonExitedError
+            If trnrund exits before answering.
         """
-        with self._condition:
-            return list(self._simulations.values())
+        self.daemon: Daemon = Daemon(workers=workers, trnrund_path=trnrund_path, trnrun_path=trnrun_path)
+        self.display: Display | None = Display() if display else None
+        self.poll_interval: float = poll_interval
+        self.simulations: dict[int, Simulation] = {}
 
-    @property
-    def simulations(self) -> list[Simulation]:
-        """Return accepted simulations in submission order."""
-        with self._condition:
-            return [simulation for simulation in self._simulations.values() if simulation.is_accepted]
+    def add(
+        self,
+        deck_file: str | Path,
+        settings: SimulationSettings | None = None,
+        *,
+        label: str | None = None,
+        wait_for: StateName | None = None,
+        **options: Any,
+    ) -> Simulation:
+        """Queue a deck and return its simulation.
 
-    @property
-    def active(self) -> list[Simulation]:
-        """Return unfinished simulations, including pending submissions."""
-        with self._condition:
-            return [simulation for simulation in self._simulations.values() if not simulation.is_finished]
+        Parameters
+        ----------
+        deck_file : str or Path
+            Deck to run; a relative path resolves from Python's working directory.
+        settings : SimulationSettings, optional
+            TRNRun options; None keeps every TRNRun default.
+        label : str, optional
+            Free text stored with the simulation, shown instead of the deck path.
+        wait_for : SimulationState or str, optional
+            Block until the simulation is at least ``QUEUED``, ``RUNNING`` or
+            ``FINISHED``; None returns at once. trnrund queues it before
+            answering, so ``QUEUED`` returns at once too. A simulation that ends
+            without starting, such as a cancelled one, counts as past ``RUNNING``.
+        **options
+            ``SimulationSettings`` fields, such as ``watch_tmp=True``; they override ``settings``.
 
-    @property
-    def succeeded(self) -> list[Simulation]:
-        """Return simulations that completed successfully."""
-        return [simulation for simulation in self.simulations if simulation.succeeded]
+        Returns
+        -------
+        Simulation
+            The simulation, kept current by every later ``refresh()``.
 
-    @property
-    def failed(self) -> list[Simulation]:
-        """Return simulations that finished without succeeding."""
-        return [simulation for simulation in self.simulations if simulation.is_finished and not simulation.succeeded]
+        Raises
+        ------
+        ValueError
+            If ``wait_for`` is not a state, before anything is queued.
+        TypeError
+            If an option is not a ``SimulationSettings`` field.
+        RequestError
+            If trnrund refuses the deck or ``settings``.
+        """
+        if wait_for is not None:
+            _ = _rank(wait_for)
+        sim_id = self.daemon.add(deck_file, settings, label=label, **options)
+        sim = self.simulations[sim_id] = self.daemon.simulation(sim_id)
+        if wait_for is not None:
+            self.wait(sim, until=wait_for)
+        return sim
 
+    def cancel(self, *simulations: Simulation) -> None:
+        """Stop queued or running simulations; finished ones are left unchanged.
 
-    def add(self, deck_file: str | Path, config: SimulationConfig, *, blocking: bool = True) -> Simulation:
-        """Submit a simulation, optionally waiting for queue acceptance."""
-        deck_path: Path = Path(deck_file).absolute()
-        if not deck_path.is_file():
-            raise FileNotFoundError(f"Deck file not found: {deck_path}")
-        config = replace(config)
-        config.validate()
-        runner_args: list[str] = config.to_cli_args()
+        The next ``refresh()`` shows them ``FINISHED`` with status ``CANCELLED``.
 
-        with self._condition:
-            if self._closed:
-                raise RuntimeError("SimulationManager is closed")
-            if self._reader_stopped:
-                raise RuntimeError("TRNRun queue output stopped")
-            simulation: Simulation = Simulation(deck_path, config, self._next_id)
-            self._next_id += 1
-            run_id: str = str(simulation.id)
-            self._simulations[run_id] = simulation
+        Parameters
+        ----------
+        *simulations : Simulation
+            Simulations to stop, matched by simId.
 
-        try:
-            # A full stdin pipe must not prevent the reader from acquiring the condition.
-            self._process.send(
-                {
-                    "runId": run_id,
-                    "deckFile": str(deck_path),
-                    "runnerPath": str(config.trnrun_path),
-                    "runnerArgs": runner_args,
-                },
-            )
-        except Exception:
-            with self._condition:
-                if not simulation.is_accepted:
-                    _ = self._simulations.pop(run_id, None)
-                self._condition.notify_all()
-            raise
+        Raises
+        ------
+        RequestError
+            If trnrund does not know a simulation the manager has not seen finish.
+        """
+        for sim in simulations:
+            # A collected one is already released, so trnrund no longer knows its simId.
+            if not self.simulations.get(sim.sim_id, sim).is_finished:
+                self.daemon.cancel(sim.sim_id)
 
-        if blocking:
-            with self._condition:
-                _ = self._condition.wait_for(lambda: simulation.is_accepted or self._closed or self._reader_stopped)
-                if self._closed:
-                    raise RuntimeError("SimulationManager is closed")
-                if self._reader_stopped and not simulation.is_accepted:
-                    raise RuntimeError("TRNRun queue output stopped before acceptance")
-        return simulation
+    def refresh(self) -> None:
+        """Update every simulation from trnrund once, collect the finished ones, and redraw."""
+        running = self.daemon.simulations("RUNNING")
+        finished = self.daemon.simulations("FINISHED", with_logs=True)
+        done = {sim.sim_id for sim in finished}
+        running = [sim for sim in running if sim.sim_id not in done]  # It finished between the two lists.
+        for latest in running + finished:
+            sim = self.simulations.setdefault(latest.sim_id, latest)
+            if sim is not latest:
+                vars(sim).update(vars(latest))  # In place, so the object add() returned stays current.
+        for sim in finished:
+            self.daemon.release(sim.sim_id)
+        if self.display is not None:
+            self.display.update(running, finished)
 
-    def wait(self, simulation: Simulation | None = None) -> None:
-        """Wait for one owned simulation, or all outstanding submissions."""
-        with self._condition:
-            if self._closed:
-                raise RuntimeError("SimulationManager is closed")
-            if simulation is not None and self._simulations.get(str(simulation.id)) is not simulation:
-                raise ValueError("Simulation does not belong to this manager")
-            def finished() -> bool:
-                return simulation.is_finished if simulation is not None else all(
-                    item.is_finished for item in self._simulations.values()
-                )
+    def wait(
+        self,
+        *simulations: Simulation,
+        until: StateName = SimulationState.FINISHED,
+        timeout: float | None = None,
+    ) -> None:
+        """Block until simulations reach a state, refreshing every ``poll_interval`` seconds.
 
-            _ = self._condition.wait_for(lambda: finished() or self._closed or self._reader_stopped)
-            if self._closed:
-                raise RuntimeError("SimulationManager is closed")
-            if self._reader_stopped and not finished():
-                raise RuntimeError("TRNRun queue output stopped before completion")
+        Parameters
+        ----------
+        *simulations : Simulation
+            Simulations to wait for, matched by simId; every one added by default.
+        until : SimulationState or str, optional
+            Least state each must reach: ``QUEUED``, ``RUNNING`` or ``FINISHED``.
+        timeout : float, optional
+            Seconds to wait at most; None waits forever.
 
-    def shutdown(self) -> None:
-        """Stop the queue and close the display, retrying incomplete cleanup."""
-        with self._condition:
-            if self._cleanup_complete:
+        Raises
+        ------
+        ValueError
+            If ``until`` is not a state.
+        TimeoutError
+            If they have not reached ``until`` after ``timeout`` seconds.
+        """
+        rank = _rank(until)
+        targets = simulations or tuple(self.simulations.values())
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while True:
+            self.refresh()
+            # By simId: a Simulation not returned by add() is never updated in place.
+            if all(_rank(self.simulations.get(sim.sim_id, sim).state) >= rank for sim in targets):
                 return
-            self._closed = True
-            self._condition.notify_all()
+            if deadline is not None and time.monotonic() >= deadline:
+                raise TimeoutError(f"Simulations not {until} after {timeout} s")
+            time.sleep(self.poll_interval)
 
-        self._process.shutdown()
-        self._display.close()
-        self._cleanup_complete = True
+    def close(self) -> None:
+        """Stop trnrund, killing unfinished runs, and erase the live display; safe to call again."""
+        self.daemon.close()
+        if self.display is not None:
+            self.display.close()
 
     def __enter__(self) -> Self:
-        """Enter the manager before shutdown."""
-        if self._closed:
-            raise RuntimeError("SimulationManager is closed")
+        """Return this manager for a with block."""
         return self
 
     def __exit__(
         self,
-        _exc_type: type[BaseException] | None,
-        _exc_value: BaseException | None,
-        _traceback: TracebackType | None,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
     ) -> None:
-        """Release the queue and display when leaving the context."""
-        self.shutdown()
-
-    def _on_queue_exit(self) -> None:
-        """Wake blocked submissions and observers when stdout closes."""
-        with self._condition:
-            self._reader_stopped = True
-            self._condition.notify_all()
-
-    def _on_queue_output(self, line: str) -> None:
-        """Apply one queue output line to its simulation."""
-        try:
-            parsed: tuple[str, TrnRunEvent] | None = parse_stream_line(line)
-        except EventParseError:
-            return
-        if parsed is None:
-            return
-
-        run_id, event = parsed
-        with self._condition:
-            if self._closed:
-                return
-            simulation: Simulation | None = self._simulations.get(run_id)
-            if simulation is None:
-                return
-            accepted_before: bool = simulation.is_accepted
-            if not simulation.apply_event(event):
-                return
-
-            started: bool = simulation.is_accepted and not accepted_before
-            finished: bool = simulation.is_finished
-            self._condition.notify_all()
-
-        try:
-            if started:
-                self._display.simulation_started(simulation)
-            elif finished:
-                self._display.simulation_finished(simulation)
-            else:
-                self._display.refresh()
-        except Exception:  # noqa: BLE001 - display failures must not stop the queue reader
-            pass
+        """Close the manager when leaving a with block."""
+        self.close()

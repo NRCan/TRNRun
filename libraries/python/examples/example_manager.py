@@ -1,66 +1,24 @@
-"""Example: running multiple TRNSYS simulations with SimulationManager."""
-
-from __future__ import annotations
+"""Run copies of a deck, many at a time, with live progress in the terminal."""
 
 import shutil
 from pathlib import Path
 
-from trnrun import SimulationConfig, SimulationManager
+from trnrun import SimulationManager, SimulationSettings
 
-# -----------------------------------------------------------------------------
-# Configuration
-# -----------------------------------------------------------------------------
-__root__ = Path(__file__).resolve().parent
+HERE = Path(__file__).resolve().parent
+MASTER_DCK = HERE / "dck" / "example_wo_plot_w_tracking.dck"
+SETTINGS = SimulationSettings(trnexe_path=r"C:\TRNSYS18\Exe\TrnEXE64.exe", watch_tmp=True)
 
-TRNEXE_PATH = Path(r"C:\TRNSYS18\Exe\TrnEXE64.exe")
-MASTER_DCK = __root__ / "dck" / "example_wo_plot_w_tracking.dck"
-DCK_FOLDER = __root__ / "runs"
+runs = HERE / "runs"
+runs.mkdir(exist_ok=True)
+decks = [Path(shutil.copyfile(MASTER_DCK, runs / f"{MASTER_DCK.stem}_{i:03d}.dck")) for i in range(1, 11)]
 
-SIM_COUNT = 10
-MAX_CONCURRENT = 5
-REFRESH_INTERVAL = 0.1
+with SimulationManager(workers=5, poll_interval=0.1) as manager:
+    for deck in decks:
+        _ = manager.add(deck, SETTINGS, wait_for="RUNNING")
+    manager.wait()
 
-CONFIG = SimulationConfig(trnexe_path=TRNEXE_PATH, watch_tmp=True)
-
-
-# -----------------------------------------------------------------------------
-# Helpers
-# -----------------------------------------------------------------------------
-def copy_dck(src: Path | str, dst_dir: Path | str, n: int) -> list[Path]:
-    """Copy ``src`` into ``dst_dir`` ``n`` times with a zero-padded suffix."""
-    src = Path(src)
-    dst_dir = Path(dst_dir)
-    _ = dst_dir.mkdir(parents=True, exist_ok=True)
-
-    dst_files: list[Path] = []
-    for i in range(1, n + 1):
-        dst = dst_dir / f"{src.stem}_{i:03d}{src.suffix}"
-        _ = shutil.copyfile(src, dst)
-        dst_files.append(dst)
-    return dst_files
-
-# -----------------------------------------------------------------------------
-# Run
-# -----------------------------------------------------------------------------
-def run_simulations(dck_files: list[Path]) -> SimulationManager:
-    """Launch one simulation per deck and block until all have finished."""
-    with SimulationManager(
-        max_concurrent=MAX_CONCURRENT,
-        refresh_interval=REFRESH_INTERVAL,
-    ) as manager:
-        for dck in dck_files:
-            _ = manager.add(dck, CONFIG)
-        manager.wait()
-    return manager
-
-
-# -----------------------------------------------------------------------------
-# Entry point
-# -----------------------------------------------------------------------------
-def main() -> None:
-    """Create, submit, and optionally clean up example decks."""
-    dck_files = copy_dck(MASTER_DCK, DCK_FOLDER, n=SIM_COUNT)
-    _ = run_simulations(dck_files)
-
-if __name__ == "__main__":
-    main()
+failed = [sim for sim in manager.simulations.values() if not sim.succeeded]
+print(f"{len(decks) - len(failed)}/{len(decks)} succeeded")
+for sim in failed:
+    print(f"  [{sim.sim_id}] {sim.deck_file.name}: {sim.status} {sim.error or sim.status_message}")

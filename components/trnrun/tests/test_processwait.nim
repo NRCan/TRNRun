@@ -25,19 +25,11 @@ proc stopAndClose(process: Process) =
 
 suite "non-destructive process waiting":
   test "rejects negative timeout values before accessing the process":
-    var
+    let
       process: Process = nil
-      errorRaised = false
-      errorMessage = ""
-
-    try:
-      discard process.waitForExitNonDestructive(-1)
-    except ValueError as error:
-      errorRaised = true
-      errorMessage = error.msg
-
-    check errorRaised
-    check errorMessage == "timeoutMs must be non-negative"
+      timeoutMs: int = -1
+    expect RangeDefect:
+      discard process.waitForExitNonDestructive(timeoutMs)
 
   test "polls a running process immediately when timeout is zero":
     let process = startTestChild(750)

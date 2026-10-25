@@ -58,11 +58,19 @@ ignore = [
     "TC001",   # typing-only-first-party-import
     "TC002",   # typing-only-third-party-import
     "TC003",   # typing-only-standard-library-import
-    "ANN401"   # any-type
+    "ANN401",  # any-type
+    "CPY001"   # Copyright
 ]
 fixable = ["ALL"]
 unfixable = []
 dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+
+[lint.per-file-ignores]
+"tests/**" = [
+    "S101",    # assert
+    "SLF001",  # private-member-access: tests check internals
+    "PLC2701", # import-private-name: tests check internals
+]
 
 [lint.pydocstyle]
 convention = "numpy"

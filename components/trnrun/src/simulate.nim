@@ -8,17 +8,8 @@ import std/[monotimes, osproc]
 when isMainModule:
   import std/[os, strformat]
 
-import ./events
-import ./eventsink
-import ./job
-import ./monitor
-import ./mutex
-import ./settings
-import ./sidecar
-import ./status
-import ./trnexe
-import ./validate
-import ./wait
+import ./[events, eventsink, job, monitor, mutex, settings, sidecar, status, trnexe,
+  validate, wait]
 
 proc runSimulation*(
     deckFile: string,
@@ -47,18 +38,21 @@ proc runSimulation*(
     eventSink(statusEvent(simFatal.status, message = "Orphan guard unavailable: " & error.msg))
     return simFatal
 
-  eventSink(settingEvent(settings, settings.trnexePath))
+  eventSink(settingEvent(settings))
   eventSink(statusEvent(statusPending))
 
   var
-    process: Process = default(Process)
+    process: Process = nil
     startTime: MonoTime = default(MonoTime)
 
   try:
     withLaunchLock:
       eventSink(statusEvent(statusLaunching))
       if not removeSidecarFiles(deck):
-        eventSink(statusEvent(simFatal.status, message = "Could not delete one or more sidecar files"))
+        eventSink(statusEvent(
+          status = simFatal.status,
+          message = "Could not delete one or more sidecar files",
+        ))
         return simFatal
 
       process = launchTrnexe(deck, settings.trnexePath, settings.guiVisibility)
@@ -86,7 +80,10 @@ proc runSimulation*(
             process.kill()
           except OSError:
             discard
-          eventSink(statusEvent(simFatal.status, message = "TRNSYS reported process exit but remained running"))
+          eventSink(statusEvent(
+            status = simFatal.status,
+            message = "TRNSYS reported process exit but remained running",
+          ))
           return simFatal
       of wrTimeout:
         if process.running and settings.killOnTimeout:
@@ -94,7 +91,10 @@ proc runSimulation*(
             process.kill()
           except OSError:
             discard
-          eventSink(statusEvent(simTimeout.status, message = "TRNSYS readiness detection timed out"))
+          eventSink(statusEvent(
+            status = simTimeout.status,
+            message = "TRNSYS readiness detection timed out",
+          ))
           return simTimeout
 
       if settings.guiVisibility.wantsMinimize() and process.running:
@@ -163,16 +163,11 @@ proc simulate*(
     settings: RunnerSettings = DefaultRunnerSettings,
     runId: string = "",
 ): SimResult =
-  ## Runs one simulation, reporting to stdout and an optional JSONL file.
-  ## When non-empty, `runId` is attached to every emitted event.
+  ## Runs one simulation, reporting to stdout and an optional JSONL file, tagged with `runId`.
   ##
-  ## Each call owns a deck-specific JSONL writer and an independent event sink,
-  ## so repeated calls produce separate event files and sequences.
-  ##
-  ## The file mirror is attached only once the deck path resolves, since the
-  ## deck names both the run and its event file: a rejected deck reports
-  ## `ERROR` on stdout without leaving a file behind. The file therefore either
-  ## does not exist, or holds the whole stream.
+  ## Each call owns its writer and sink, so repeated calls never share files or sequences.
+  ## The file is attached only once the deck resolves: a rejected deck reports `ERROR` on
+  ## stdout and leaves no file, so the file either does not exist or holds the whole stream.
   var settings = settings
 
   let
@@ -180,7 +175,8 @@ proc simulate*(
     eventSink = stdoutEventSink(jsonlOutput, runId)
   try:
     try:
-      jsonlOutput.attachEventFile(validateDeck(deckFile), settings.writeEvents)
+      if settings.writeEvents:
+        settings.writeEvents = jsonlOutput.attachEventFile(validateDeck(deckFile))
     except IOError, ValueError:
       discard # runSimulation re-validates and reports this as a terminal event.
 
@@ -190,9 +186,7 @@ proc simulate*(
 
 # Direct-run example
 when isMainModule:
-  let deckFile = absolutePath(
-    r"trnrun\examples\dck\example_w_plot_w_tracking.dck"
-  )
+  let deckFile = absolutePath(r"trnrun\examples\dck\example_w_plot_w_tracking.dck")
   var runnerSettings = DefaultRunnerSettings
   runnerSettings.guiVisibility = guiMinimizedAuto
 

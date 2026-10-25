@@ -2,11 +2,8 @@
 
 import std/[os, strformat, strutils]
 
-
 proc validateDeck*(deckFile: string): string =
-  ## Resolves `deckFile` to an absolute, normalized path.
-  ## Raises `IOError` if it is missing, or `ValueError` if it is not a
-  ## `.dck`/`.trd`.
+  ## Returns `deckFile` made absolute; `IOError` if missing, `ValueError` if not `.dck`/`.trd`.
   result = deckFile.absolutePath().normalizedPath()
   if not fileExists(result):
     raise newException(IOError, fmt"Deck file not found: '{result}'")
@@ -14,8 +11,7 @@ proc validateDeck*(deckFile: string): string =
     raise newException(ValueError, fmt"Expected .dck or .trd, got: '{deckFile}'")
 
 proc validateTrnexe*(trnexePath: string): string =
-  ## Resolves the TRNSYS executable to an absolute, normalized path.
-  ## Raises `IOError` if it does not exist.
+  ## Resolves `trnexePath` to an absolute path; raises `IOError` if it does not exist.
   result = trnexePath.absolutePath().normalizedPath()
   if not fileExists(result):
     raise newException(IOError, fmt"TRNEXE not found: '{result}'")

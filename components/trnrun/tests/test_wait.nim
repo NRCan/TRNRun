@@ -90,22 +90,10 @@ proc fileExistsCondition(path: string): PollCondition =
   result = proc(): bool {.gcsafe.} =
     fileExists(path)
 
-proc pollErrorMessage(
-    initialIntervalMs: int,
-    maxIntervalMs: int,
-    backoff: float,
-    timeoutMs: int,
-): string =
+proc pollErrorMessage(timeoutMs: int): string =
   result = ""
   try:
-    discard poll(
-      nil,
-      alwaysTrue,
-      timeoutMs,
-      initialIntervalMs,
-      maxIntervalMs,
-      backoff,
-    )
+    discard poll(nil, alwaysTrue, timeoutMs)
   except ValueError as error:
     result = error.msg
 
@@ -124,15 +112,8 @@ proc runTests() =
       removeDir(testDirectory)
 
   suite "wait polling":
-    test "validates polling parameters":
-      check pollErrorMessage(0, 500, 1.3, 100) ==
-        "initialIntervalMs must be positive"
-      check pollErrorMessage(10, 5, 1.3, 100) ==
-        "maxIntervalMs must be >= initialIntervalMs"
-      check pollErrorMessage(10, 500, 1.0, 100) ==
-        "backoff must be > 1.0"
-      check pollErrorMessage(10, 500, 1.3, -1) ==
-        "timeoutMs must be >= 0"
+    test "rejects a negative timeout":
+      check pollErrorMessage(-1) == "timeoutMs must be >= 0"
 
     test "returns immediately when the condition is already true":
       check poll(nil, alwaysTrue, 100)

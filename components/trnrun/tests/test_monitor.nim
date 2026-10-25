@@ -34,7 +34,7 @@ proc removeIfExists(path: string) =
 suite "simulation monitor":
   test "clamps progress to the configured simulation range":
     let mono = getMonoTime()
-    let config = SimConfig(
+    let config = ConfigEvent(
       timestamp: fixedTimestamp(),
       start: 10.0,
       stop: 110.0,
@@ -45,14 +45,14 @@ suite "simulation monitor":
     check SimProgress(mono: mono, time: 60.0).percent(config) == 0.5
     check SimProgress(mono: mono, time: 150.0).percent(config) == 1.0
 
-    let invalidConfig = SimConfig(start: 10.0, stop: 10.0)
+    let invalidConfig = ConfigEvent(start: 10.0, stop: 10.0)
     check SimProgress(mono: mono, time: 10.0).percent(invalidConfig) == 0.0
 
   test "calculates elapsed time and ETA from monotonic time":
     let
       start = getMonoTime()
       progressTime = start + initDuration(milliseconds = 1_000)
-      config = SimConfig(start: 0.0, stop: 100.0)
+      config = ConfigEvent(start: 0.0, stop: 100.0)
       halfway = SimProgress(mono: progressTime, time: 50.0)
       negligible = SimProgress(mono: progressTime, time: 0.05)
       complete = SimProgress(mono: progressTime, time: 100.0)
@@ -98,7 +98,7 @@ suite "simulation monitor":
 
     check parsed.isSome
     let entry = parsed.get()
-    check entry.severity == Warning
+    check entry.severity == sevWarning
     check entry.time == 24.5
     check entry.unitId == some(5)
     check entry.typeId == some(139)
@@ -117,7 +117,7 @@ suite "simulation monitor":
 
     check ignored.isSome
     let entry = ignored.get()
-    check entry.severity == Fatal
+    check entry.severity == sevFatal
     check entry.time == 10.0
     check entry.unitId.isNone
     check entry.typeId.isNone
@@ -160,14 +160,14 @@ suite "simulation monitor":
 
     var
       offset = 0'i64
-      entries = newSeq[SimLog]()
+      entries = newSeq[LogEvent]()
     for entry in readLog(offset, path):
       entries.add(entry)
 
     check entries.len == 2
-    check entries[0].severity == Notice
+    check entries[0].severity == sevNotice
     check entries[0].message == some("Started")
-    check entries[1].severity == Fatal
+    check entries[1].severity == sevFatal
     check entries[1].time == 12.5
     check entries[1].messageCode == some(999)
     check offset == getFileSize(path)
@@ -233,7 +233,7 @@ suite "simulation monitor":
     check collector.events.len == 4
     check state.lastProgressChange == lastAdvance
 
-  test "filters log events by severity and reports fatal entries":
+  test "filters log events by severity and keeps draining after a fatal entry":
     let path = getTempDir() / "trnrun_monitor_poll.log"
     removeIfExists(path)
     defer: removeIfExists(path)
@@ -242,24 +242,24 @@ suite "simulation monitor":
       path,
       "*** Notice at time : 0\n" &
       "Message : notice\n" &
-      "*** Warning at time : 1\n" &
-      "Message : warning\n" &
-      "*** Fatal at time : 2\n" &
-      "Message : fatal\n",
+      "*** Fatal at time : 1\n" &
+      "Message : fatal\n" &
+      "*** Warning at time : 2\n" &
+      "Message : warning\n",
     )
 
     let collector = newEventCollector()
     var state = MonitorState(
       logFile: path,
       watchLog: true,
-      severity: Warning,
+      severity: sevWarning,
       eventSink: collector.sink,
     )
 
     check state.pollLog()
     check collector.events.len == 2
-    check collector.events[0].logData.severity == Warning
-    check collector.events[1].logData.severity == Fatal
+    check collector.events[0].logData.severity == sevFatal
+    check collector.events[1].logData.severity == sevWarning
 
   test "evaluates timeout and stall thresholds":
     let start = getMonoTime()
@@ -270,7 +270,7 @@ suite "simulation monitor":
       stallTimeoutMs: 200,
       lastProgressChange: start,
       lastSnapshot: some(TmpSnapshot(
-        config: SimConfig(start: 0.0, stop: 100.0),
+        config: ConfigEvent(start: 0.0, stop: 100.0),
         progress: SimProgress(mono: start, time: 50.0),
       )),
     )
@@ -281,16 +281,10 @@ suite "simulation monitor":
     check state.isStalled(start + initDuration(milliseconds = 200))
 
     state.lastSnapshot = some(TmpSnapshot(
-      config: SimConfig(start: 0.0, stop: 100.0),
+      config: ConfigEvent(start: 0.0, stop: 100.0),
       progress: SimProgress(mono: start, time: 100.0),
     ))
     check not state.isStalled(start + initDuration(milliseconds = 500))
-
-  test "clamps positive timeout thresholds to the polling interval":
-    check clampTimeout(0, 100, "timeout") == 0
-    check clampTimeout(100, 100, "timeout") == 100
-    check clampTimeout(50, 100, "timeout") == 100
-    check clampTimeout(200, 100, "timeout") == 200
 
   test "returns done when an unwatched process exits normally":
     let
@@ -304,12 +298,16 @@ suite "simulation monitor":
       removeIfExists(logPath)
 
     check monitor(
-      process,
-      deckPath,
-      getMonoTime(),
-      sink,
+      process = process,
+      deckFile = deckPath,
+      startTime = getMonoTime(),
+      eventSink = sink,
       watchLog = false,
       watchTmp = false,
+      pollMs = 100,
+      severity = sevNotice,
+      watchTimeoutMs = 0,
+      stallTimeoutMs = 0,
     ) == simDone
 
   test "detects fatal logs after an unwatched process exits":
@@ -330,10 +328,14 @@ suite "simulation monitor":
     )
 
     check monitor(
-      process,
-      deckPath,
-      getMonoTime(),
-      sink,
+      process = process,
+      deckFile = deckPath,
+      startTime = getMonoTime(),
+      eventSink = sink,
       watchLog = false,
       watchTmp = false,
+      pollMs = 100,
+      severity = sevNotice,
+      watchTimeoutMs = 0,
+      stallTimeoutMs = 0,
     ) == simFatal

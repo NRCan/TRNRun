@@ -12,14 +12,14 @@ var
   eventTimeFormatInitialized {.threadvar.}: bool
 
 proc getEventTimeFormat(): TimeFormat {.gcsafe.} =
-  ## Reuses a parsed timestamp format without sharing GC-managed state between
-  ## threads.
+  ## Returns this thread's cached timestamp format, parsing it on first use.
   if not eventTimeFormatInitialized:
     eventTimeFormat = initTimeFormat(EventTimestampFormat)
     eventTimeFormatInitialized = true
   eventTimeFormat
 
 proc formatEventTimestamp(timestamp: DateTime): string {.gcsafe.} =
+  ## Formats `timestamp` in the wire format.
   timestamp.format(getEventTimeFormat())
 
 proc errorLine*(runId, message: string): string =

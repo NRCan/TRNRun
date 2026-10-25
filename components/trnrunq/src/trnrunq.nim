@@ -1,12 +1,8 @@
 ## Implements the trnrunq command-line interface.
 ##
-## Command-line entry point for running concurrent TRNSYS simulations through a
-## bounded worker pool. It acts as a thin wrapper around `supervisor`, exposing
-## the worker count as a CLI flag and mapping failures onto
-## process exit codes.
-##
-## Option parsing itself lives in `cli`; this module owns executable metadata,
-## drives the parser, and reports the outcome.
+## A thin wrapper around `supervisor` that runs concurrent TRNSYS simulations
+## through a bounded worker pool, exposes the worker count as a CLI flag, and
+## maps failures onto process exit codes. Option parsing lives in `cli`.
 
 import std/parseopt
 import ./cli
@@ -39,12 +35,9 @@ are written to stderr for humans.
 Exit codes: 0 ok  1 fatal  2 usage error"""
 
 proc main(): int =
-  ## Collects user input from the command line and serves the queue.
+  ## Parses the command line and serves the queue; raises `ValueError` on a usage error.
   ##
-  ## Returns the process exit code: 0 ok, 1 fatal, 2 usage error.
-  ##
-  ## This procedure does not call `quit`, ensuring cleanup in `serve` can run
-  ## and every worker is joined.
+  ## Never calls `quit`, so cleanup in `serve` runs and every worker is joined.
   var input = defaultCliInput()
 
   var parser = initOptParser()

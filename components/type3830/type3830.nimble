@@ -1,14 +1,14 @@
 import std/strutils
 
 # Package
-version = "0.6.2"
+version = "0.8.0"
 author = "Alex Lachance, Natural Resources Canada"
 description = "Custom TRNSYS Type to export simulation TIME, START, STOP and STEP at a set interval"
 license = "MIT"
 srcDir = "src"
 
 # Dependencies
-requires "nim >= 2.2.10"
+requires "nim >= 2.2.12"
 
 # Config
 type

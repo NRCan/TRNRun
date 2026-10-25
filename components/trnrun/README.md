@@ -17,6 +17,7 @@ systems that need reliable lifecycle signals:
 - [Output protocol](#output-protocol)
 - [Exit codes](#exit-codes)
 - [Examples](#examples)
+- [See also](#see-also)
 
 ## Requirements
 
@@ -25,13 +26,13 @@ systems that need reliable lifecycle signals:
 - Windows x64
 - TRNSYS 17 or 18
 - Optional: [Type3830 Progress Tracker](https://github.com/NRCan/TRNRun/tree/main/components/type3830)
-  for progress, ETA, cancellation, and stall detection
+ for progress, ETA, cancellation, and stall detection
 
 ### Development
 
-- [Nim](https://nim-lang.org/install.html) 2.2.10 or newer
-- [Zig](https://ziglang.org/download/) as the Windows C compiler and resource
-  compiler
+- [Nim](https://nim-lang.org/install.html) 2.2.12
+- [Zig](https://ziglang.org/download/) 0.17.0 as the Windows C compiler and
+  resource compiler
 - [just](https://github.com/casey/just) for repository-root recipes
 
 ## Installation
@@ -236,17 +237,6 @@ Events are written to stdout as one JSON object per line
 ([JSON Lines](https://jsonlines.org/)). Stdout is flushed after every event so a
 parent process can react immediately. Treat stdout as the machine-readable
 protocol; human-facing writer diagnostics may be sent to stderr.
-
-For a successfully validated run, the lifecycle is:
-
-```text
-SETTING → PENDING → LAUNCHING → RUNNING → terminal STATUS
-```
-
-`CONFIG`, `PROGRESS`, and `LOG` events can appear after `RUNNING`. Validation or
-file-selection failures emit only a terminal `STATUS` event. Exactly one of
-`DONE`, `CANCELLED`, `ERROR`, `TIMEOUT`, or `STALLED` terminates the event
-stream.
 
 ### Common fields
 
@@ -492,7 +482,11 @@ They expect
 - [`example_concurrent.ps1`](https://github.com/NRCan/TRNRun/blob/main/components/trnrun/examples/example_concurrent.ps1)
   launches independent runners concurrently.
 
-For bounded concurrent workloads with one merged event stream, use
-[TRNRun Queue](https://github.com/NRCan/TRNRun/tree/main/components/trnrunq)
-instead of managing independent runner processes
-directly.
+## See also
+
+- [TRNRun Queue](https://github.com/NRCan/TRNRun/tree/main/components/trnrunq):
+  runs batches of simulations through a bounded pool of runners and merges
+  their events into a single stream.
+- [TRNRun Daemon](https://github.com/NRCan/TRNRun/tree/main/components/trnrund):
+  runs simulations on behalf of a client application and answers for their
+  progress, results, and logs over stdin and stdout.

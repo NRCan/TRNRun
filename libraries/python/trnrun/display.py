@@ -1,347 +1,213 @@
-"""Progress displays for TRNRun-manager simulations.
+"""Display: one live line per running simulation, and one printed line per finished one.
 
-Rich renders the same status lines for terminals and notebooks. IPython
-``DisplayHandle`` replaces notebook output in place without widgets or clearing
-other cell output. Displays do not own simulation state; they render immutable
-snapshots of the live ``Simulation`` objects supplied by ``SimulationManager``.
+In a terminal the live lines are a Rich live region; in Jupyter they are one
+HTML output area that IPython replaces in place, without widgets or clearing
+other cell output.
 """
 
-# pyright: reportUnusedCallResult=false
-
-from __future__ import annotations
-
-import builtins
-import time
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Sequence
+from datetime import UTC, datetime
 from io import StringIO
-from typing import Protocol, cast
+from typing import Protocol
 
 from rich.console import Console, Group
 from rich.live import Live
+from rich.segment import Segment
 from rich.text import Text
 
-from trnrun.events import SimulationStatus
-from trnrun.simulation import Simulation
-from trnrun.utils import format_hhmmss, truncate_left
+from trnrun.simulation import Simulation, SimulationStatus
 
-# -----------------------------------------------------------------
-# Constants
-# -----------------------------------------------------------------
-COLOR_MAP: dict[SimulationStatus, str | None] = {
-    SimulationStatus.PENDING: None,
-    SimulationStatus.LAUNCHING: None,
-    SimulationStatus.RUNNING: None,
+_STATUS_STYLES: dict[SimulationStatus, str] = {
     SimulationStatus.DONE: "green",
+    SimulationStatus.CANCELLED: "yellow",
     SimulationStatus.ERROR: "red",
     SimulationStatus.TIMEOUT: "red",
     SimulationStatus.STALLED: "red",
-    SimulationStatus.CANCELLED: "yellow",
 }
-
-PATH_WIDTH = 32
-PROGRESS_BAR_WIDTH = 20
-MS_PER_SECOND = 1000
-
-
-class DisplayCallback(Protocol):
-    """Callback surface used by ``SimulationManager``."""
-
-    def simulation_started(self, simulation: Simulation) -> None:
-        """Show a newly accepted simulation."""
-
-    def simulation_finished(self, simulation: Simulation) -> None:
-        """Show a completed simulation."""
-
-    def refresh(self) -> None:
-        """Refresh changed simulation state when due."""
-
-    def close(self) -> None:
-        """Release display resources without completing simulations."""
+_BAR_WIDTH = 20
+_NAME_WIDTH = 32
+_NOTEBOOK_FRAME = (
+    '<pre style="margin:0;white-space:pre;overflow-x:auto;line-height:1.3;'
+    'font-family:monospace;color:inherit;background:transparent">{code}</pre>'
+)
 
 
-class _DisplayHandle(Protocol):
-    """Subset of an IPython ``DisplayHandle`` used by the notebook display."""
-
-    def update(self, obj: object) -> None:
-        """Replace the existing output with ``obj``."""
-
-
-# -----------------------------------------------------------------
-# Shared rendering helpers
-# -----------------------------------------------------------------
-def _progress_bar(percent: float, width: int = PROGRESS_BAR_WIDTH) -> str:
-    """Return a fixed-width ASCII completion bar."""
-    filled = min(max(int(width * percent), 0), width)
-    return "[" + "#" * filled + "-" * (width - filled) + "]"
+def _duration(ms: float | None) -> str:
+    """Format milliseconds as HH:MM:SS, or ``--:--:--`` before the runner reported any."""
+    if ms is None:
+        return "--:--:--"
+    minutes, seconds = divmod(max(int(ms // 1000), 0), 60)
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
 
-def _render_line(sim: Simulation) -> Text:
-    """Render one coherent snapshot as a shared Rich status line."""
-    snapshot = sim.snapshot()
-    path = truncate_left(str(snapshot.deck_path), PATH_WIDTH)
-
-    status = snapshot.status
-    status_text = status.value if status is not None else ""
-    status_style = COLOR_MAP.get(status) if status is not None else None
-
-    logs = f"N:{snapshot.notices} W:{snapshot.warnings} F:{snapshot.fatals}"
-
-    progress = snapshot.progress
-
-    elapsed = format_hhmmss(progress.elapsed_ms / MS_PER_SECOND if progress else None)
-    eta = format_hhmmss(progress.eta_ms / MS_PER_SECOND if progress else None)
-
-    sim_time = progress.time if progress else None
-    percent = progress.percent if progress else None
-
-    config = snapshot.config_event
-    sim_stop = config.stop if config else None
-
-    bar = _progress_bar(percent if percent is not None else 0.0)
-    sim_percent = "" if percent is None else f"({percent * 100:.0f}%)"
-
-    sim_progress = "- / -" if sim_time is None or sim_stop is None else f"{sim_time:6,.0f} / {sim_stop:6,.0f}"
-
-    text = Text()
-    text.append(f"[{snapshot.id}] ")
-    text.append(f"{path} │ ")
-    text.append("Status: ")
-    text.append(f"{status_text:<10}", style=status_style)
-    text.append(" │ ")
-    text.append(f"Logs: {logs:<12} │ ")
-    text.append(f"Elapsed: {elapsed:<8} │ ETA: {eta:<8} │ ")
-    text.append(f"{bar} {sim_progress} {sim_percent:6}")
-    return text
+def _elapsed_ms(sim: Simulation) -> float | None:
+    """Return the runner's elapsed time, else the wall-clock time since the start, as without Type3830."""
+    if sim.elapsed_ms is not None or sim.started_at is None:
+        return sim.elapsed_ms
+    end = sim.finished_at or datetime.now(UTC)
+    return (end - sim.started_at).total_seconds() * 1000
 
 
-def _in_notebook_kernel() -> bool:
-    """Detect an active IPython kernel without importing IPython."""
-    get_ipython = getattr(builtins, "get_ipython", None)
-    if not callable(get_ipython):
-        return False
-
-    try:
-        shell = get_ipython()
-    except Exception:  # noqa: BLE001 - environment detection must safely fall back
-        return False
-    return shell is not None and getattr(shell, "kernel", None) is not None
+def _truncate_left(text: str, width: int) -> str:
+    """Pad or left-truncate ``text`` to ``width`` terminal cells, marking a cut with ``…``."""
+    segment = Segment(text)
+    length = segment.cell_length
+    if length <= width:
+        return text + " " * (width - length)
+    return "…" + segment.split_cells(length - width + 1)[1].text
 
 
-def _load_notebook_api() -> tuple[Callable[[str], object], Callable[..., object]]:
-    """Load the optional IPython display API only for notebook rendering."""
-    try:
-        from IPython.display import HTML, display
-    except ImportError as error:
-        raise ImportError("Notebook display mode requires IPython") from error
-    return cast("Callable[[str], object]", HTML), cast("Callable[..., object]", display)
-
-
-# -----------------------------------------------------------------
-# Null Display
-# -----------------------------------------------------------------
-class NullDisplay:
-    """Display that renders nothing; for headless runs and tests."""
-
-    def simulation_started(self, simulation: Simulation) -> None:
-        """Ignore simulation start events."""
-        del simulation
-
-    def simulation_finished(self, simulation: Simulation) -> None:
-        """Ignore simulation finish events."""
-        del simulation
-
-    def refresh(self) -> None:
-        """Ignore refresh requests."""
-
-    def close(self) -> None:
-        """Ignore cleanup requests."""
-
-
-# -----------------------------------------------------------------
-# Terminal Display
-# -----------------------------------------------------------------
-class Display:
-    """Live terminal view of currently running simulations.
-
-    The manager's reader thread drives every redraw, so the live region never
-    refreshes on a timer of its own. Each status line uses a coherent simulation
-    snapshot and renders after releasing the simulation's lock.
+def render(sim: Simulation) -> Text:
+    """Render one simulation as one line.
 
     Parameters
     ----------
-    refresh_interval : float, optional
-        Minimum time in seconds between live region redraws. Must be positive.
+    sim : Simulation
+        Simulation to render; values not reported yet render as placeholders.
+
+    Returns
+    -------
+    Text
+        ID, name, status, log counts, elapsed time, ETA and progress bar; final statuses are coloured.
     """
+    name = sim.label or str(sim.deck_file)
+    percent = sim.percent or 0.0
+    filled = min(max(int(_BAR_WIDTH * percent), 0), _BAR_WIDTH)
+    bar = "[" + "#" * filled + "-" * (_BAR_WIDTH - filled) + "]"
+    sim_time = (
+        "- / -" if sim.sim_time is None or sim.stop_time is None else f"{sim.sim_time:6,.0f} / {sim.stop_time:6,.0f}"
+    )
+    sim_percent = "" if sim.percent is None else f"({percent:.0%})"
+    status = sim.status or sim.state
+    logs = f"N:{sim.notices} W:{sim.warnings} F:{sim.fatals}"
+    return Text.assemble(
+        f"[{sim.sim_id}] {_truncate_left(name, _NAME_WIDTH)} | Status: ",
+        (f"{status:<10}", _STATUS_STYLES.get(sim.status, "") if sim.status is not None else ""),
+        f" | Logs: {logs:<12} | Elapsed: {_duration(_elapsed_ms(sim)):<8} | ETA: {_duration(sim.eta_ms):<8}",
+        f" | {bar} {sim_time} {sim_percent:6}",
+    )
 
-    def __init__(self, refresh_interval: float = 1.0) -> None:
-        if refresh_interval <= 0:
-            raise ValueError("refresh_interval must be positive")
 
-        self.console: Console = Console()
+class _TerminalOutput:
+    """Transient Rich live region, started on demand and stopped when empty; printed lines go above it."""
 
-        self._active: dict[int, Simulation] = {}
-        self._refresh_interval: float = refresh_interval
-        self._last_refresh: float = 0.0
+    def __init__(self, console: Console) -> None:
+        """Draw on ``console``; nothing shows until the first line."""
+        self._console: Console = console
         self._live: Live | None = None
 
-    # -----------------------------------------------------------------
-    # Event Handlers
-    # -----------------------------------------------------------------
-    def simulation_started(self, simulation: Simulation) -> None:
-        """Add a simulation to the live display."""
-        self._active[simulation.id] = simulation
-
-        if self._live is None:
-            live = self._make_live()
-            live.start()
-            self._live = live
-
-    def simulation_finished(self, simulation: Simulation) -> None:
-        """Remove a simulation and print its final state."""
-        _ = self._active.pop(simulation.id, None)
-
-        self.console.print(_render_line(simulation))
-
-        if not self._active:
+    def show(self, lines: Sequence[Text]) -> None:
+        """Redraw the live region, starting it on demand and stopping it when empty."""
+        if not lines:
             self.close()
+            return
+        group = Group(*lines)
+        if self._live is None:
+            self._live = Live(group, console=self._console, auto_refresh=False, transient=True)
+            self._live.start(refresh=True)
+        else:
+            self._live.update(group, refresh=True)
+
+    def print(self, line: Text) -> None:
+        """Print a line above the live region."""
+        self._console.print(line)
 
     def close(self) -> None:
-        """Stop the live region without printing results or changing simulations."""
-        self._active.clear()
+        """Stop and erase the live region; printed lines stay."""
         if self._live is not None:
             live, self._live = self._live, None
             live.stop()
 
-    def refresh(self) -> None:
-        """Redraw the live region, at most once per refresh interval."""
-        if self._live is None:
-            return
 
-        now = time.monotonic()
-        if now - self._last_refresh < self._refresh_interval:
-            return
+class _DisplayHandle(Protocol):
+    """The part of IPython's untyped ``DisplayHandle`` used here."""
 
-        self._last_refresh = now
-        self._live.refresh()
+    def display(self, obj: object) -> object:
+        """Publish ``obj`` as a new output area."""
 
-    # -----------------------------------------------------------------
-    # Rendering
-    # -----------------------------------------------------------------
-    def _make_live(self) -> Live:
-        """Build a fresh transient live display the manager refreshes itself."""
-        return Live(
-            get_renderable=self._render_all,
-            console=self.console,
-            auto_refresh=False,
-            transient=True,
-        )
-
-    def _render_all(self) -> Group:
-        """Render all active simulations."""
-        return Group(*(_render_line(sim) for sim in self._active.values()))
+    def update(self, obj: object) -> None:
+        """Replace the output area with ``obj``."""
 
 
-# -----------------------------------------------------------------
-# Notebook Display
-# -----------------------------------------------------------------
-class NotebookDisplay:
-    """Notebook view with one live region for active simulations.
+class _NotebookOutput:
+    """One HTML output area, replaced in place; printed lines go to stdout with ANSI colours.
 
-    Each completed result is printed once to stdout with ANSI status colours,
-    never included in subsequent refreshes. Starts and
-    completions update immediately; ordinary updates are throttled by
-    ``refresh_interval`` and unchanged frames are not published. Rich exports
-    unwrapped status lines as HTML without widgets.
+    Rich's own live display needs ipywidgets in Jupyter, so the lines are
+    exported as HTML instead. Unchanged frames are not published.
     """
 
-    def __init__(self, refresh_interval: float = 1.0) -> None:
-        if refresh_interval <= 0:
-            raise ValueError("refresh_interval must be positive")
+    def __init__(self) -> None:
+        """Prepare the output area; it is published with the first line."""
+        from IPython.display import HTML, DisplayHandle  # noqa: PLC0415 - not a dependency outside notebooks
 
-        html, display_html = _load_notebook_api()
-        self._html: Callable[[str], object] = html
-        self._display_html: Callable[..., object] = display_html
-        self._completed_console: Console = Console(
-            force_jupyter=False,
-            force_terminal=True,
-            color_system="standard",
-        )
-        self._active: dict[int, Simulation] = {}
-
-        self._refresh_interval: float = refresh_interval
-        self._last_refresh: float = 0.0
+        self._html: type[HTML] = HTML
+        self._new_handle: Callable[[], _DisplayHandle] = DisplayHandle
+        self._printer: Console = Console(force_jupyter=False, force_terminal=True, color_system="standard")
         self._handle: _DisplayHandle | None = None
         self._last_html: str | None = None
 
-    def simulation_started(self, simulation: Simulation) -> None:
-        """Add a simulation and show it immediately."""
-        self._active[simulation.id] = simulation
-        self._update()
+    def show(self, lines: Sequence[Text]) -> None:
+        """Replace the output area, publishing it on first use."""
+        if self._handle is None and not lines:
+            return
+        # A fresh, private console per frame keeps buffers bounded and bypasses Rich's Jupyter output.
+        frame = Console(file=StringIO(), record=True, force_jupyter=False, color_system=None)
+        frame.print(Group(*lines), soft_wrap=True)
+        html = frame.export_html(inline_styles=True, code_format=_NOTEBOOK_FRAME)
+        if html == self._last_html:
+            return
+        if self._handle is None:
+            self._handle = self._new_handle()
+            _ = self._handle.display(self._html(html))
+        else:
+            self._handle.update(self._html(html))
+        self._last_html = html
 
-    def simulation_finished(self, simulation: Simulation) -> None:
-        """Print a final line to stdout, then remove it from the live region."""
-        _ = self._active.pop(simulation.id, None)
-        self._completed_console.print(_render_line(simulation), soft_wrap=True)
-        self._update()
+    def print(self, line: Text) -> None:
+        """Print a line to stdout."""
+        self._printer.print(line, soft_wrap=True)
 
     def close(self) -> None:
-        """Release tracking and the handle without publishing or completing simulations."""
-        self._active.clear()
+        """Release the output area without publishing; the next frame starts a new one."""
         self._handle = None
         self._last_html = None
 
-    def refresh(self) -> None:
-        """Update active progress at most once per refresh interval."""
-        if not self._active:
-            return
 
-        now = time.monotonic()
-        if now - self._last_refresh < self._refresh_interval:
-            return
-        self._update(now)
+class Display:
+    """Live lines of running simulations; finished ones are printed above them, once.
 
-    def _update(self, now: float | None = None) -> None:
-        """Replace only active output, leaving completed output untouched."""
-        if self._handle is None and not self._active:
-            return
+    A Jupyter console, the default inside a notebook, gets an in-place HTML
+    output area instead of a Rich live region.
+    """
 
-        html = self._render_html(self._active.values())
-        if html != self._last_html:
-            rendered = self._html(html)
-            if self._handle is None:
-                handle = self._display_html(rendered, display_id=True)
-                if handle is None or not hasattr(handle, "update"):
-                    raise RuntimeError("IPython did not return a display handle")
-                self._handle = cast("_DisplayHandle", handle)
-            else:
-                self._handle.update(rendered)
-            self._last_html = html
-        self._last_refresh = time.monotonic() if now is None else now
+    def __init__(self, console: Console | None = None) -> None:
+        """Prepare the display; nothing shows until the first update.
 
-    @staticmethod
-    def _render_html(simulations: Iterable[Simulation]) -> str:
-        """Export only the supplied simulations as a Rich HTML fragment."""
-        lines = [_render_line(simulation) for simulation in simulations]
-        if not lines:
-            return ""
-
-        # A fresh, private console keeps frame buffers bounded and bypasses Rich's
-        # Jupyter output hook; publishing is handled explicitly by the caller.
-        console = Console(file=StringIO(), record=True, force_jupyter=False, color_system=None)
-        console.print(Group(*lines), soft_wrap=True)
-        return console.export_html(
-            inline_styles=True,
-            code_format=(
-                '<pre style="margin:0;white-space:pre;overflow-x:auto;line-height:1.3;'
-                'font-family:monospace;color:inherit;background:transparent">{code}</pre>'
-            ),
+        Parameters
+        ----------
+        console : Console, optional
+            Console to draw on, a new one by default; a Jupyter console gets the HTML output area.
+        """
+        console = console or Console()
+        self._output: _TerminalOutput | _NotebookOutput = (
+            _NotebookOutput() if console.is_jupyter else _TerminalOutput(console)
         )
 
+    def update(self, running: list[Simulation], finished: list[Simulation]) -> None:
+        """Print the newly finished simulations, then redraw the running ones.
 
-def create_display(refresh_interval: float) -> DisplayCallback:
-    """Select the environment-appropriate display without eagerly importing IPython."""
-    if refresh_interval <= 0:
-        return NullDisplay()
-    if _in_notebook_kernel():
-        return NotebookDisplay(refresh_interval=refresh_interval)
-    return Display(refresh_interval=refresh_interval)
+        Parameters
+        ----------
+        running : list of Simulation
+            Simulations shown as live lines; they replace the previous ones.
+        finished : list of Simulation
+            Simulations printed once above the live lines; pass each only once.
+        """
+        for sim in finished:
+            self._output.print(render(sim))
+        self._output.show([render(sim) for sim in running])
+
+    def close(self) -> None:
+        """Erase the live lines; printed lines stay."""
+        self._output.close()
