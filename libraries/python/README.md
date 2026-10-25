@@ -23,8 +23,10 @@ with Daemon(workers=4) as daemon:
     running = daemon.simulations("RUNNING")  # without logs unless with_logs=True
     daemon.cancel(sim_id)                    # QUEUED or RUNNING only
     daemon.release(sim_id)                   # FINISHED only: trnrund forgets it
-    daemon.request({"cmd": "ready"})         # any raw request, raw dict response
 ```
+
+`request(dict)` sends any raw trnrund request and returns its raw response
+dict, for anything the typed methods don't cover.
 
 `Simulation` is a dataclass of trnrund's
 [simulation fields](https://github.com/NRCan/TRNRun/tree/main/components/trnrund#simulation-fields)

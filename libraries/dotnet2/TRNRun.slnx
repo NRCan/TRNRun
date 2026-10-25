@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/TRNRun/TRNRun.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/TRNRun.Tests/TRNRun.Tests.csproj" />
+    <Project Path="tests/TRNRun.FakeTrnrun/TRNRun.FakeTrnrun.csproj" />
+  </Folder>
+</Solution>
