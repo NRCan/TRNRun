@@ -14,7 +14,7 @@ if (args.Length > 1)
 }
 
 // Has Type3830, which WatchTmp needs to report progress.
-string deck = Path.Combine(AppContext.BaseDirectory, "dck", "example_wo_plot_w_tracking.dck");
+string deck = Path.Combine(AppContext.BaseDirectory, "dck", "slow_wo_plot_w_tracking.dck");
 
 using var cancel = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) =>

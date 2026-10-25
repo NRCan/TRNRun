@@ -5,7 +5,7 @@ from pathlib import Path
 
 from trnrun import Daemon, SimulationSettings
 
-DECK = Path(__file__).resolve().parent / "dck" / "example_wo_plot_w_tracking.dck"
+DECK = Path(__file__).resolve().parents[3] / "decks" / "slow_wo_plot_w_tracking.dck"
 SETTINGS = SimulationSettings(trnexe_path=r"C:\TRNSYS18\Exe\TrnEXE64.exe", watch_tmp=True)
 
 

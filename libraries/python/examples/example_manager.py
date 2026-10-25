@@ -6,7 +6,7 @@ from pathlib import Path
 from trnrun import SimulationManager, SimulationSettings
 
 HERE = Path(__file__).resolve().parent
-MASTER_DCK = HERE / "dck" / "example_wo_plot_w_tracking.dck"
+MASTER_DCK = HERE.parents[2] / "decks" / "slow_wo_plot_w_tracking.dck"
 SETTINGS = SimulationSettings(trnexe_path=r"C:\TRNSYS18\Exe\TrnEXE64.exe", watch_tmp=True)
 
 runs = HERE / "runs"

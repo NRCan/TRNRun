@@ -497,7 +497,7 @@ while (remaining > 0)
 
 Runnable examples are available in the
 [TRNRun repository](https://github.com/NRCan/TRNRun/tree/main/libraries/dotnet/examples).
-Every example runs `examples/dck/example_wo_plot_w_tracking.dck`, which has
+Every example runs the repository's `decks/slow_wo_plot_w_tracking.dck`, which has
 Type3830 for progress and no plotter, copied beside the example's executable so
 TRNSYS writes its outputs there. Run from this directory; the TrnEXE path is
 optional and defaults to `C:\TRNSYS18\Exe\TrnEXE64.exe`:

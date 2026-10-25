@@ -5,7 +5,7 @@ $SubmissionIntervalSeconds = 2
 $QueueRoot = Split-Path -Path $PSScriptRoot -Parent
 $QueuePath = Join-Path $QueueRoot 'build\trnrunq.exe'
 $RunnerPath = Join-Path $QueueRoot '..\trnrun\build\trnrun.exe'
-$SourceDeck = Join-Path $PSScriptRoot 'dck\example_wo_plot_w_tracking.dck'
+$SourceDeck = Join-Path $QueueRoot '..\..\decks\slow_wo_plot_w_tracking.dck'
 $RunDirectory = Join-Path ([IO.Path]::GetTempPath()) "trnrunq-example-$PID"
 
 $QueuePath, $RunnerPath, $SourceDeck | ForEach-Object {

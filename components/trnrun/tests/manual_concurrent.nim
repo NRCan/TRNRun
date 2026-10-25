@@ -7,7 +7,7 @@
 import std/[os, osproc, strformat, streams, strutils]
 
 const
-  DeckFilename = "test_slow_wo_plot_w_tracking.dck"
+  DeckFilename = "slow_wo_plot_w_tracking.dck"
   CopyCount = 50
   RemoveStagedCopies = false
   CliOptions = [
@@ -39,7 +39,7 @@ proc forwardOutputLine(run: SimulationRun) =
 let
   testsDirectory = currentSourcePath().parentDir()
   executablePath = testsDirectory.parentDir() / "build" / "trnrun.exe"
-  sourceDeck = testsDirectory / "dck" / DeckFilename
+  sourceDeck = testsDirectory / "../../../decks" / DeckFilename
   stagingDirectory = testsDirectory / "runs"
 
 if not fileExists(executablePath):

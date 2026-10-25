@@ -49,7 +49,7 @@ public partial class MainWindow : Window
         }
 
         _polling = PollAsync(_daemon);
-        await AddAsync(_daemon, [Path.Combine(AppContext.BaseDirectory, "dck", "example_wo_plot_w_tracking.dck")]);
+        await AddAsync(_daemon, [Path.Combine(AppContext.BaseDirectory, "dck", "slow_wo_plot_w_tracking.dck")]);
     }
 
     /// <summary>Copies every run's latest snapshot into the table twice a second, until the window closes or trnrund stops.</summary>

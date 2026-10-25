@@ -38,7 +38,7 @@ from trnrun import (
 HERE = Path(__file__).resolve().parent
 
 TRNEXE_PATH = Path(r"C:\TRNSYS18\Exe\TrnEXE64.exe")
-MASTER_DCK = HERE / "dck" / "example_wo_plot_w_tracking.dck"
+MASTER_DCK = HERE.parents[2] / "decks" / "slow_wo_plot_w_tracking.dck"
 DCK_FOLDER = HERE / "runs"
 
 SIM_COUNT = 10

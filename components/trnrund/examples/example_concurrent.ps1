@@ -7,7 +7,7 @@ $PollSeconds = 1
 $DaemonRoot = Split-Path -Path $PSScriptRoot -Parent
 $DaemonPath = Join-Path $DaemonRoot 'build\trnrund.exe'
 $RunnerPath = Join-Path $DaemonRoot '..\trnrun\build\trnrun.exe'
-$SourceDeck = Join-Path $PSScriptRoot 'dck\example_wo_plot_w_tracking.dck'
+$SourceDeck = Join-Path $DaemonRoot '..\..\decks\slow_wo_plot_w_tracking.dck'
 $RunDirectory = Join-Path ([IO.Path]::GetTempPath()) "trnrund-example-$PID"
 
 $DaemonPath, $RunnerPath, $SourceDeck | ForEach-Object {

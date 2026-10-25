@@ -13,7 +13,7 @@ if (args.Length > 2 || (args.Length >= 1 && (!int.TryParse(args[0], out workers)
 }
 
 // One copy per run: TRNSYS writes its outputs beside the deck, under its name, so concurrent runs need distinct decks.
-string master = Path.Combine(AppContext.BaseDirectory, "dck", "example_wo_plot_w_tracking.dck");
+string master = Path.Combine(AppContext.BaseDirectory, "dck", "slow_wo_plot_w_tracking.dck");
 string runs = Directory.CreateDirectory(Path.Combine(AppContext.BaseDirectory, "runs")).FullName;
 string[] decks = Enumerable.Range(1, 10)
     .Select(i => Path.Combine(runs, $"{Path.GetFileNameWithoutExtension(master)}_{i:000}.dck"))

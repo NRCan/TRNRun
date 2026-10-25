@@ -15,7 +15,7 @@ import std/[json, monotimes, os, osproc, streams, strutils, tables, terminal, ti
 
 # Manual-run configuration.
 const
-  DeckFilename = "example_wo_plot_w_tracking.dck"
+  DeckFilename = "slow_wo_plot_w_tracking.dck"
   CopyCount = 50
   Workers = 25
   PollMs = 500
@@ -160,7 +160,7 @@ proc main(): int =
     componentsDirectory = daemonRoot.parentDir()
     daemonExecutable = daemonRoot / "build" / "trnrund.exe"
     runnerExecutable = componentsDirectory / "trnrun" / "build" / "trnrun.exe"
-    sourceDeck = daemonRoot / "examples" / "dck" / DeckFilename
+    sourceDeck = componentsDirectory.parentDir() / "decks" / DeckFilename
     stagingDirectory = getTempDir() / ("trnrund_manual_daemon_" & $getCurrentProcessId())
 
   for executable in [daemonExecutable, runnerExecutable, TrnexePath]:

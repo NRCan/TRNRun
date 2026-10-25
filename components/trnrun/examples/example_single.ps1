@@ -1,6 +1,6 @@
 $RunnerRoot = Split-Path -Path $PSScriptRoot -Parent
 $ExecutablePath = Join-Path $RunnerRoot 'build\trnrun.exe'
-$DeckFile = Join-Path $PSScriptRoot 'dck\example_wo_plot_w_tracking.dck'
+$DeckFile = Join-Path $PSScriptRoot '..\..\..\decks\slow_wo_plot_w_tracking.dck'
 
 if (-not (Test-Path -LiteralPath $ExecutablePath)) {
     throw "trnrun.exe not found at $ExecutablePath"

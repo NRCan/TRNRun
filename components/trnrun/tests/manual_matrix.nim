@@ -100,12 +100,12 @@ proc runRunner(
 proc requiredDecks(testsDirectory: string): seq[string] =
   result = @[]
   for filename in [
-    "test_fast_wo_plot_wo_tracking.dck",
-    "test_fast_wo_plot_w_tracking.dck",
-    "test_fast_w_plot_wo_tracking.dck",
-    "test_fast_w_plot_w_tracking.dck",
+    "fast_wo_plot_wo_tracking.dck",
+    "fast_wo_plot_w_tracking.dck",
+    "fast_w_plot_wo_tracking.dck",
+    "fast_w_plot_w_tracking.dck",
   ]:
-    let path = testsDirectory / "dck" / filename
+    let path = testsDirectory / "../../../decks" / filename
     if not fileExists(path):
       raise newException(IOError, "Required deck file not found: " & path)
     result.add(path.absolutePath().normalizedPath())

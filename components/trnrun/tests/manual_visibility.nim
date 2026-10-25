@@ -13,7 +13,7 @@ import std/[monotimes, os, osproc, strutils, terminal, times]
 
 # Manual-run configuration. Edit these values to try a different runner setup.
 const
-  DeckFilenames = ["test_slow_wo_plot_w_tracking.dck", "test_slow_w_plot_w_tracking.dck"]
+  DeckFilenames = ["slow_wo_plot_w_tracking.dck", "slow_w_plot_w_tracking.dck"]
   TrnexePath = r"C:\TRNSYS18\Exe\TrnEXE64.exe"
   GuiVisibilities = ["keepOpen", "autoClose", "minimized", "minimizedAuto", "hidden"]
   WaitForGui = true
@@ -131,7 +131,7 @@ proc main(): int =
 
   var deckFiles: seq[string] = @[]
   for deckFilename in DeckFilenames:
-    let deckFile = (testsDirectory / "dck" / deckFilename).absolutePath().normalizedPath()
+    let deckFile = (testsDirectory / "../../../decks" / deckFilename).absolutePath().normalizedPath()
     if not fileExists(deckFile):
       styledWriteLine(stdout, fgRed, "ERROR: Deck file not found at " & deckFile)
       return 1

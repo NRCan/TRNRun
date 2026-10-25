@@ -3,7 +3,7 @@
 
   <!-- The deck every example runs, copied beside each one so TRNSYS writes its outputs there, not in the source tree. -->
   <ItemGroup>
-    <None Include="$(MSBuildThisFileDirectory)dck/example_wo_plot_w_tracking.dck" Link="dck/example_wo_plot_w_tracking.dck"
+    <None Include="$(MSBuildThisFileDirectory)../../../decks/slow_wo_plot_w_tracking.dck" Link="dck/slow_wo_plot_w_tracking.dck"
           CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

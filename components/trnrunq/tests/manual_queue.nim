@@ -13,7 +13,7 @@ import std/[json, monotimes, os, osproc, streams, strutils, tables, terminal, ti
 
 # Manual-run configuration.
 const
-  DeckFilename = "test_slow_wo_plot_w_tracking.dck"
+  DeckFilename = "slow_wo_plot_w_tracking.dck"
   CopyCount = 50
   MaxConcurrent = 5
   BackpressureThresholdMs = 100'i64
@@ -215,7 +215,7 @@ proc main(): int =
     componentsDirectory = queueRoot.parentDir()
     queueExecutable = queueRoot / "build" / "trnrunq.exe"
     runnerExecutable = componentsDirectory / "trnrun" / "build" / "trnrun.exe"
-    sourceDeck = testsDirectory / "dck" / DeckFilename
+    sourceDeck = componentsDirectory.parentDir() / "decks" / DeckFilename
     stagingDirectory = testsDirectory / "runs" /
       ("manual_queue_" & $getCurrentProcessId())
 

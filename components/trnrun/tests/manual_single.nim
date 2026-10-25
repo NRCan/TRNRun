@@ -9,7 +9,7 @@ import std/[monotimes, os, osproc, strutils, terminal, times]
 
 # Manual-run configuration. Edit these values to try a different runner setup.
 const
-  DeckFilename = "test_slow_wo_plot_w_tracking.dck"
+  DeckFilename = "slow_wo_plot_w_tracking.dck"
   TrnexePath = r"C:\TRNSYS18\Exe\TrnEXE64.exe"
   GuiVisibility = "auto"
   WaitForGui = true
@@ -53,7 +53,7 @@ proc main(): int =
     testsDirectory = currentSourcePath().parentDir()
     runnerRoot = testsDirectory.parentDir()
     executable = runnerRoot / "build" / "trnrun.exe"
-    deckFile = testsDirectory / "dck" / DeckFilename
+    deckFile = testsDirectory / "../../../decks" / DeckFilename
 
   if not fileExists(executable):
     styledWriteLine(stdout, fgRed, "ERROR: Executable not found at " & executable)

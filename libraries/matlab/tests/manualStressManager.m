@@ -22,10 +22,9 @@ function exitCode = manualStressManager()
     % Configuration
     % -------------------------------------------------------------------------
     trnexe_path = "C:\TRNSYS18\Exe\TrnEXE64.exe";
-    fast_dck = fullfile(tests_folder, "dck", ...
-        "test_fast_wo_plot_w_tracking.dck");
-    slow_dck = fullfile(tests_folder, "dck", ...
-        "test_slow_wo_plot_w_tracking.dck");
+    decks_folder = fullfile(matlab_folder, "..", "..", "decks");
+    fast_dck = fullfile(decks_folder, "fast_wo_plot_w_tracking.dck");
+    slow_dck = fullfile(decks_folder, "slow_wo_plot_w_tracking.dck");
     dck_folder = fullfile(tests_folder, "runs");
 
     fast_sim_count = 100;

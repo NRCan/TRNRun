@@ -68,7 +68,7 @@ public partial class MainWindow : Window
     /// <summary>Copies the example deck <paramref name="count"/> times into runs/ beside the application, one per run, since TRNSYS writes its outputs beside the deck.</summary>
     private static string[] CopyExampleDeck(int count)
     {
-        string master = Path.Combine(AppContext.BaseDirectory, "dck", "example_wo_plot_w_tracking.dck");
+        string master = Path.Combine(AppContext.BaseDirectory, "dck", "slow_wo_plot_w_tracking.dck");
         string runs = Directory.CreateDirectory(Path.Combine(AppContext.BaseDirectory, "runs")).FullName;
         string[] decks = Enumerable.Range(1, count)
             .Select(i => Path.Combine(runs, $"{Path.GetFileNameWithoutExtension(master)}_{i:000}.dck"))

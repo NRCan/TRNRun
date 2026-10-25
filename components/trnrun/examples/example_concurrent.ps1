@@ -1,16 +1,16 @@
 $RunnerRoot = Split-Path -Path $PSScriptRoot -Parent
 $ExecutablePath = Join-Path $RunnerRoot 'build\trnrun.exe'
-$DeckDirectory = Join-Path $PSScriptRoot 'dck'
+$DeckDirectory = Join-Path $PSScriptRoot '..\..\..\decks'
 
 if (-not (Test-Path -LiteralPath $ExecutablePath)) {
     throw "trnrun.exe not found at $ExecutablePath"
 }
 
 $DeckFiles = @(
-    'example_wo_plot_wo_tracking.dck'
-    'example_wo_plot_w_tracking.dck'
-    'example_w_plot_wo_tracking.dck'
-    'example_w_plot_w_tracking.dck'
+    'slow_wo_plot_wo_tracking.dck'
+    'slow_wo_plot_w_tracking.dck'
+    'slow_w_plot_wo_tracking.dck'
+    'slow_w_plot_w_tracking.dck'
 ) | ForEach-Object { Join-Path $DeckDirectory $_ }
 
 $Worker = {

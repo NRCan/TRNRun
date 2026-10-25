@@ -16,7 +16,7 @@ const
   buildDir = "build"
   cacheDir = buildDir & "/nimcache"
   distDir = "dist"
-  resourceScript = exeName & ".rc"
+  resourceScript = "../../assets/trnrun.rc"
   iconFile = "../../assets/trnrun-mark.ico"
   matlabBinDir = "../../libraries/matlab/toolbox/bin"
   pythonBinDir = "../../libraries/python/trnrun/bin"

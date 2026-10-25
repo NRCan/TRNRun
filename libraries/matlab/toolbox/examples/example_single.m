@@ -8,7 +8,7 @@ function simulation = example_single()
     addpath(fileparts(example_folder))
     import trnrun.*
 
-    deck_file = fullfile(example_folder, "dck", "example_wo_plot_w_tracking.dck");
+    deck_file = fullfile(example_folder, "dck", "slow_wo_plot_w_tracking.dck");
 
     config = SimulationConfig(watch_tmp=true);
     manager = SimulationManager(maxConcurrent=1, refreshInterval=0.1);

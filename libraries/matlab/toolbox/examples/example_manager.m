@@ -12,7 +12,7 @@ function simulations = example_manager()
     % Configuration
     % -------------------------------------------------------------------------
     trnexe_path = "C:\TRNSYS18\Exe\TrnEXE64.exe";
-    master_dck = fullfile(example_folder, "dck", "example_wo_plot_w_tracking.dck");
+    master_dck = fullfile(example_folder, "dck", "slow_wo_plot_w_tracking.dck");
     dck_folder = fullfile(example_folder, "runs");
 
     sim_count = 20;
