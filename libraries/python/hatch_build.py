@@ -10,22 +10,7 @@ class CustomBuildHook(BuildHookInterface):
     """Validate native executables included in Windows wheels."""
 
     def initialize(self, version: str, build_data: dict[str, object]) -> None:
-        """Validate bundled executables and configure the wheel tag.
-
-        Parameters
-        ----------
-        version : str
-            Build version, such as ``standard`` or ``editable``; an editable build is not checked.
-        build_data : dict
-            Hatch build data, updated with the platform tag.
-
-        Raises
-        ------
-        FileNotFoundError
-            If ``trnrun.exe`` or ``trnrund.exe`` is missing from ``trnrun/bin``.
-        ValueError
-            If an executable's ``--version`` differs from the package version.
-        """
+        """Validate bundled executables and configure the wheel tag."""
         if version == "editable":
             return
 
@@ -50,8 +35,8 @@ class CustomBuildHook(BuildHookInterface):
 
             if executable_version != package_version:
                 raise ValueError(
-                    f"{executable.name} version "
-                    f"{executable_version!r} does not match package "
+                    f"{executable.name} version ",
+                    f"{executable_version!r} does not match package ",
                     f"version {package_version!r}",
                 )
 
