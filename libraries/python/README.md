@@ -21,7 +21,7 @@ with Daemon(workers=4) as daemon:
     sim_id = daemon.add("building-a.dck", SimulationSettings(gui_visibility="min"), label="a")
     sim = daemon.simulation(sim_id)          # Simulation(sim_id=1, deck='building-a.dck', state=QUEUED, ...)
     running = daemon.simulations("RUNNING")  # without logs unless with_logs=True
-    daemon.cancel(sim_id)                    # QUEUED or RUNNING only
+    daemon.cancel(sim_id)                    # a FINISHED one is left unchanged
     daemon.release(sim_id)                   # FINISHED only: trnrund forgets it
 ```
 
@@ -45,7 +45,7 @@ Requests are thread-safe: they take turns. Closing, or leaving the `with`
 block, kills every unfinished run.
 
 Errors: `RequestError` when trnrund refuses a request (missing deck, unknown
-`simId`, cancelling a finished run...), `DaemonExitedError` when it no longer
+`simId`, releasing an unfinished run...), `DaemonExitedError` when it no longer
 answers. Both subclass `TrnrunError`.
 
 ## SimulationManager

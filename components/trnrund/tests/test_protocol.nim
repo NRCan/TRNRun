@@ -121,12 +121,12 @@ suite "protocol":
     check request(%*{"cmd": "add", "deckFile": deckFile, "trnrunArgs": ["--bogus:1"]}).rejects(
       "Unknown option in trnrunArgs: 'bogus'")
 
-  test "cancel answers true once cancelled, then refuses":
+  test "cancel answers true once cancelled, and again once finished":
     let simId = add(createDeck(dir, "wait-e.dck"))
     check request(%*{"cmd": "cancel", "simId": simId}) == %*{"ok": true}
     check simulation(simId)["trnrunStatus"].getStr() == "CANCELLED"
-    check request(%*{"cmd": "cancel", "simId": simId}).rejects(
-      "Cannot cancel simulation " & $simId & ": it is FINISHED")
+    check request(%*{"cmd": "cancel", "simId": simId}) == %*{"ok": true}
+    check simulation(simId)["error"].getStr() == "Interrupted: cancelled by the client"
 
   test "release refuses an unfinished simulation, then forgets a finished one":
     let simId = add(createDeck(dir, "wait-f.dck"))

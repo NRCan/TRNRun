@@ -112,15 +112,18 @@ proc update*(self: var Scheduler) =
   self.startQueued()
 
 proc cancel*(self: var Scheduler, simId: int): bool =
-  ## Cancels a queued or running simulation; false if it is unknown or already finished.
+  ## Cancels a queued or running simulation; false if it is unknown.
   ##
   ## A running simulation has its TRNRun killed, its last output recorded, and
   ## is reported as interrupted. A queued one leaves the queue and is reported
   ## as not started. Both end `FINISHED` with status `CANCELLED`, and the freed
-  ## worker starts the next queued simulation. Raises `OSError` if TRNRun
-  ## cannot be killed, which leaves the simulation running.
-  if simId notin self.simulations or self.simulations[simId].state == ssFinished:
+  ## worker starts the next queued simulation. An already finished one is left
+  ## unchanged, so a client racing the finish does not see a refusal. Raises
+  ## `OSError` if TRNRun cannot be killed, which leaves the simulation running.
+  if simId notin self.simulations:
     return false
+  if self.simulations[simId].state == ssFinished:
+    return true
   if simId in self.running:
     self.running[simId].kill()
     self.dropTrnrun(simId)

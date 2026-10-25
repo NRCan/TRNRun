@@ -155,10 +155,10 @@ suite "scheduler":
     check scheduler.stateOf(queued) == ssRunning
     check scheduler.stateOf(other) == ssRunning
 
-  test "cannot cancel a finished or unknown simulation":
+  test "cancelling a finished simulation leaves it unchanged; an unknown one is refused":
     let simId = scheduler.add(createDeck(dir, "done-k.dck"))
     scheduler.waitUntil(scheduler.stateOf(simId) == ssFinished)
-    check not scheduler.cancel(simId)
+    check scheduler.cancel(simId)
     check scheduler.simulationOf(simId).trnrunStatus == some(stDone)
     check not scheduler.cancel(999)
 

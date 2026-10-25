@@ -104,15 +104,14 @@ def test_cancel_queued_and_running(deck: DeckWriter) -> None:
 
 
 def test_cancel_and_release_refuse_the_wrong_state(deck: DeckWriter) -> None:
-    """Cancel refuses a finished simulation, release an unfinished one, and both an unknown simId."""
+    """Release refuses an unfinished simulation, cancel leaves a finished one, and both refuse an unknown simId."""
     with Daemon(workers=1, trnrun_path=PYTHON) as daemon:
         sim_id = daemon.add(deck(gated=True))
         with pytest.raises(RequestError):
             daemon.release(sim_id)
         daemon.cancel(sim_id)
         _ = _wait_until(daemon, sim_id, SimulationState.FINISHED)
-        with pytest.raises(RequestError):
-            daemon.cancel(sim_id)
+        daemon.cancel(sim_id)
         daemon.release(sim_id)
         for request in (daemon.cancel, daemon.release, daemon.simulation):
             with pytest.raises(RequestError, match="Unknown simId"):

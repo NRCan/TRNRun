@@ -218,7 +218,7 @@ class Daemon:
         return [parse_simulation(sim) for sim in response["simulations"]]
 
     def cancel(self, sim_id: int) -> None:
-        """Stop a queued or running simulation; RequestError if it already finished."""
+        """Stop a queued or running simulation; one already finished is left unchanged."""
         _ = self.request({"cmd": "cancel", "simId": sim_id})
 
     def release(self, sim_id: int) -> None:

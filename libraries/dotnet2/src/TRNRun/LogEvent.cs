@@ -1,18 +1,18 @@
 namespace TRNRun;
 
-/// <summary>One TRNSYS log entry; the properties after <see cref="Time"/> are <see langword="null"/> unless TRNSYS attached them.</summary>
+/// <summary>One entry of the TRNSYS <c>.log</c> file; the nullable properties are <see langword="null"/> when TRNSYS left them out.</summary>
 public sealed record LogEvent
 {
     /// <summary>Severity of the entry.</summary>
     public required LogSeverity Severity { get; init; }
 
-    /// <summary>Simulation time of the entry, in simulated hours.</summary>
+    /// <summary>Simulated time of the entry, in hours.</summary>
     public required double Time { get; init; }
 
-    /// <summary>Unit that emitted the entry.</summary>
+    /// <summary>Number of the deck unit that logged it.</summary>
     public int? UnitId { get; init; }
 
-    /// <summary>Type of the unit that emitted the entry.</summary>
+    /// <summary>TRNSYS Type number of that unit.</summary>
     public int? TypeId { get; init; }
 
     /// <summary>TRNSYS message code.</summary>

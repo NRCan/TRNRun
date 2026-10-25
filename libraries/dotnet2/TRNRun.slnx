@@ -2,6 +2,12 @@
   <Folder Name="/src/">
     <Project Path="src/TRNRun/TRNRun.csproj" />
   </Folder>
+  <Folder Name="/examples/">
+    <Project Path="examples/TRNRun.Example/TRNRun.Example.csproj" />
+    <Project Path="examples/TRNRun.BatchExample/TRNRun.BatchExample.csproj" />
+    <Project Path="examples/TRNRun.GuiExample/TRNRun.GuiExample.csproj" />
+    <Project Path="examples/TRNRun.SimpleGuiExample/TRNRun.SimpleGuiExample.csproj" />
+  </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/TRNRun.Tests/TRNRun.Tests.csproj" />
     <Project Path="tests/TRNRun.FakeTrnrun/TRNRun.FakeTrnrun.csproj" />

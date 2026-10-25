@@ -207,7 +207,9 @@ Stops one `QUEUED` or `RUNNING` simulation.
 ```
 
 - **stdin**:
-  - `simId`: the simulation to stop. One that is `FINISHED` or unknown is
+  - `simId`: the simulation to stop. One already `FINISHED` is left unchanged
+    and still answered `ok`, so a client racing the finish needs no special
+    case; read its outcome with [`simulation`](#simulation). An unknown one is
     refused.
 - **stdout**: no fields besides `ok`.
 
