@@ -71,6 +71,17 @@ def test_add_passes_settings_as_trnrun_args(deck: DeckWriter) -> None:
     assert sim.trnrun_args == ["--watchTmp:true", "--severity:Fatal"]
 
 
+def test_add_takes_settings_as_keywords(deck: DeckWriter) -> None:
+    """Keyword options build the settings, override those passed, and an unknown one raises."""
+    with Daemon(trnrun_path=PYTHON) as daemon:
+        alone = daemon.simulation(daemon.add(deck(), watch_tmp=True))
+        merged = daemon.simulation(daemon.add(deck(), SimulationSettings(watch_tmp=True, poll_ms=10), poll_ms=20))
+        with pytest.raises(TypeError):
+            _ = daemon.add(deck(), watch_tmpp=True)
+    assert alone.trnrun_args == ["--watchTmp:true"]
+    assert merged.trnrun_args == ["--pollMs:20", "--watchTmp:true"]
+
+
 def test_add_refuses_a_bad_setting(deck: DeckWriter) -> None:
     """A value TRNRun would reject is refused by trnrund, before queuing."""
     with Daemon(trnrun_path=PYTHON) as daemon:

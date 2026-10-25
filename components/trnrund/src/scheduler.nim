@@ -92,11 +92,11 @@ proc `[]`*(self: Scheduler, simId: int): lent Simulation {.inline.} =
   ## The simulation `simId`, borrowed; `KeyError` unless `simId in self`.
   return self.simulations[simId]
 
-proc list*(self: Scheduler, state: SimulationState): seq[int] =
-  ## The simIds of every simulation not released yet that is in `state`, oldest first.
+proc list*(self: Scheduler, states: set[SimulationState]): seq[int] =
+  ## The simIds of every simulation not released yet that is in one of `states`, oldest first.
   result = @[]
   for simId, simulation in self.simulations:
-    if simulation.state == state:
+    if simulation.state in states:
       result.add(simId)
   result.sort()
 

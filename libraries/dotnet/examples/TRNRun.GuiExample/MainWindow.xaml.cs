@@ -1,5 +1,6 @@
 // Example: a window that runs decks through trnrund and shows their progress and logs live.
 // Usage: TRNRun.GuiExample [deck.dck | deck-directory]...
+// Without arguments, it runs 10 copies of the example deck.
 
 using System.Collections.ObjectModel;
 using System.ComponentModel;
@@ -10,23 +11,23 @@ using System.Windows.Controls;
 using System.Windows.Data;
 using System.Windows.Input;
 using System.Windows.Threading;
-using Microsoft.Data.Sqlite;
 using Microsoft.Win32;
 
 namespace TRNRun.GuiExample;
 
-/// <summary>Adds decks to one trnrund, then shows its runs and logs as it saves them; every daemon call is awaited on the UI thread.</summary>
+/// <summary>Adds decks to one trnrund, then polls its runs and logs; every daemon call is awaited on the UI thread.</summary>
 public partial class MainWindow : Window
 {
-    private readonly Dictionary<long, RunRow> _rows = [];
-    // Refreshes the running times between changes.
+    private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(500);
+
+    // Refreshes the running times between polls.
     private readonly DispatcherTimer _clock = new() { Interval = TimeSpan.FromMilliseconds(250) };
     private readonly ICollectionView _logView;
-    // Cancelled when the window closes, to stop following the daemon.
+    // Cancelled when the window closes, to stop polling the daemon.
     private readonly CancellationTokenSource _closing = new();
     private HashSet<long> _selected = [];
-    private Daemon? _daemon;
-    private Task? _following;
+    private TRNRunDaemon? _daemon;
+    private Task? _polling;
     private bool _adding;
     private bool _stopping;
 
@@ -38,14 +39,12 @@ public partial class MainWindow : Window
 
         TrnexeBox.Text = new[] { @"C:\TRNSYS18\Exe\TrnEXE64.exe", @"C:\TRNSYS17\Exe\TrnEXE64.exe" }
             .FirstOrDefault(File.Exists) ?? "";
-        DatabaseBox.Text = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "TRNRun", "runs.sqlite3");
         for (int count = 1; count <= Environment.ProcessorCount; count++)
         {
-            MaxConcurrentBox.Items.Add(count);
+            WorkersBox.Items.Add(count);
         }
 
-        MaxConcurrentBox.SelectedItem = Math.Max(Environment.ProcessorCount - 1, 1);
+        WorkersBox.SelectedItem = Math.Max(Environment.ProcessorCount - 1, 1);
 
         _logView = CollectionViewSource.GetDefaultView(Logs);
         _logView.Filter = ShowsLog;
@@ -53,20 +52,33 @@ public partial class MainWindow : Window
         Loaded += OnLoaded;
     }
 
-    /// <summary>This session's runs, in the order they were added.</summary>
+    /// <summary>The runs added in this window, in the order they were added.</summary>
     public ObservableCollection<RunRow> Runs { get; } = [];
 
-    /// <summary>This session's log entries, oldest first; the log table filters them.</summary>
+    /// <summary>Their log entries, oldest first per run; the log table filters them.</summary>
     public ObservableCollection<LogRow> Logs { get; } = [];
 
-    /// <summary>Adds the decks and deck directories given on the command line, if any.</summary>
+    /// <summary>Adds the decks and deck directories given on the command line, or else copies of the example deck.</summary>
     private async void OnLoaded(object sender, RoutedEventArgs e)
     {
         string[] paths = Environment.GetCommandLineArgs()[1..];
-        if (paths.Length > 0)
+        await AddAsync(paths.Length > 0 ? paths.SelectMany(DecksIn) : CopyExampleDeck(10));
+    }
+
+    /// <summary>Copies the example deck <paramref name="count"/> times into runs/ beside the application, one per run, since TRNSYS writes its outputs beside the deck.</summary>
+    private static string[] CopyExampleDeck(int count)
+    {
+        string master = Path.Combine(AppContext.BaseDirectory, "dck", "example_wo_plot_w_tracking.dck");
+        string runs = Directory.CreateDirectory(Path.Combine(AppContext.BaseDirectory, "runs")).FullName;
+        string[] decks = Enumerable.Range(1, count)
+            .Select(i => Path.Combine(runs, $"{Path.GetFileNameWithoutExtension(master)}_{i:000}.dck"))
+            .ToArray();
+        foreach (string deck in decks)
         {
-            await AddAsync(paths.SelectMany(DecksIn));
+            File.Copy(master, deck, overwrite: true);
         }
+
+        return decks;
     }
 
     /// <summary>Adds the decks picked in a file dialog.</summary>
@@ -119,12 +131,12 @@ public partial class MainWindow : Window
     /// <summary>Starts trnrund if needed, then submits each deck; reports the decks it refused.</summary>
     private async Task AddAsync(IEnumerable<string> paths)
     {
-        string[] decks = paths.ToArray();
         if (_adding)
         {
             return;
         }
 
+        string[] decks = paths.ToArray();
         if (decks.Length == 0)
         {
             ShowError("No decks", "There are no .dck files there.");
@@ -155,7 +167,7 @@ public partial class MainWindow : Window
         {
             // The window is closing.
         }
-        catch (Exception error) when (error is TrnrunException or IOException or TimeoutException)
+        catch (Exception error) when (error is TRNRunException or IOException)
         {
             ShowError("Could not add the decks", error.Message);
         }
@@ -184,59 +196,48 @@ public partial class MainWindow : Window
         };
     }
 
-    /// <summary>Starts and follows trnrund with the chosen database and concurrency, or returns <see langword="null"/> after reporting why not.</summary>
-    private async Task<Daemon?> StartDaemonAsync()
+    /// <summary>Starts and polls trnrund with the chosen number of workers, or returns <see langword="null"/> after reporting why not.</summary>
+    private async Task<TRNRunDaemon?> StartDaemonAsync()
     {
-        string database = DatabaseBox.Text.Trim();
-        var options = new DaemonOptions
-        {
-            DatabasePath = database.Length > 0 ? database : null,
-            MaxConcurrent = (int)MaxConcurrentBox.SelectedItem,
-        };
+        int workers = (int)WorkersBox.SelectedItem;
         SessionText.Text = "Starting trnrund…";
-        Daemon daemon;
+        TRNRunDaemon daemon;
         try
         {
-            if (options.DatabasePath is not null)
-            {
-                // trnrund creates the database but not its folder.
-                Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(options.DatabasePath))!);
-            }
-
-            daemon = await Daemon.StartAsync(options, _closing.Token);
+            daemon = await TRNRunDaemon.StartAsync(workers, cancellationToken: _closing.Token);
         }
-        catch (Exception error) when (error is TrnrunException or IOException or UnauthorizedAccessException or TimeoutException)
+        catch (Exception error) when (error is TRNRunException or IOException)
         {
             SessionText.Text = "trnrund is not running.";
             ShowError("Could not start trnrund", error.Message);
             return null;
         }
 
-        DatabaseBox.IsEnabled = false;
-        BrowseDatabaseButton.IsEnabled = false;
-        MaxConcurrentBox.IsEnabled = false;
-        SessionText.Text = $"Session {daemon.SessionId} · {daemon.DatabasePath}";
-        _following = FollowAsync(daemon, _closing.Token);
+        WorkersBox.IsEnabled = false;
+        SessionText.Text = $"trnrund running {workers} simulations at once";
+        _polling = PollAsync(daemon, _closing.Token);
         _clock.Start();
         return daemon;
     }
 
-    /// <summary>Submits each deck, returning a line for each one trnrund refused.</summary>
-    private async Task<List<string>> SubmitAsync(Daemon daemon, IEnumerable<string> decks, SimulationSettings settings)
+    /// <summary>Submits each deck and shows its row at once, returning a line for each deck trnrund refused.</summary>
+    private async Task<List<string>> SubmitAsync(TRNRunDaemon daemon, IEnumerable<string> decks, SimulationSettings settings)
     {
         var refused = new List<string>();
         foreach (string deck in decks)
         {
             try
             {
-                await daemon.AddAsync(deck, settings, Path.GetFileNameWithoutExtension(deck), _closing.Token);
+                long simId = await daemon.AddAsync(deck, settings, Path.GetFileNameWithoutExtension(deck), _closing.Token);
+                Runs.Add(new RunRow(await daemon.GetSimulationAsync(simId, cancellationToken: _closing.Token)));
             }
-            catch (RequestRejectedException error)
+            catch (RequestException error)
             {
                 refused.Add($"{Path.GetFileName(deck)}: {error.Message}");
             }
         }
 
+        UpdateSummary();
         return refused;
     }
 
@@ -248,26 +249,23 @@ public partial class MainWindow : Window
         AddFolderButton.IsEnabled = !adding;
     }
 
-    /// <summary>Shows what trnrund saves, as it saves it, until the window closes or trnrund stops.</summary>
-    private async Task FollowAsync(Daemon daemon, CancellationToken cancellationToken)
+    /// <summary>Refreshes the runs and their logs every <see cref="PollInterval"/>, until the window closes or trnrund stops.</summary>
+    private async Task PollAsync(TRNRunDaemon daemon, CancellationToken cancellationToken)
     {
         try
         {
-            // Only this session's runs are shown, even in a reused database.
-            await foreach (Changes changes in daemon.FollowAsync(cancellationToken))
+            while (true)
             {
-                Show(changes);
+                await Task.Delay(PollInterval, cancellationToken);
+                await RefreshAsync(daemon, cancellationToken);
                 UpdateSummary();
             }
-
-            _clock.Stop();
-            SessionText.Text = "trnrund stopped.";
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             // The window is closing.
         }
-        catch (Exception error) when (error is TrnrunException or SqliteException or InvalidDataException)
+        catch (TRNRunException error)
         {
             _clock.Stop();
             SessionText.Text = "trnrund stopped.";
@@ -275,42 +273,44 @@ public partial class MainWindow : Window
         }
     }
 
-    /// <summary>Refreshes the elapsed time of running runs between changes.</summary>
+    /// <summary>Updates the unfinished rows, reading a run's logs only when it has new ones; a finished row never changes again.</summary>
+    private async Task RefreshAsync(TRNRunDaemon daemon, CancellationToken cancellationToken)
+    {
+        // Two requests cover every unfinished run, without logs.
+        var unfinished = new Dictionary<long, Simulation>();
+        foreach (SimulationState state in new[] { SimulationState.Queued, SimulationState.Running })
+        {
+            foreach (Simulation sim in await daemon.GetSimulationsAsync(state, cancellationToken: cancellationToken))
+            {
+                unfinished[sim.SimId] = sim;
+            }
+        }
+
+        // A copy: decks added while this awaits add rows.
+        foreach (RunRow row in Runs.Where(row => !row.IsFinished).ToArray())
+        {
+            // Missing from both lists, it has finished (or moved on between the two requests): read it with its logs.
+            if (!unfinished.TryGetValue(row.SimId, out Simulation? sim) || sim.Notices + sim.Warnings + sim.Fatals > row.LogsShown)
+            {
+                sim = await daemon.GetSimulationAsync(row.SimId, withLogs: true, cancellationToken);
+                foreach (LogEvent log in sim.Logs.Skip(row.LogsShown))
+                {
+                    Logs.Add(new LogRow(log, row.SimId, row.Label));
+                }
+
+                row.LogsShown = sim.Logs.Count;
+            }
+
+            row.Update(sim);
+        }
+    }
+
+    /// <summary>Refreshes the elapsed time of running runs between polls.</summary>
     private void OnClockTick(object? sender, EventArgs e)
     {
         foreach (RunRow row in Runs.Where(row => row.State == SimulationState.Running))
         {
             row.Tick();
-        }
-    }
-
-    /// <summary>Adds or updates the changed runs' rows and appends the new log entries.</summary>
-    private void Show(Changes changes)
-    {
-        foreach (SimulationInfo run in changes.Runs)
-        {
-            if (_rows.TryGetValue(run.RunId, out RunRow? row))
-            {
-                row.Update(run);
-            }
-            else
-            {
-                // Runs added together arrive in the order they last changed; keep them by number.
-                row = new RunRow(run);
-                _rows.Add(run.RunId, row);
-                int index = Runs.Count;
-                while (index > 0 && Runs[index - 1].RunId > row.RunId)
-                {
-                    index--;
-                }
-
-                Runs.Insert(index, row);
-            }
-        }
-
-        foreach (LogEvent log in changes.Logs)
-        {
-            Logs.Add(new LogRow(log, _rows.TryGetValue(log.RunId, out RunRow? row) ? row.Label : $"#{log.RunId}"));
         }
     }
 
@@ -332,7 +332,7 @@ public partial class MainWindow : Window
     private void OnRunSelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         RunRow[] selected = RunsGrid.SelectedItems.Cast<RunRow>().ToArray();
-        _selected = selected.Select(row => row.RunId).ToHashSet();
+        _selected = selected.Select(row => row.SimId).ToHashSet();
         LogTitle.Text = selected.Length switch
         {
             0 => "Log · all runs",
@@ -343,13 +343,13 @@ public partial class MainWindow : Window
     }
 
     /// <summary>Applies the notice filter.</summary>
-    private void OnLogFilterChanged(object sender, RoutedEventArgs e) => _logView?.Refresh();
+    private void OnLogFilterChanged(object sender, RoutedEventArgs e) => _logView.Refresh();
 
     /// <summary>Whether the log table shows an entry.</summary>
     private bool ShowsLog(object item) =>
         item is LogRow log
         && (ShowNoticesBox.IsChecked == true || log.Severity != LogSeverity.Notice)
-        && (_selected.Count == 0 || _selected.Contains(log.RunId));
+        && (_selected.Count == 0 || _selected.Contains(log.SimId));
 
     /// <summary>Shows the double-clicked run's deck in Explorer.</summary>
     private void OnRunDoubleClick(object sender, MouseButtonEventArgs e)
@@ -378,24 +378,24 @@ public partial class MainWindow : Window
     /// <summary>Asks trnrund to cancel the unfinished runs among <paramref name="rows"/>.</summary>
     private async Task CancelAsync(IEnumerable<RunRow> rows)
     {
-        long[] runIds = rows.Where(row => !row.IsFinished).Select(row => row.RunId).ToArray();
-        if (_daemon is not { } daemon || runIds.Length == 0)
+        long[] simIds = rows.Where(row => !row.IsFinished).Select(row => row.SimId).ToArray();
+        if (_daemon is not { } daemon || simIds.Length == 0)
         {
             return;
         }
 
         try
         {
-            foreach (long runId in runIds)
+            foreach (long simId in simIds)
             {
-                await daemon.CancelAsync(runId, _closing.Token);
+                await daemon.CancelAsync(simId, _closing.Token);
             }
         }
         catch (OperationCanceledException) when (_closing.IsCancellationRequested)
         {
             // The window is closing, which interrupts every run anyway.
         }
-        catch (Exception error) when (error is TrnrunException or TimeoutException)
+        catch (TRNRunException error)
         {
             ShowError("Could not cancel", error.Message);
         }
@@ -408,22 +408,6 @@ public partial class MainWindow : Window
         if (dialog.ShowDialog(this) == true)
         {
             TrnexeBox.Text = dialog.FileName;
-        }
-    }
-
-    /// <summary>Picks a new or existing database.</summary>
-    private void OnBrowseDatabase(object sender, RoutedEventArgs e)
-    {
-        var dialog = new SaveFileDialog
-        {
-            Title = "Database",
-            Filter = "SQLite databases (*.sqlite3)|*.sqlite3",
-            FileName = "runs.sqlite3",
-            OverwritePrompt = false,
-        };
-        if (dialog.ShowDialog(this) == true)
-        {
-            DatabaseBox.Text = dialog.FileName;
         }
     }
 
@@ -458,14 +442,13 @@ public partial class MainWindow : Window
         IsEnabled = false;
         SessionText.Text = "Stopping trnrund…";
 
-        // Stop following first, which closes its connection, so the daemon can delete a temporary database.
         await _closing.CancelAsync();
-        if (_following is not null)
+        if (_polling is not null)
         {
-            await _following;
+            await _polling;
         }
 
-        Daemon daemon = _daemon!;
+        TRNRunDaemon daemon = _daemon!;
         _daemon = null;
         await daemon.DisposeAsync();
 

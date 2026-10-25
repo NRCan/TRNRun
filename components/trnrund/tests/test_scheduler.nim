@@ -27,7 +27,7 @@ suite "scheduler":
   teardown:
     # Queued first, so cancelling a running one starts nothing.
     for state in [ssQueued, ssRunning]:
-      for simId in scheduler.list(state):
+      for simId in scheduler.list({state}):
         discard scheduler.cancel(simId)
     scheduler = initScheduler(getAppFilename(), 2)
 
@@ -176,7 +176,7 @@ suite "scheduler":
     check scheduler.cancel(running)
     check scheduler.release(running)
 
-  test "list returns the simIds in a state, oldest first":
+  test "list returns the simIds in the given states, oldest first":
     let
       done = scheduler.add(createDeck(dir, "done-n1.dck"))
       running = scheduler.add(createDeck(dir, "wait-n2.dck"))
@@ -186,10 +186,11 @@ suite "scheduler":
       scheduler.add(createDeck(dir, "wait-n4.dck")),
       scheduler.add(createDeck(dir, "wait-n5.dck")),
     ]
-    check scheduler.list(ssFinished) == @[done]
-    check scheduler.list(ssRunning) == @[running, queued[0]]
-    check scheduler.list(ssQueued) == @[queued[1], queued[2]]
+    check scheduler.list({ssFinished}) == @[done]
+    check scheduler.list({ssRunning}) == @[running, queued[0]]
+    check scheduler.list({ssQueued}) == @[queued[1], queued[2]]
+    check scheduler.list({ssQueued, ssFinished}) == @[done, queued[1], queued[2]]
     check scheduler.release(done)
-    check scheduler.list(ssFinished).len == 0
+    check scheduler.list({ssFinished}).len == 0
 
 removeDir(dir)

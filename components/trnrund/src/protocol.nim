@@ -55,15 +55,17 @@ proc trnrunArgs(request: JsonNode): seq[string] =
   result = node.getElems().mapIt(it.getStr())
   validateTrnrunArgs(result)
 
-proc state(request: JsonNode): SimulationState =
-  ## The request's `state`; `InputError` unless a simulation state.
-  const expected = "QUEUED, RUNNING or FINISHED"
-  let state =
+proc states(request: JsonNode): set[SimulationState] =
+  ## The request's optional `state`, one state or an array of them, every state when missing; `InputError` otherwise.
+  let node = request.getOrDefault("state")
+  if node == nil or node.kind == JNull:
+    return {SimulationState.low .. SimulationState.high}
+  result = {}
+  for name in (if node.kind == JArray: node.getElems() else: @[node]):
     try:
-      parseEnum[SimulationState](request.field("state", JString, expected).getStr())
+      result.incl(parseEnum[SimulationState](name.getStr())) # getStr is "" for a non-string, which no state matches.
     except ValueError:
-      raise newException(InputError, "'state' must be " & expected)
-  return state
+      raise newException(InputError, "'state' must be QUEUED, RUNNING or FINISHED, or an array of them")
 
 proc withLogs(request: JsonNode): bool =
   ## The request's optional `withLogs`, false when missing; `InputError` if not a boolean.
@@ -124,12 +126,12 @@ proc simulationCmd(scheduler: Scheduler, request: JsonNode): JsonNode =
   return %*{"ok": true, "simulation": simulation}
 
 proc simulationsCmd(scheduler: Scheduler, request: JsonNode): JsonNode =
-  ## Answers `simulations`: returns the simulations in the requested state, without `logs` unless `withLogs`.
+  ## Answers `simulations`: returns the simulations in the requested states, or all, without `logs` unless `withLogs`.
   let
-    state = request.state()
+    states = request.states()
     withLogs = request.withLogs()
   var simulations = newJArray()
-  for simId in scheduler.list(state):
+  for simId in scheduler.list(states):
     # Indexed in place: `scheduler[simId]` is borrowed, so no simulation is copied.
     simulations.add(if withLogs: %scheduler[simId] else: scheduler[simId].toJsonWithoutLogs())
   return %*{"ok": true, "simulations": simulations}

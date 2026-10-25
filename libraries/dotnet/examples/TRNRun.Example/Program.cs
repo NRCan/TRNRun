@@ -1,18 +1,20 @@
-// Example: running one simulation and following it until it finishes, without blocking.
+// Example: running the example deck and following it until it finishes, without blocking.
 //
-// Usage: TRNRun.Example <deck.dck> <TrnEXE64.exe> [--progress]
-// --progress streams Type3830 progress, so it requires Type3830 in the deck.
+// Usage: TRNRun.Example [TrnEXE64.exe]
+// TrnEXE64.exe defaults to TRNRun's, C:\TRNSYS18\Exe\TrnEXE64.exe.
 // Ctrl+C stops waiting and interrupts the run.
 
 using System.Globalization;
 using TRNRun;
 
-if (args.Length is < 2 or > 3 || (args.Length == 3 && args[2] != "--progress"))
+if (args.Length > 1)
 {
-    Console.Error.WriteLine("Usage: TRNRun.Example <deck.dck> <TrnEXE64.exe> [--progress]");
-    Console.Error.WriteLine("--progress requires Type3830 in the deck.");
+    Console.Error.WriteLine("Usage: TRNRun.Example [TrnEXE64.exe]");
     return 2;
 }
+
+// Has Type3830, which WatchTmp needs to report progress.
+string deck = Path.Combine(AppContext.BaseDirectory, "dck", "example_wo_plot_w_tracking.dck");
 
 using var cancel = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) =>
@@ -21,40 +23,39 @@ Console.CancelKeyPress += (_, e) =>
     cancel.Cancel();
 };
 
-var settings = new SimulationSettings { TrnexePath = args[1], WatchTmp = args.Length == 3 };
+var settings = new SimulationSettings { TrnexePath = args.ElementAtOrDefault(0), WatchTmp = true };
 
 // Disposal interrupts unfinished runs; wait for this one inside the block.
-await using Daemon daemon = await Daemon.StartAsync(new DaemonOptions { MaxConcurrent = 1 }, cancel.Token);
-long runId = await daemon.AddAsync(args[0], settings, cancellationToken: cancel.Token);
+await using TRNRunDaemon daemon = await TRNRunDaemon.StartAsync(workers: 1, cancellationToken: cancel.Token);
+long simId = await daemon.AddAsync(deck, settings, cancellationToken: cancel.Token);
 
-SimulationInfo? finished = null;
+// TRNRunDaemon.WaitForFinishedAsync is enough without output; this loop also prints progress and logs as they arrive.
+Simulation sim;
+int printedLogs = 0;
+double? printedPercent = null;
 try
 {
-    // Throws if trnrund crashed.
-    await foreach (Changes changes in daemon.FollowAsync(cancel.Token))
+    while (true)
     {
-        foreach (SimulationInfo run in changes.Runs.Where(run => run.RunId == runId))
+        sim = await daemon.GetSimulationAsync(simId, withLogs: true, cancel.Token);
+        if (sim.Percent is { } percent && percent != printedPercent)
         {
-            if (run.Progress is { } progress)
-            {
-                Console.WriteLine(string.Create(CultureInfo.InvariantCulture, $"{progress.Percent:P0} at {progress.Time} h"));
-            }
-
-            if (run.IsFinished)
-            {
-                finished = run;
-            }
+            Console.WriteLine(string.Create(CultureInfo.InvariantCulture, $"{percent:P0} at {sim.SimTime} h"));
+            printedPercent = percent;
         }
 
-        foreach (LogEvent log in changes.Logs.Where(log => log.Severity != LogSeverity.Notice))
+        foreach (LogEvent log in sim.Logs.Skip(printedLogs).Where(log => log.Severity != LogSeverity.Notice))
         {
             Console.WriteLine($"{log.Severity} at {log.Time} h: {log.Message}");
         }
 
-        if (finished is not null)
+        printedLogs = sim.Logs.Count;
+        if (sim.State == SimulationState.Finished)
         {
             break;
         }
+
+        await Task.Delay(TimeSpan.FromMilliseconds(500), cancel.Token);
     }
 }
 catch (OperationCanceledException)
@@ -62,15 +63,14 @@ catch (OperationCanceledException)
     Console.WriteLine("Cancelled; interrupting the run.");
     return 1;
 }
-
-if (finished is null)
+catch (DaemonExitedException error)
 {
-    Console.Error.WriteLine("trnrund closed before the run finished.");
+    Console.Error.WriteLine($"trnrund stopped before the run finished: {error.Message}");
     return 1;
 }
 
-Console.WriteLine($"Deck: {finished.DeckFile}");
-Console.WriteLine($"Status: {finished.Status?.ToString() ?? "none"} {finished.StatusMessage}");
-Console.WriteLine($"Succeeded: {finished.Succeeded}; exit code: {finished.ExitCode}; error: {finished.Error}");
-Console.WriteLine($"Logs: {finished.Notices} notices, {finished.Warnings} warnings, {finished.Fatals} fatals");
-return finished.Succeeded == true ? 0 : 1;
+Console.WriteLine($"Deck: {sim.DeckFile}");
+Console.WriteLine($"Status: {sim.Status?.ToString() ?? "none"} {sim.StatusMessage}");
+Console.WriteLine($"Succeeded: {sim.Succeeded}; exit code: {sim.ExitCode}; error: {sim.Error}");
+Console.WriteLine($"Logs: {sim.Notices} notices, {sim.Warnings} warnings, {sim.Fatals} fatals");
+return sim.Succeeded == true ? 0 : 1;

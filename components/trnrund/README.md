@@ -51,7 +51,7 @@ Set-Location components/trnrund
 nimble bin
 ```
 
-The executable is written to `components/trnrun/build/trnrun.exe` relative to
+The executable is written to `components/trnrund/build/trnrund.exe` relative to
 the repository root.
 
 ## Quick start
@@ -115,7 +115,7 @@ The `cmd` field picks the command:
 - [`ready`](#ready): check the daemon is up.
 - [`add`](#add): queue a simulation.
 - [`simulation`](#simulation): get one simulation.
-- [`simulations`](#simulations): get every simulation in a state.
+- [`simulations`](#simulations): get every simulation, or those in some states.
 - [`cancel`](#cancel): stop one simulation.
 - [`release`](#release): forget one finished simulation.
 
@@ -176,19 +176,21 @@ Returns one simulation that is not yet released.
 
 ### `simulations`
 
-Returns every simulation not yet released in one state, oldest first. Polling
-`FINISHED` and releasing what it returns collects a batch in one request per
-poll.
+Returns every simulation not yet released, or only those in the given states,
+oldest first. Polling `["RUNNING","FINISHED"]` refreshes a table of started
+runs in one request; polling `FINISHED` and releasing what it returns collects
+a batch.
 
 ```jsonc
 // stdin
-{"cmd":"simulations","state":"FINISHED","withLogs":false}
+{"cmd":"simulations","state":["RUNNING","FINISHED"],"withLogs":false}
 // stdout
 {"ok":true,"simulations":[{"simId":1,"label":"building-a","state":"FINISHED",...}]}
 ```
 
 - **stdin**:
-  - `state`: `QUEUED`, `RUNNING`, or `FINISHED`.
+  - `state` (optional, default every state): `QUEUED`, `RUNNING`, or
+    `FINISHED`, or an array of them.
   - `withLogs` (optional, default `false`): include `logs`, as for
     [`simulation`](#simulation).
 - **stdout**:

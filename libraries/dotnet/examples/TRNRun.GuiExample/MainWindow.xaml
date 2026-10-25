@@ -80,7 +80,7 @@
                  Text="Run TRNSYS decks side by side and follow them live. Drop .dck files or folders anywhere on this window." />
     </StackPanel>
 
-    <!-- Settings: the database and concurrency are fixed once trnrund starts with the first deck. -->
+    <!-- Settings: the number of workers is fixed once trnrund starts with the first deck. -->
     <Border Grid.Row="1" Style="{StaticResource Card}" Margin="0,0,0,12">
       <Grid>
         <Grid.ColumnDefinitions>
@@ -91,7 +91,6 @@
         <Grid.RowDefinitions>
           <RowDefinition Height="Auto" />
           <RowDefinition Height="Auto" />
-          <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
         <TextBlock Style="{StaticResource LabelText}" Text="TRNSYS executable" />
@@ -99,15 +98,9 @@
                  ToolTip="TrnEXE64.exe used by the decks you add next." />
         <Button Grid.Column="2" Content="Browse…" Margin="8,0,0,0" Click="OnBrowseTrnexe" />
 
-        <TextBlock Grid.Row="1" Style="{StaticResource LabelText}" Text="Database" Margin="0,8,16,0" />
-        <TextBox x:Name="DatabaseBox" Grid.Row="1" Grid.Column="1" Margin="0,8,0,0"
-                 ToolTip="Keeps every run and log between sessions. Leave empty for a temporary database deleted on exit." />
-        <Button x:Name="BrowseDatabaseButton" Grid.Row="1" Grid.Column="2" Content="Browse…" Margin="8,8,0,0"
-                Click="OnBrowseDatabase" />
-
-        <TextBlock Grid.Row="2" Style="{StaticResource LabelText}" Text="Simulations at once" Margin="0,12,16,0" />
-        <StackPanel Grid.Row="2" Grid.Column="1" Grid.ColumnSpan="2" Orientation="Horizontal" Margin="0,12,0,0">
-          <ComboBox x:Name="MaxConcurrentBox" MinWidth="80" />
+        <TextBlock Grid.Row="1" Style="{StaticResource LabelText}" Text="Simulations at once" Margin="0,12,16,0" />
+        <StackPanel Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2" Orientation="Horizontal" Margin="0,12,0,0">
+          <ComboBox x:Name="WorkersBox" MinWidth="80" />
           <CheckBox x:Name="TrackProgressBox" Content="Track progress (needs Type3830 in the deck)" IsChecked="True"
                     Margin="32,0,0,0" VerticalAlignment="Center" />
           <CheckBox x:Name="ShowTrnsysBox" Content="Show TRNSYS windows" Margin="32,0,0,0" VerticalAlignment="Center" />
@@ -140,7 +133,7 @@
           <DataGrid x:Name="RunsGrid" Style="{StaticResource Table}" ItemsSource="{Binding Runs}"
                     SelectionChanged="OnRunSelectionChanged" MouseDoubleClick="OnRunDoubleClick">
             <DataGrid.Columns>
-              <DataGridTextColumn Header="#" Binding="{Binding RunId}" Width="50" ElementStyle="{StaticResource CellText}" />
+              <DataGridTextColumn Header="#" Binding="{Binding SimId}" Width="50" ElementStyle="{StaticResource CellText}" />
               <DataGridTextColumn Header="Deck" Binding="{Binding Label}" Width="2*">
                 <DataGridTextColumn.ElementStyle>
                   <Style TargetType="TextBlock" BasedOn="{StaticResource CellText}">

@@ -4,17 +4,17 @@ using System.IO;
 
 namespace TRNRun.GuiExample;
 
-/// <summary>One run in the runs table, replaced by each snapshot trnrund saves.</summary>
+/// <summary>One run in the runs table, replaced by each snapshot trnrund reports.</summary>
 /// <param name="info">The run's first snapshot.</param>
-public sealed class RunRow(SimulationInfo info) : INotifyPropertyChanged
+public sealed class RunRow(Simulation info) : INotifyPropertyChanged
 {
-    private SimulationInfo _info = info;
+    private Simulation _info = info;
 
     /// <inheritdoc/>
     public event PropertyChangedEventHandler? PropertyChanged;
 
-    /// <summary>Number trnrund assigned the run.</summary>
-    public long RunId => _info.RunId;
+    /// <summary>ID trnrund assigned the run.</summary>
+    public long SimId => _info.SimId;
 
     /// <summary>Label the run was added with, or its deck name.</summary>
     public string Label => _info.Label ?? Path.GetFileNameWithoutExtension(_info.DeckFile);
@@ -26,7 +26,10 @@ public sealed class RunRow(SimulationInfo info) : INotifyPropertyChanged
     public SimulationState State => _info.State;
 
     /// <summary>Whether the run will not change again.</summary>
-    public bool IsFinished => _info.IsFinished;
+    public bool IsFinished => _info.State == SimulationState.Finished;
+
+    /// <summary>Log entries already copied to the log table.</summary>
+    public int LogsShown { get; set; }
 
     /// <summary>The run's state with its outcome, for coloring.</summary>
     public RunKind Kind => _info.State switch
@@ -49,17 +52,17 @@ public sealed class RunRow(SimulationInfo info) : INotifyPropertyChanged
     };
 
     /// <summary>Completion from 0 to 100; a run that succeeded without reporting progress is 100.</summary>
-    public double Percent => _info.Progress is { } progress ? progress.Percent * 100 : Kind == RunKind.Succeeded ? 100 : 0;
+    public double Percent => _info.Percent is { } percent ? percent * 100 : Kind == RunKind.Succeeded ? 100 : 0;
 
     /// <summary>Completion as text, or empty when unknown.</summary>
-    public string PercentText => _info.Progress is not null || Kind == RunKind.Succeeded ? $"{Percent:0} %" : "";
+    public string PercentText => _info.Percent is not null || Kind == RunKind.Succeeded ? $"{Percent:0} %" : "";
 
     /// <summary>Whether the run is running without reporting progress, as without Type3830.</summary>
-    public bool IsIndeterminate => State == SimulationState.Running && _info.Progress is null;
+    public bool IsIndeterminate => State == SimulationState.Running && _info.Percent is null;
 
     /// <summary>Simulated time reached, out of the stop time when known.</summary>
-    public string SimTimeText => _info.Progress is { } progress
-        ? _info.Config is { } config ? $"{progress.Time:N0} / {config.Stop:N0} h" : $"{progress.Time:N0} h"
+    public string SimTimeText => _info.SimTime is { } time
+        ? _info.StopTime is { } stop ? $"{time:N0} / {stop:N0} h" : $"{time:N0} h"
         : "";
 
     /// <summary>Wall-clock time since the run started, until it finished.</summary>
@@ -68,14 +71,14 @@ public sealed class RunRow(SimulationInfo info) : INotifyPropertyChanged
         : "";
 
     /// <summary>TRNRun's estimate of the time left, while running.</summary>
-    public string EtaText => State == SimulationState.Running && _info.Progress is { Eta: var eta }
+    public string EtaText => State == SimulationState.Running && _info.Eta is { } eta
         ? Duration(eta)
         : "";
 
-    /// <summary>Warning log entries saved so far.</summary>
+    /// <summary>Warning log entries so far.</summary>
     public int Warnings => _info.Warnings;
 
-    /// <summary>Fatal log entries saved so far.</summary>
+    /// <summary>Fatal log entries so far.</summary>
     public int Fatals => _info.Fatals;
 
     /// <summary>Why a run failed or was cancelled, else TRNRun's latest status message.</summary>
@@ -84,7 +87,7 @@ public sealed class RunRow(SimulationInfo info) : INotifyPropertyChanged
         : _info.StatusMessage ?? "";
 
     /// <summary>Replaces the run's snapshot and refreshes every column.</summary>
-    public void Update(SimulationInfo info)
+    public void Update(Simulation info)
     {
         _info = info;
         Changed(string.Empty);

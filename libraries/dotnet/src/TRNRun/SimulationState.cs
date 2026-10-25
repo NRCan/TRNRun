@@ -1,12 +1,12 @@
 namespace TRNRun;
 
-/// <summary>Daemon lifecycle, <c>Queued → Running → Finished</c>; a run that never starts goes straight to <see cref="Finished"/>.</summary>
+/// <summary>Where trnrund is with a simulation: <c>Queued</c>, then <c>Running</c>, then <c>Finished</c>; one that never starts skips <c>Running</c>.</summary>
 public enum SimulationState
 {
-    /// <summary>Saved and waiting for a free slot; saved as <c>QUEUED</c>.</summary>
+    /// <summary>Waiting for a worker.</summary>
     Queued,
-    /// <summary>TRNRun has started; saved as <c>RUNNING</c>.</summary>
+    /// <summary>TRNRun has started.</summary>
     Running,
-    /// <summary>Done, failed or cancelled; the run never changes again. Saved as <c>FINISHED</c>.</summary>
+    /// <summary>Succeeded, failed or cancelled; nothing about it changes any more.</summary>
     Finished,
 }

@@ -314,6 +314,7 @@ bld/
 msbuild.log
 msbuild.err
 msbuild.wrn
+[Tt]est[Rr]esult*/
 
 # Node.js build artifacts
 node_modules/

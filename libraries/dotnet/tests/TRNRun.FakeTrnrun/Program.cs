@@ -2,23 +2,17 @@
 //
 // trnrund starts TRNRun as `<trnrun> <deck> <args...>`. The deck here is JSON written by the
 // tests' Decks.Write: {"events": [...], "exitCode": 0, "gated": false}. The runner prints each
-// event as one JSON line, as TRNRun would, then exits with exitCode. A gated deck first waits,
-// up to 30 seconds, for a .release file beside it, so a test can hold the run.
+// event as one JSON line, as TRNRun would, then exits with exitCode. A gated deck first holds
+// for 30 seconds, so a test can cancel it while it runs.
 
 using System.Text.Json;
 
-string deck = args[0];
-using JsonDocument script = JsonDocument.Parse(File.ReadAllText(deck));
+using JsonDocument script = JsonDocument.Parse(File.ReadAllText(args[0]));
 JsonElement root = script.RootElement;
 
 if (root.GetProperty("gated").GetBoolean())
 {
-    string release = Path.ChangeExtension(deck, ".release");
-    DateTime deadline = DateTime.UtcNow.AddSeconds(30);
-    while (!File.Exists(release) && DateTime.UtcNow < deadline)
-    {
-        Thread.Sleep(10);
-    }
+    Thread.Sleep(TimeSpan.FromSeconds(30));
 }
 
 foreach (JsonElement runEvent in root.GetProperty("events").EnumerateArray())

@@ -53,9 +53,10 @@ def test_a_cancelled_queued_simulation_counts_past_running(deck: DeckWriter) -> 
     with _manager() as manager:
         _ = manager.add(deck(gated=True), wait_for="RUNNING")
         queued = manager.add(deck())
-        manager.daemon.cancel(queued.sim_id)
+        manager.cancel(queued)
         manager.wait(queued, until="RUNNING", timeout=10)
         assert (queued.is_finished, queued.status, queued.started_at) == (True, SimulationStatus.CANCELLED, None)
+        manager.cancel(queued)  # Already collected and released: left unchanged, no RequestError.
 
 
 def test_manager_waits_on_a_simulation_it_did_not_add(deck: DeckWriter) -> None:

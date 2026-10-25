@@ -10,6 +10,7 @@ import subprocess
 import threading
 from collections.abc import Mapping
 from contextlib import suppress
+from dataclasses import replace
 from pathlib import Path
 from types import TracebackType
 from typing import IO, Any, Self, cast
@@ -146,6 +147,7 @@ class Daemon:
         settings: SimulationSettings | None = None,
         *,
         label: str | None = None,
+        **options: Any,
     ) -> int:
         """Queue a deck and return its simId.
 
@@ -157,6 +159,8 @@ class Daemon:
             TRNRun options; None keeps every TRNRun default.
         label : str, optional
             Free text stored with the simulation.
+        **options
+            ``SimulationSettings`` fields, such as ``watch_tmp=True``; they override ``settings``.
 
         Returns
         -------
@@ -165,11 +169,15 @@ class Daemon:
 
         Raises
         ------
+        TypeError
+            If an option is not a ``SimulationSettings`` field.
         RequestError
             If trnrund refuses the deck or ``settings``.
         FileNotFoundError
             If ``settings.trnexe_path`` does not exist.
         """
+        if options:
+            settings = replace(settings or SimulationSettings(), **options)
         args = [] if settings is None else settings.to_cli_args()
         request = {"cmd": "add", "deckFile": str(Path(deck_file).absolute()), "trnrunArgs": args}
         if label is not None:

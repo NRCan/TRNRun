@@ -1,6 +1,6 @@
 namespace TRNRun;
 
-/// <summary>Severity of a TRNSYS log entry, also the minimum one TRNRun emits (<c>--severity</c>).</summary>
+/// <summary>Severity of a TRNSYS log entry; also used by <see cref="SimulationSettings.Severity"/> to drop less severe ones.</summary>
 public enum LogSeverity
 {
     /// <summary>Informational entry.</summary>

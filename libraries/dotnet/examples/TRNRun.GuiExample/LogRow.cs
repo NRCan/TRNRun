@@ -1,13 +1,11 @@
 namespace TRNRun.GuiExample;
 
 /// <summary>One TRNSYS log entry in the log table.</summary>
-/// <param name="Log">The entry trnrund saved.</param>
+/// <param name="Log">The entry trnrund reported.</param>
+/// <param name="SimId">Simulation it belongs to.</param>
 /// <param name="Run">Label of the run it belongs to.</param>
-public sealed record LogRow(LogEvent Log, string Run)
+public sealed record LogRow(LogEvent Log, long SimId, string Run)
 {
-    /// <summary>Run the entry belongs to.</summary>
-    public long RunId => Log.RunId;
-
     /// <summary>Notice, Warning or Fatal.</summary>
     public LogSeverity Severity => Log.Severity;
 

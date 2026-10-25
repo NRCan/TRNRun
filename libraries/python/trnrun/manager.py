@@ -3,7 +3,7 @@
 import time
 from pathlib import Path
 from types import TracebackType
-from typing import Self
+from typing import Any, Self
 
 from trnrun.daemon import BIN, Daemon
 from trnrun.display import Display
@@ -82,6 +82,7 @@ class SimulationManager:
         *,
         label: str | None = None,
         wait_for: StateName | None = None,
+        **options: Any,
     ) -> Simulation:
         """Queue a deck and return its simulation.
 
@@ -98,6 +99,8 @@ class SimulationManager:
             ``FINISHED``; None returns at once. trnrund queues it before
             answering, so ``QUEUED`` returns at once too. A simulation that ends
             without starting, such as a cancelled one, counts as past ``RUNNING``.
+        **options
+            ``SimulationSettings`` fields, such as ``watch_tmp=True``; they override ``settings``.
 
         Returns
         -------
@@ -108,16 +111,38 @@ class SimulationManager:
         ------
         ValueError
             If ``wait_for`` is not a state, before anything is queued.
+        TypeError
+            If an option is not a ``SimulationSettings`` field.
         RequestError
             If trnrund refuses the deck or ``settings``.
         """
         if wait_for is not None:
             _ = _rank(wait_for)
-        sim_id = self.daemon.add(deck_file, settings, label=label)
+        sim_id = self.daemon.add(deck_file, settings, label=label, **options)
         sim = self.simulations[sim_id] = self.daemon.simulation(sim_id)
         if wait_for is not None:
             self.wait(sim, until=wait_for)
         return sim
+
+    def cancel(self, *simulations: Simulation) -> None:
+        """Stop queued or running simulations; finished ones are left unchanged.
+
+        The next ``refresh()`` shows them ``FINISHED`` with status ``CANCELLED``.
+
+        Parameters
+        ----------
+        *simulations : Simulation
+            Simulations to stop, matched by simId.
+
+        Raises
+        ------
+        RequestError
+            If trnrund does not know a simulation the manager has not seen finish.
+        """
+        for sim in simulations:
+            # A collected one is already released, so trnrund no longer knows its simId.
+            if not self.simulations.get(sim.sim_id, sim).is_finished:
+                self.daemon.cancel(sim.sim_id)
 
     def refresh(self) -> None:
         """Update every simulation from trnrund once, collect the finished ones, and redraw."""

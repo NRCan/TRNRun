@@ -11,8 +11,7 @@
 
   <ItemGroup>
     <ProjectReference Include="../../src/TRNRun/TRNRun.csproj" />
-    <!-- Built beside the tests, which start them as processes. -->
-    <ProjectReference Include="../TRNRun.FakeTrnrund/TRNRun.FakeTrnrund.csproj" />
+    <!-- Built beside the tests, which pass it to trnrund as the runner. -->
     <ProjectReference Include="../TRNRun.FakeTrnrun/TRNRun.FakeTrnrun.csproj" />
   </ItemGroup>
 

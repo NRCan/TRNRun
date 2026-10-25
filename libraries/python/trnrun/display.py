@@ -6,6 +6,7 @@ other cell output.
 """
 
 from collections.abc import Callable, Sequence
+from datetime import UTC, datetime
 from io import StringIO
 from typing import Protocol
 
@@ -38,6 +39,14 @@ def _duration(ms: float | None) -> str:
     minutes, seconds = divmod(max(int(ms // 1000), 0), 60)
     hours, minutes = divmod(minutes, 60)
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+
+def _elapsed_ms(sim: Simulation) -> float | None:
+    """Return the runner's elapsed time, else the wall-clock time since the start, as without Type3830."""
+    if sim.elapsed_ms is not None or sim.started_at is None:
+        return sim.elapsed_ms
+    end = sim.finished_at or datetime.now(UTC)
+    return (end - sim.started_at).total_seconds() * 1000
 
 
 def _truncate_left(text: str, width: int) -> str:
@@ -75,7 +84,7 @@ def render(sim: Simulation) -> Text:
     return Text.assemble(
         f"[{sim.sim_id}] {_truncate_left(name, _NAME_WIDTH)} | Status: ",
         (f"{status:<10}", _STATUS_STYLES.get(sim.status, "") if sim.status is not None else ""),
-        f" | Logs: {logs:<12} | Elapsed: {_duration(sim.elapsed_ms):<8} | ETA: {_duration(sim.eta_ms):<8}",
+        f" | Logs: {logs:<12} | Elapsed: {_duration(_elapsed_ms(sim)):<8} | ETA: {_duration(sim.eta_ms):<8}",
         f" | {bar} {sim_time} {sim_percent:6}",
     )
 

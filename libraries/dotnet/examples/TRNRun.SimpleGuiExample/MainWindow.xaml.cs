@@ -9,7 +9,7 @@ using Microsoft.Win32;
 
 namespace TRNRun.SimpleGuiExample;
 
-/// <summary>Starts trnrund with the window, follows it on the UI thread, and stops it on close.</summary>
+/// <summary>Starts trnrund with the window, polls it on the UI thread, and stops it on close.</summary>
 public partial class MainWindow : Window
 {
     // Set TrnexePath if TRNRun cannot find TRNSYS. WatchTmp reports progress, but needs Type3830 in the deck.
@@ -21,29 +21,25 @@ public partial class MainWindow : Window
     };
 
     private readonly CancellationTokenSource _closing = new();
-    private Daemon? _daemon;
-    private Task _following = Task.CompletedTask;
+    private TRNRunDaemon? _daemon;
+    private Task _polling = Task.CompletedTask;
 
-    /// <summary>Binds the tables to <see cref="Runs"/> and <see cref="Logs"/>.</summary>
+    /// <summary>Binds the runs table to <see cref="Runs"/>.</summary>
     public MainWindow()
     {
         InitializeComponent();
         DataContext = this;
     }
 
-    /// <summary>This session's runs, latest snapshot of each.</summary>
-    public ObservableCollection<SimulationInfo> Runs { get; } = [];
+    /// <summary>Every run, latest snapshot of each, by simId.</summary>
+    public ObservableCollection<Simulation> Runs { get; } = [];
 
-    /// <summary>This session's log entries, oldest first.</summary>
-    public ObservableCollection<LogEvent> Logs { get; } = [];
-
-    /// <summary>Starts trnrund, then follows it.</summary>
+    /// <summary>Starts trnrund, polls it, and submits the example deck.</summary>
     private async void OnLoaded(object sender, RoutedEventArgs e)
     {
         try
         {
-            // Kept after the window closes, for your own SQL; a reused file keeps its earlier runs, but only this session's are shown.
-            _daemon = await Daemon.StartAsync(new DaemonOptions { DatabasePath = "runs.sqlite3" });
+            _daemon = await TRNRunDaemon.StartAsync();
         }
         catch (Exception error)
         {
@@ -52,34 +48,36 @@ public partial class MainWindow : Window
             return;
         }
 
-        _following = FollowAsync(_daemon);
+        _polling = PollAsync(_daemon);
+        await AddAsync(_daemon, [Path.Combine(AppContext.BaseDirectory, "dck", "example_wo_plot_w_tracking.dck")]);
     }
 
-    /// <summary>Copies each change trnrund saves into the tables, until the window closes or trnrund stops.</summary>
-    private async Task FollowAsync(Daemon daemon)
+    /// <summary>Copies every run's latest snapshot into the table twice a second, until the window closes or trnrund stops.</summary>
+    private async Task PollAsync(TRNRunDaemon daemon)
     {
         try
         {
-            await foreach (Changes changes in daemon.FollowAsync(_closing.Token))
+            while (true)
             {
-                foreach (SimulationInfo run in changes.Runs)
+                // In lifecycle order, so a run that moves on between two requests keeps its later snapshot.
+                // shortcut: re-reads every finished run each poll; release runs you stop showing, or poll as TRNRun.GuiExample does, for hundreds of runs.
+                foreach (SimulationState state in Enum.GetValues<SimulationState>())
                 {
-                    // shortcut: scans every row per changed run; keep a Dictionary<long, int> of RunId to index for hundreds of runs.
-                    int index = Runs.ToList().FindIndex(row => row.RunId == run.RunId);
-                    if (index < 0)
+                    foreach (Simulation sim in await daemon.GetSimulationsAsync(state))
                     {
-                        Runs.Add(run);
-                    }
-                    else
-                    {
-                        Runs[index] = run;
+                        int index = Runs.ToList().FindIndex(row => row.SimId == sim.SimId);
+                        if (index < 0)
+                        {
+                            Runs.Insert(Runs.Count(row => row.SimId < sim.SimId), sim);
+                        }
+                        else
+                        {
+                            Runs[index] = sim;
+                        }
                     }
                 }
 
-                foreach (LogEvent log in changes.Logs)
-                {
-                    Logs.Add(log);
-                }
+                await Task.Delay(TimeSpan.FromMilliseconds(500), _closing.Token);
             }
         }
         catch (OperationCanceledException) when (_closing.IsCancellationRequested)
@@ -93,24 +91,45 @@ public partial class MainWindow : Window
         }
     }
 
-    /// <summary>Submits the decks picked in a file dialog; their rows appear once trnrund saves them.</summary>
+    /// <summary>Submits the decks picked in a file dialog; their rows appear at the next poll.</summary>
     private async void OnAddDecks(object sender, RoutedEventArgs e)
     {
         var dialog = new OpenFileDialog { Filter = "TRNSYS decks (*.dck)|*.dck", Multiselect = true };
-        if (_daemon is null || dialog.ShowDialog(this) != true)
+        if (_daemon is not null && dialog.ShowDialog(this) == true)
         {
-            return;
+            await AddAsync(_daemon, dialog.FileNames);
         }
+    }
 
-        foreach (string deck in dialog.FileNames)
+    /// <summary>Submits each deck, reporting the ones trnrund refused; their rows appear at the next poll.</summary>
+    private async Task AddAsync(TRNRunDaemon daemon, string[] decks)
+    {
+        foreach (string deck in decks)
         {
             try
             {
-                await _daemon.AddAsync(deck, Settings, Path.GetFileNameWithoutExtension(deck));
+                await daemon.AddAsync(deck, Settings, Path.GetFileNameWithoutExtension(deck));
             }
-            catch (TrnrunException error)
+            catch (TRNRunException error)
             {
                 MessageBox.Show(this, error.Message, $"Could not add {Path.GetFileName(deck)}");
+            }
+        }
+    }
+
+    /// <summary>Shows the clicked row's log entries so far; click again for newer ones.</summary>
+    private async void OnShowLogs(object sender, RoutedEventArgs e)
+    {
+        if (_daemon is not null && sender is FrameworkElement { DataContext: Simulation run })
+        {
+            try
+            {
+                LogsGrid.ItemsSource = (await _daemon.GetSimulationAsync(run.SimId, withLogs: true)).Logs;
+                LogsTitle.Text = $"Logs of #{run.SimId} {run.Label}";
+            }
+            catch (TRNRunException error)
+            {
+                MessageBox.Show(this, error.Message, "Could not read the logs");
             }
         }
     }
@@ -118,20 +137,20 @@ public partial class MainWindow : Window
     /// <summary>Cancels the run of the clicked row; a finished run is left unchanged.</summary>
     private async void OnCancel(object sender, RoutedEventArgs e)
     {
-        if (_daemon is not null && sender is FrameworkElement { DataContext: SimulationInfo run })
+        if (_daemon is not null && sender is FrameworkElement { DataContext: Simulation run })
         {
             try
             {
-                await _daemon.CancelAsync(run.RunId);
+                await _daemon.CancelAsync(run.SimId);
             }
-            catch (TrnrunException error)
+            catch (TRNRunException error)
             {
                 MessageBox.Show(this, error.Message, "Could not cancel");
             }
         }
     }
 
-    /// <summary>Stops following, then stops trnrund, interrupting unfinished runs, before closing.</summary>
+    /// <summary>Stops polling, then stops trnrund, interrupting unfinished runs, before closing.</summary>
     private async void OnClosing(object? sender, CancelEventArgs e)
     {
         if (_daemon is not { } daemon)
@@ -147,7 +166,7 @@ public partial class MainWindow : Window
 
         IsEnabled = false;
         await _closing.CancelAsync();
-        await _following; // Leaving the loop closes its connection, so the temporary database can be deleted.
+        await _polling;
         await daemon.DisposeAsync();
         _daemon = null;
         Close();

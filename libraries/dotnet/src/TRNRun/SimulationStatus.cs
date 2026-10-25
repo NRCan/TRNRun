@@ -1,22 +1,22 @@
 namespace TRNRun;
 
-/// <summary>Runner-reported simulation status, saved as its upper-case name, such as <c>DONE</c>.</summary>
+/// <summary>TRNRun's latest status for a simulation, more detailed than <see cref="SimulationState"/>.</summary>
 public enum SimulationStatus
 {
-    /// <summary>The run was validated and is waiting to launch.</summary>
+    /// <summary>Not launched yet.</summary>
     Pending,
-    /// <summary>TRNSYS is starting and launch detection is under way.</summary>
+    /// <summary>TRNSYS is starting.</summary>
     Launching,
-    /// <summary>TRNSYS is running and being monitored.</summary>
+    /// <summary>TRNSYS is running.</summary>
     Running,
-    /// <summary>The simulation completed.</summary>
+    /// <summary>TRNSYS completed.</summary>
     Done,
-    /// <summary>TRNSYS exited before the simulation completed, or the run was cancelled.</summary>
+    /// <summary>Cancelled, by <see cref="TRNRunDaemon.CancelAsync"/> or by trnrund itself.</summary>
     Cancelled,
-    /// <summary>The run failed to launch, crashed, or logged a fatal error.</summary>
+    /// <summary>TRNRun failed, could not start, or exited without a final status.</summary>
     Error,
-    /// <summary>The run did not finish within its detection or watch timeout.</summary>
+    /// <summary>A detection or watch timeout expired.</summary>
     Timeout,
-    /// <summary>Simulation time stopped advancing for too long.</summary>
+    /// <summary>No progress within <see cref="SimulationSettings.StallTimeout"/>.</summary>
     Stalled,
 }

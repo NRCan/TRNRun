@@ -1,22 +1,26 @@
 namespace TRNRun;
 
-/// <summary>One TRNSYS log entry; the properties after <paramref name="Time"/> are <see langword="null"/> unless TRNSYS attached them.</summary>
-/// <param name="LogId">Position among every run's logs; grows with each entry.</param>
-/// <param name="RunId">Run the entry belongs to.</param>
-/// <param name="Severity">Severity of the entry.</param>
-/// <param name="Time">Simulation time of the message, in simulated hours.</param>
-/// <param name="UnitId">Unit that emitted the message.</param>
-/// <param name="TypeId">Type of the unit that emitted the message.</param>
-/// <param name="MessageCode">Numeric code identifying the message.</param>
-/// <param name="Message">Message text.</param>
-/// <param name="Information">Additional detail attached to the message.</param>
-public sealed record LogEvent(
-    long LogId,
-    long RunId,
-    LogSeverity Severity,
-    double Time,
-    long? UnitId = null,
-    long? TypeId = null,
-    long? MessageCode = null,
-    string? Message = null,
-    string? Information = null);
+/// <summary>One entry of the TRNSYS <c>.log</c> file; the nullable properties are <see langword="null"/> when TRNSYS left them out.</summary>
+public sealed record LogEvent
+{
+    /// <summary>Severity of the entry.</summary>
+    public required LogSeverity Severity { get; init; }
+
+    /// <summary>Simulated time of the entry, in hours.</summary>
+    public required double Time { get; init; }
+
+    /// <summary>Number of the deck unit that logged it.</summary>
+    public int? UnitId { get; init; }
+
+    /// <summary>TRNSYS Type number of that unit.</summary>
+    public int? TypeId { get; init; }
+
+    /// <summary>TRNSYS message code.</summary>
+    public int? MessageCode { get; init; }
+
+    /// <summary>Message text.</summary>
+    public string? Message { get; init; }
+
+    /// <summary>Additional information TRNSYS gave.</summary>
+    public string? Information { get; init; }
+}

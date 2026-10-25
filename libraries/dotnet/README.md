@@ -1,329 +1,527 @@
-# TRNRun for .NET
+![TRNRun](https://raw.githubusercontent.com/NRCan/TRNRun/main/assets/trnrun-black.png)
 
-A thin wrapper for the Windows `trnrund` daemon: submit TRNSYS runs to it, and
-follow them through the SQLite database it keeps up to date. Requires Windows
-x64, .NET 10 (`net10.0-windows`), and the native `trnrund.exe` and
-`trnrun.exe`, which the package bundles. Real simulations also require TRNSYS.
-The database is read with
-[Microsoft.Data.Sqlite](https://learn.microsoft.com/dotnet/standard/data/sqlite/),
-the package's only NuGet dependency.
+Thin .NET client for running and monitoring
+[TRNSYS](https://www.trnsys.com/) batch simulations. The package includes the
+`trnrun.exe` runner and the
+[`trnrund.exe`](https://github.com/NRCan/TRNRun/tree/main/components/trnrund)
+daemon. `TRNRunDaemon` has one async method per trnrund command and returns
+simulations as typed `Simulation` records.
 
-This is the .NET port of the Python package's `trnrun.core`: `Daemon` starts
-trnrund and submits runs, and you read the database with plain SQL, optionally
-through the typed extension methods in `TrnrunDatabase`. Every call that waits
-for trnrund has an asynchronous version taking a `CancellationToken`.
+## Contents
+
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Quick start](#quick-start)
+- [Run a batch](#run-a-batch)
+- [`SimulationSettings`](#simulationsettings)
+- [`TRNRunDaemon`](#trnrundaemon)
+- [`Simulation`](#simulation)
+- [Follow progress](#follow-progress)
+- [Examples](#examples)
+
+## Requirements
+
+- Windows x64
+- .NET 10
+- TRNSYS 17 or 18
+- Optional: [Type3830 Progress Tracker](https://github.com/NRCan/TRNRun/tree/main/components/type3830) for
+  progress and stall monitoring
+
+No NuGet dependencies; trim- and AOT-compatible.
+
+## Installation
+
+```powershell
+dotnet add package TRNRun
+```
+
+## Quick start
 
 ```csharp
 using TRNRun;
 
-await using Daemon daemon = await Daemon.StartAsync(new DaemonOptions { DatabasePath = "runs.sqlite3", MaxConcurrent = 4 });
-long runId = await daemon.AddAsync("model.dck", new SimulationSettings { WatchTmp = true }, label: "case A");
+await using TRNRunDaemon daemon = await TRNRunDaemon.StartAsync(workers: 1);
+long simId = await daemon.AddAsync(@"C:\path\to\deck.dck", new SimulationSettings { WatchTmp = true });
+Simulation simulation = await daemon.WaitForFinishedAsync(simId);
 
-// Only this daemon's changes. Throws DaemonExitedException if trnrund crashes.
-await foreach (Changes changes in daemon.FollowAsync())
+if (simulation.Succeeded == true)
 {
-    if (changes.Runs.FirstOrDefault(run => run.RunId == runId && run.IsFinished) is { } finished)
-    {
-        Console.WriteLine($"{finished.Status} {finished.Succeeded} {finished.Error}");
-        break;
-    }
+    Console.WriteLine($"Completed: {simulation.DeckFile}");
+}
+else
+{
+    Console.WriteLine($"Failed: {simulation.DeckFile}");
 }
 ```
 
-The blocking members work the same way: `Daemon.Start`, `Add`, and
-`Follow` with `foreach`, with `using` instead of `await using`.
-
-## Daemon
-
-`Daemon.Start(options = null)` and `Daemon.StartAsync(options = null,
-cancellationToken)` start trnrund and wait until it is ready. `DaemonOptions`
-holds:
-
-- `DatabasePath`: `null`, the default, keeps the runs in a temporary database,
-  deleted when the daemon is disposed. A given path is created if missing; its
-  directory must exist. An existing database keeps its runs and logs, and new
-  runs continue their numbering in a new session.
-- `MaxConcurrent` limits simulations running at once; `null` means
-  `max(CPUs - 1, 1)`.
-- `TrnrundPath` and `TrnrunPath` default to the executables bundled in
-  `native/` beside the application.
-- `RequestTimeout`: a request unanswered within it, 60 seconds by default,
-  throws `TimeoutException`.
-
-Relative paths resolve from the current working directory. Each member below
-that waits for trnrund also has an `Async` version, such as `AddAsync`, whose
-`CancellationToken` stops the wait:
-
-- `Add(deckFile, trnrunArgs = null, label = null) -> long` submits a deck and
-  returns its run ID once saved, not finished. `trnrunArgs` is a
-  `SimulationSettings` or raw TRNRun options. Run IDs are never reused in a
-  database. A cancelled `AddAsync` stops waiting for the reply, but trnrund may
-  still add the run.
-- `Cancel(runId)` stops a queued or running run, and leaves a finished one
-  unchanged. A queued run is already `Finished` and `Cancelled` on return; a
-  running one has its TRNRun killed and becomes so shortly after. Its `Error`
-  tells which: `Not started: cancelled by the client` or
-  `Interrupted: cancelled by the client`.
-- `Shutdown(cancelRunning = false)` cancels queued runs, waits for running
-  ones, and waits for trnrund to exit; with `cancelRunning: true`, running runs
-  are cancelled too. `Shutdown(timeout, cancelRunning)` interrupts the runs
-  still running after `timeout`, as disposing does, and so does cancelling
-  `ShutdownAsync`, which then throws `OperationCanceledException`.
-- `Dispose()` and `DisposeAsync()`, called when leaving a `using` or
-  `await using` block, close trnrund's stdin, **interrupting unfinished runs**,
-  wait for it to exit, and delete a temporary database. A trnrund that has not
-  exited 10 seconds later is killed, so disposing never hangs. It is safe to do
-  again, also after a crash. Afterwards, members throw
-  `ObjectDisposedException`.
-- `OpenDatabase()` opens the database read-only; see
-  [`TrnrunDatabase.Open`](#database).
-- `Follow(connection, after) -> IEnumerable<Changes>` and
-  `FollowAsync(connection, after, cancellationToken) -> IAsyncEnumerable<Changes>`
-  yield what trnrund saves after the `ChangePosition` `after`, such as
-  `StartPosition`, as it saves it: each item is a `ReadChanges` that starts
-  where the previous one stopped. The sequence ends once trnrund has closed and
-  everything it saved was yielded, and throws `DaemonExitedException` after a
-  crash. Leave the loop to stop following.
-- `Follow()` and `FollowAsync(cancellationToken)` do the same from
-  `StartPosition`, through a connection of their own that closes when the loop
-  ends. Use them when you only follow; leave the loop before disposing the
-  daemon, so a temporary database can be deleted.
-- `WaitForChanges(afterRevision)`, which `Follow` is built on, blocks until
-  trnrund saves a revision after `afterRevision`;
-  `WaitForChanges(afterRevision, timeout) -> bool` returns `false` if
-  `timeout` passes first, and `TimeSpan.Zero` never blocks. It returns at once
-  if a newer revision was already announced, so a change saved while you were
-  reading is never missed. Once trnrund has exited and nothing newer was saved,
-  it throws `DaemonClosedException` after a shutdown and
-  `DaemonExitedException` after a crash, so following never hangs and never
-  misses trnrund's last saves. A waiter blocked when the daemon is disposed
-  wakes with `DaemonClosedException`.
-- `DatabasePath`, `SessionId`, and `StartPosition` come from trnrund's `ready`
-  reply.
-
-Every `Daemon` member is safe from any thread, and the asynchronous ones never
-need the caller's synchronization context, so a GUI can await them on its UI
-thread. A `SqliteConnection` is not thread-safe: give each thread its own. Open
-it while the daemon runs and keep it: right after a crash, a new connection can
-fail to open.
-
-If the application is killed outright, trnrund sees its stdin close and
-interrupts its runs as disposing does; trnrund's own kill-on-close Job Object
-then stops every TRNRun and TRNSYS process under it.
-
-## Errors
-
-Every exception TRNRun throws itself is a `TrnrunException`:
-
-| Exception | Thrown when |
-| --------- | ----------- |
-| `DaemonExitedException` | trnrund crashed or failed to start, such as on a database in use by another trnrund; has `ExitCode` and `Diagnostics` |
-| `RequestRejectedException` | trnrund refused a request, such as a missing deck, a bad option, or an unknown run ID |
-| `DaemonClosedException` | trnrund has ended normally, after a shutdown or a clean exit, so it no longer answers |
-| `SchemaVersionException` | A database from another trnrund version |
-
-Calling a member after disposal throws `ObjectDisposedException`, and a
-cancelled call throws `OperationCanceledException`. A missing executable or
-`TrnexePath` throws `FileNotFoundException`, and an unanswered request throws
-`TimeoutException`. SQLite failures, such as opening a missing database, throw
-Microsoft.Data.Sqlite's `SqliteException`. A row this package cannot read, such
-as a state from a newer trnrund, throws `InvalidDataException` rather than
-being misreported.
-
-## Database
-
-trnrund saves every run, its progress, and its TRNSYS logs to SQLite. The
-[daemon documentation](../../components/trnrund/README.md#reading-the-database)
-describes every column of the `runs` and `logs` tables. `TrnrunDatabase` opens
-it and turns its rows into typed records, if you want them:
-
-- `TrnrunDatabase.Open(path) -> SqliteConnection` opens an existing trnrund
-  database read-only, with or without a daemon, and checks that its schema
-  version is `TrnrunDatabase.SchemaVersion` (`3`). It never creates one.
-  Pooling is off, so disposing the connection releases the file.
-- `connection.ReadChanges(after = default) -> Changes` reads the runs and logs
-  saved after the `ChangePosition` `after`, a run revision and a log ID, from
-  one snapshot. The default reads the whole history. `changes.Runs` are the
-  latest `SimulationInfo` of each changed run, in the order they last changed;
-  `changes.Logs` are the new `LogEvent`s, oldest first; and `changes.Next` is
-  where to read next. Call it outside any transaction of your own.
-- `reader.GetSimulationInfo()` and `reader.GetLogEvent()` read the current row
-  of a `SELECT *` on `runs` or `logs`, such as from a `SqliteDataReader`, as a
-  `SimulationInfo` or `LogEvent`.
-- `ToDatabaseName()` is the name saved for a `SimulationState`, such as
-  `FINISHED`, a `SimulationStatus`, such as `DONE`, or a `LogSeverity`, such as
-  `Fatal`, to compare with the `state`, `trnrun_status` or `severity` column.
-
-### Records
-
-- `SimulationInfo` is one run: `RunId`, `State` (`Queued`, `Running`,
-  `Finished`), `DeckFile`, `SessionId`, `Label`, `Revision`, `TrnrunArgs`,
-  TRNRun's latest `Status` (`SimulationStatus`) and `StatusMessage`, `Progress`
-  (`ProgressEvent`: `Percent` from 0 to 1, simulated `Time`, and the
-  wall-clock `Elapsed` and `Eta` as `TimeSpan`s), `Config` (`ConfigEvent`:
-  simulated `Start`, `Stop`, `Step`), `Setting` (the settings TRNRun applied,
-  keyed by camelCase flag name, as `JsonElement`s),
-  `Notices`/`Warnings`/`Fatals`, `Succeeded`, `ExitCode`, `Error`, the UTC
-  `SubmittedAt`/`StartedAt`/`FinishedAt`, and `IsFinished`. Properties are
-  named after their columns and are `null` where the column is NULL; the
-  members trnrund never leaves NULL are `required`. `Succeeded` stays `null`
-  until the run finishes.
-- `LogEvent` is one TRNSYS log entry: `LogId`, `RunId`, `Severity`
-  (`LogSeverity`: `Notice`, `Warning`, `Fatal`), simulated `Time`, and, when
-  TRNSYS attaches them, `UnitId`, `TypeId`, `MessageCode`, `Message`,
-  `Information`.
-
-All records are immutable.
-
-### Common queries
-
-For anything else, query the tables directly:
+## Run a batch
 
 ```csharp
-using SqliteConnection connection = TrnrunDatabase.Open("runs.sqlite3");
+using TRNRun;
 
-// Fatal log entries of one run, as typed records.
-using SqliteCommand fatals = connection.CreateCommand();
-fatals.CommandText = "SELECT * FROM logs WHERE run_id = $run AND severity = $severity ORDER BY log_id";
-fatals.Parameters.AddWithValue("$run", 1);
-fatals.Parameters.AddWithValue("$severity", LogSeverity.Fatal.ToDatabaseName());
-using (SqliteDataReader reader = fatals.ExecuteReader())
+string[] decks = [.. Directory.EnumerateFiles(@"C:\path\to\decks", "*.dck").Order()];
+var settings = new SimulationSettings { WatchTmp = true };
+
+await using TRNRunDaemon daemon = await TRNRunDaemon.StartAsync(workers: 4);
+var simIds = new List<long>();
+foreach (string deck in decks)
 {
-    while (reader.Read())
-    {
-        LogEvent log = reader.GetLogEvent();
-        Console.WriteLine($"{log.Time} h, unit {log.UnitId}: {log.Message}");
-    }
+    simIds.Add(await daemon.AddAsync(deck, settings));
 }
 
-// Wall-clock duration in seconds of each run that started and finished.
-using SqliteCommand durations = connection.CreateCommand();
-durations.CommandText = "SELECT run_id, ROUND((julianday(finished_at) - julianday(started_at)) * 86400, 3)"
-    + " FROM runs WHERE finished_at IS NOT NULL AND started_at IS NOT NULL";
-using (SqliteDataReader reader = durations.ExecuteReader())
-{
-    while (reader.Read())
-    {
-        Console.WriteLine($"Run {reader.GetInt64(0)}: {reader.GetDouble(1):0.0} s");
-    }
-}
+Simulation[] simulations = await Task.WhenAll(simIds.Select(simId => daemon.WaitForFinishedAsync(simId)));
+int succeeded = simulations.Count(sim => sim.Succeeded == true);
+Console.WriteLine($"{succeeded} succeeded, {decks.Length - succeeded} failed");
 ```
 
-## Simulation settings
+## `SimulationSettings`
 
-`SimulationSettings` names and types every TRNRun option for IntelliSense.
-Each property's documentation names its CLI flag; `trnrun.exe --help` gives
-the full effects.
+`SimulationSettings` defines how one deck is launched and monitored. Each
+property that is set becomes one
+[TRNRun Runner option](https://github.com/NRCan/TRNRun/tree/main/components/trnrun#settings);
+a property left at `null` keeps the runner's default, listed below. trnrund
+checks the values when the simulation is added, so a bad value throws
+`RequestException` from `AddAsync`.
+
+Durations are `TimeSpan`s, passed as whole milliseconds rounded up. For the
+timeouts, `Timeout.InfiniteTimeSpan` and `TimeSpan.Zero` both mean no limit.
+
+It is an immutable record: derive variants with `with`:
 
 ```csharp
+using TRNRun;
+
+var settings = new SimulationSettings { WatchTmp = true, PollInterval = TimeSpan.FromMilliseconds(10) };
+await daemon.AddAsync(deck, settings);                                                         // WatchTmp = true, PollInterval = 10 ms
+await daemon.AddAsync(deck);                                                                   // every runner default
+await daemon.AddAsync(deck, settings with { PollInterval = TimeSpan.FromMilliseconds(20) });   // WatchTmp = true, PollInterval = 20 ms
+```
+
+### Executable and window
+
+- _`TrnexePath`_ (`string?`, default: `C:\TRNSYS18\Exe\TrnEXE64.exe`)
+
+  Path to the `TrnEXE64.exe` or `TrnEXE.exe` executable. A relative path
+  resolves from the current directory; a missing file throws
+  `FileNotFoundException` from `AddAsync` before the simulation is queued.
+
+- _`GuiVisibility`_ (`GuiVisibility?`, default: `Hidden`)
+
+  Controls the TRNSYS simulation window:
+
+  - `KeepOpen`: show the window and leave it open after the simulation.
+  - `AutoClose`: show the window and close it after the simulation.
+  - `Minimized`: minimize the window and leave it open afterward.
+  - `MinimizedAuto`: minimize the window and close it afterward.
+  - `Hidden`: hide the window and close it after the simulation.
+
+### Launch detection
+
+- _`WaitForGui`_ (`bool?`, default: `true`)
+
+  Wait for a recognized TRNSYS simulation window as part of the launch-readiness checks.
+
+- _`WaitForLst`_ (`bool?`, default: `true`)
+
+  Wait for the component-order header in the deck's `.lst` file.
+
+- _`WaitForTmp`_ (`bool?`, default: `false`)
+
+  Wait for a Type3830 `.tmp` file. Do not enable this for a deck without
+  Type3830, or launch detection will wait until its deadline.
+
+- _`DetectTimeout`_ (`TimeSpan?`, default: 300 seconds)
+
+  Maximum time to wait for launch readiness. Set to
+  `Timeout.InfiniteTimeSpan` to wait indefinitely. The runner holds the launch
+  mutex for the current Windows session until detection completes.
+
+- _`ExtraDelay`_ (`TimeSpan?`, default: `TimeSpan.Zero`)
+
+  Additional delay after all enabled readiness checks pass.
+
+### Runtime monitoring
+
+- _`PollInterval`_ (`TimeSpan?`, default: 100 milliseconds)
+
+  Polling interval for the TRNSYS process and output files; at least 1
+  millisecond.
+
+- _`WatchLog`_ (`bool?`, default: `true`)
+
+  Read the deck's `.log` file and report its entries as `Logs`.
+
+- _`WatchTmp`_ (`bool?`, default: `false`)
+
+  Read Type3830 `.tmp` updates and report the simulation period and progress.
+  Required for progress-based `SimulationStatus.Cancelled` and
+  `SimulationStatus.Stalled` outcomes. Without Type3830 in the deck, an early
+  exit is reported as `Done`.
+
+- _`WatchTimeout`_ (`TimeSpan?`, default: unlimited)
+
+  Maximum runtime-monitoring duration.
+
+- _`StallTimeout`_ (`TimeSpan?`, default: disabled)
+
+  Maximum time without simulation-time progress. Requires `WatchTmp = true`
+  and a valid Type3830 snapshot.
+
+- _`KillOnTimeout`_ (`bool?`, default: `false`)
+
+  Terminate the TRNSYS process when launch detection or runtime monitoring
+  times out. If disabled, a detection timeout proceeds to runtime monitoring;
+  after a runtime-monitoring timeout, the runner stops polling and waits for
+  the process to exit.
+
+- _`KillOnStall`_ (`bool?`, default: `false`)
+
+  Terminate the TRNSYS process after detecting a stall. Without it, the runner
+  waits for the process to exit.
+
+### Output and cleanup
+
+- _`CleanOnSuccess`_ (`bool?`, default: `false`)
+
+  Delete `.tmp`, `.log`, `.lst`, and `.PTI` sidecar files after a successful
+  run.
+
+- _`Severity`_ (`LogSeverity?`, default: `Notice`)
+
+  Minimum reported log severity: `Notice`, `Warning`, or `Fatal`.
+
+- _`WriteEvents`_ (`bool?`, default: `false`)
+
+  Mirror the runner events to a `.jsonl` file beside the deck, replacing any
+  existing file when the run starts.
+
+A configuration with every property set explicitly:
+
+```csharp
+using TRNRun;
+
 var settings = new SimulationSettings
 {
     TrnexePath = @"C:\TRNSYS18\Exe\TrnEXE64.exe",
+    GuiVisibility = GuiVisibility.Hidden,
+    WaitForGui = true,
+    WaitForLst = true,
+    WaitForTmp = true,
+    DetectTimeout = TimeSpan.FromMinutes(5),
+    ExtraDelay = TimeSpan.Zero,
+    PollInterval = TimeSpan.FromMilliseconds(100),
+    WatchLog = true,
     WatchTmp = true,
-    WatchTimeout = TimeSpan.FromHours(1),
+    WatchTimeout = TimeSpan.FromMinutes(5),
+    StallTimeout = TimeSpan.FromMinutes(5),
+    CleanOnSuccess = true,
     KillOnTimeout = true,
+    KillOnStall = true,
+    Severity = LogSeverity.Notice,
+    WriteEvents = false,
 };
-// Reuse settings directly with daemon.Add("model.dck", settings),
-// or derive others with: settings with { GuiVisibility = GuiVisibility.Minimized }
 ```
 
-Every property defaults to `null`, which passes nothing, so TRNRun's own
-default applies; run `trnrun.exe --help` for those defaults.
-`new SimulationSettings()` therefore passes no options at all. Only TRNRun
-defines the defaults, so they cannot drift between TRNRun and this package.
+## `TRNRunDaemon`
 
-`Daemon.Add()` calls `ToCliArgs()`, which returns unquoted arguments for the
-properties that are set, checks that a set `TrnexePath` exists, and resolves it
-from the working directory. The daemon checks the other values with TRNRun's
-own parser when the run is added. `Daemon.Add()` also accepts raw CLI argument
-lists. Durations are `TimeSpan`s, passed in whole milliseconds rounded up; a
-timeout of `Timeout.InfiniteTimeSpan` or `TimeSpan.Zero` is unlimited.
-`PollInterval` controls the runner, not how often .NET reads results.
+`TRNRunDaemon` owns one `trnrund.exe` and has one async method per
+[trnrund command](https://github.com/NRCan/TRNRun/tree/main/components/trnrund#request-protocol).
+Nothing runs in the background: each `Simulation` it returns is a snapshot, so
+ask again for the current one.
+
+Requests are thread-safe: they take turns on the one pipe. A
+`CancellationToken` only cancels the wait for an earlier request; a request
+already sent runs to its reply, so the pipe never gets out of step. Disposing
+waits for the request in progress, then closes trnrund's stdin, so it kills
+every unfinished run and exits; waiting and later calls throw
+`ObjectDisposedException`. Prefer `await using`: `Dispose` blocks while
+trnrund exits.
+
+### Parameters
+
+`TRNRunDaemon.StartAsync` starts trnrund and returns once it answers:
+
+- _`workers`_ (`int?`, default: logical processor count minus one)
+
+  Maximum number of simulations running at once. Additional simulations wait
+  in the queue.
+
+- _`trnrundPath`_ (`string?`, default: bundled `trnrund.exe`)
+
+  Path to the `trnrund.exe` executable.
+
+- _`trnrunPath`_ (`string?`, default: bundled `trnrun.exe`)
+
+  Path to the `trnrun.exe` executable.
+
+- _`cancellationToken`_ (`CancellationToken`, default: none)
+
+  Stops waiting for trnrund to answer; the half-started trnrund is then shut
+  down.
+
+The bundled executables are the ones the package copies to `native/` beside
+your application. An explicitly configured daemon:
+
+```csharp
+using TRNRun;
+
+await using TRNRunDaemon daemon = await TRNRunDaemon.StartAsync(
+    workers: 4,
+    trnrundPath: @"C:\path\to\trnrund.exe",
+    trnrunPath: @"C:\path\to\trnrun.exe");
+```
+
+### Methods
+
+Every method also takes an optional `CancellationToken`.
+
+- _`AddAsync(string deckFile, SimulationSettings? settings = null, string? label = null) -> Task<long>`_
+
+  Queue `deckFile` and return its `simId`. A relative path resolves from the
+  current directory; `label` is free text stored with the simulation.
+
+- _`GetSimulationAsync(long simId, bool withLogs = false) -> Task<Simulation>`_
+
+  Return one simulation, without `Logs` unless `withLogs` is `true`.
+
+- _`GetSimulationsAsync(SimulationState state, bool withLogs = false) -> Task<IReadOnlyList<Simulation>>`_
+
+  Return every unreleased simulation in `state`, oldest first.
+
+- _`WaitForFinishedAsync(long simId, TimeSpan? pollInterval = null) -> Task<Simulation>`_
+
+  Poll one simulation, every half second by default, until it is `Finished`,
+  and return it without `Logs`. Cancelling stops the wait, not the simulation.
+
+- _`CancelAsync(long simId) -> Task`_
+
+  Stop a queued or running simulation; one already finished is left unchanged.
+  It then finishes with status `Cancelled`.
+
+- _`ReleaseAsync(long simId) -> Task`_
+
+  Forget a finished simulation and its logs.
+
+- _`RequestAsync(JsonObject request) -> Task<JsonObject>`_
+
+  Send any raw trnrund request and return its raw response.
+
+- _`DisposeAsync() -> ValueTask`_, _`Dispose()`_
+
+  Stop `trnrund.exe`, killing unfinished runs. If it does not exit within 10
+  seconds, it is killed with its child processes.
+
+`RequestException` is thrown when trnrund refuses a request, such as for a
+missing deck, an unknown `simId`, or releasing an unfinished run, and
+`DaemonExitedException`, with its exit code and stderr, when it no longer
+answers. Both derive from `TRNRunException`, which is also thrown, wrapping the
+parse error, when a reply breaks the protocol. Simulation outcomes do not
+throw: inspect each simulation's `Succeeded`, `Status`, and `ExitCode` instead.
+
+Example daemon workflow with every method:
+
+```csharp
+using System.Text.Json.Nodes;
+using TRNRun;
+
+var settings = new SimulationSettings { WatchTmp = true };
+await using TRNRunDaemon daemon = await TRNRunDaemon.StartAsync(workers: 2);
+
+long first = await daemon.AddAsync(@"C:\path\to\first.dck", settings);
+long second = await daemon.AddAsync(@"C:\path\to\second.dck", settings, label: "second");
+
+Console.WriteLine(await daemon.GetSimulationAsync(first));
+Console.WriteLine($"Running: {(await daemon.GetSimulationsAsync(SimulationState.Running)).Count}");
+
+await daemon.CancelAsync(second);
+await daemon.WaitForFinishedAsync(second);
+Simulation cancelled = await daemon.GetSimulationAsync(second, withLogs: true);
+Console.WriteLine($"Second status: {cancelled.Status}, {cancelled.Logs.Count} log entries");
+await daemon.ReleaseAsync(second);
+
+try
+{
+    await daemon.ReleaseAsync(first);
+}
+catch (RequestException error)
+{
+    Console.WriteLine($"First not finished: {error.Message}");
+}
+
+JsonObject raw = await daemon.RequestAsync(new JsonObject { ["cmd"] = "simulations", ["state"] = "RUNNING" });
+Console.WriteLine($"Raw response: {raw}");
+```
+
+## `Simulation`
+
+`Simulation` is an immutable snapshot of one run, holding trnrund's
+[simulation fields](https://github.com/NRCan/TRNRun/tree/main/components/trnrund#simulation-fields)
+in PascalCase. A nullable property is `null` until the runner reports it.
+
+### Properties
+
+- _`SimId`_ (`long`)
+
+  Identifier assigned by the daemon, never reused.
+
+- _`DeckFile`_ (`string`)
+
+  Absolute path to the submitted deck.
+
+- _`Label`_ (`string?`)
+
+  Label it was added with.
+
+- _`TrnrunArgs`_ (`IReadOnlyList<string>`)
+
+  Runner options it was added with, such as `--watchTmp:true`.
+
+- _`State`_ (`SimulationState`)
+
+  `Queued` while waiting for a worker, `Running` once the runner started, and
+  `Finished` once it completed, failed, or was cancelled. Wait on `State`, not
+  `Status`: `Status` can already be `Done` while `State` is `Running`.
+
+- _`Status`_, _`StatusMessage`_ (`SimulationStatus?`, `string?`)
+
+  Latest runner status and its detail; trnrund's `trnrunStatus` and
+  `trnrunMessage`.
+
+- _`Succeeded`_ (`bool?`)
+
+  Set once finished. `true` only with status `Done`, exit code `0`, and no
+  `Error`.
+
+- _`ExitCode`_ (`int?`)
+
+  Runner exit code; `null` if it was cancelled or never started.
+
+- _`Error`_ (`string?`)
+
+  Why the daemon failed or cancelled the run.
+
+- _`SimTime`_, _`Percent`_ (`double?`), _`Elapsed`_, _`Eta`_ (`TimeSpan?`)
+
+  Latest Type3830 progress. `SimTime` is in simulated hours and `Percent` is a
+  fraction from `0` to `1`.
+
+- _`StartTime`_, _`StopTime`_, _`TimeStep`_ (`double?`)
+
+  Simulation period reported by Type3830, in simulated hours.
+
+- _`Setting`_ (`JsonElement?`)
+
+  Settings the runner applied, its defaults included, keyed by the runner's
+  camelCase names.
+
+- _`Notices`_, _`Warnings`_, _`Fatals`_ (`int`)
+
+  Number of log entries so far, by severity, counted even when `Logs` is empty.
+
+- _`Logs`_ (`IReadOnlyList<LogEvent>`)
+
+  Log entries, oldest first; empty unless asked for with `withLogs`.
+
+- _`SubmittedAt`_, _`StartedAt`_, _`FinishedAt`_ (`DateTimeOffset?`)
+
+  UTC times; `StartedAt` stays `null` for a simulation that never started.
+
+An example inspecting every property:
+
+```csharp
+using TRNRun;
+
+await using TRNRunDaemon daemon = await TRNRunDaemon.StartAsync(workers: 1);
+long simId = await daemon.AddAsync(@"C:\path\to\deck.dck", new SimulationSettings { WatchTmp = true });
+await daemon.WaitForFinishedAsync(simId);
+Simulation simulation = await daemon.GetSimulationAsync(simId, withLogs: true);
+
+Console.WriteLine($"ID: {simulation.SimId}");
+Console.WriteLine($"Deck: {simulation.DeckFile}");
+Console.WriteLine($"Label: {simulation.Label}");
+Console.WriteLine($"Runner options: {string.Join(" ", simulation.TrnrunArgs)}");
+Console.WriteLine($"State: {simulation.State}");
+Console.WriteLine($"Status: {simulation.Status} {simulation.StatusMessage}");
+Console.WriteLine($"Succeeded: {simulation.Succeeded}");
+Console.WriteLine($"Exit code: {simulation.ExitCode}");
+Console.WriteLine($"Error: {simulation.Error}");
+Console.WriteLine($"Progress: {simulation.Percent} at {simulation.SimTime} h");
+Console.WriteLine($"Elapsed: {simulation.Elapsed}, ETA: {simulation.Eta}");
+Console.WriteLine($"Period: {simulation.StartTime} to {simulation.StopTime} by {simulation.TimeStep} h");
+Console.WriteLine($"Runner settings: {simulation.Setting}");
+Console.WriteLine($"Notices: {simulation.Notices}");
+Console.WriteLine($"Warnings: {simulation.Warnings}");
+Console.WriteLine($"Fatals: {simulation.Fatals}");
+Console.WriteLine($"Logs: {string.Join(Environment.NewLine, simulation.Logs)}");
+Console.WriteLine($"Times: {simulation.SubmittedAt}, {simulation.StartedAt}, {simulation.FinishedAt}");
+```
+
+## Follow progress
+
+To draw your own display, poll the running simulations and release each one
+once finished:
+
+```csharp
+using TRNRun;
+
+string[] decks = [@"C:\path\to\first.dck", @"C:\path\to\second.dck"];
+var settings = new SimulationSettings { WatchTmp = true };
+
+await using TRNRunDaemon daemon = await TRNRunDaemon.StartAsync(workers: 2);
+foreach (string deck in decks)
+{
+    await daemon.AddAsync(deck, settings);
+}
+
+int remaining = decks.Length;
+while (remaining > 0)
+{
+    foreach (Simulation sim in await daemon.GetSimulationsAsync(SimulationState.Running))
+    {
+        string progress = sim.Percent is { } percent ? $"{percent:P0}" : "no progress yet";
+        Console.WriteLine($"[{sim.SimId}] {Path.GetFileName(sim.DeckFile)}: {progress} ({sim.Status})");
+    }
+
+    foreach (Simulation sim in await daemon.GetSimulationsAsync(SimulationState.Finished))
+    {
+        Console.WriteLine($"[{sim.SimId}] {Path.GetFileName(sim.DeckFile)}: {sim.Status}");
+        await daemon.ReleaseAsync(sim.SimId);
+        remaining--;
+    }
+
+    await Task.Delay(TimeSpan.FromSeconds(1));
+}
+```
 
 ## Examples
 
-Run from this directory, substituting real deck and TRNSYS paths:
-
-`TRNRun.Example` uses the asynchronous members, and `TRNRun.BatchExample` the
-blocking ones:
+Runnable examples are available in the
+[TRNRun repository](https://github.com/NRCan/TRNRun/tree/main/libraries/dotnet/examples).
+Every example runs `examples/dck/example_wo_plot_w_tracking.dck`, which has
+Type3830 for progress and no plotter, copied beside the example's executable so
+TRNSYS writes its outputs there. Run from this directory; the TrnEXE path is
+optional and defaults to `C:\TRNSYS18\Exe\TrnEXE64.exe`:
 
 ```powershell
-# One deck, following its progress; omit --progress if Type3830 is not in the deck. Ctrl+C interrupts it.
-dotnet run --project examples/TRNRun.Example -- "C:\decks\model.dck" "C:\TRNSYS18\Exe\TrnEXE64.exe" --progress
+# The deck once, printing progress and warnings. Ctrl+C interrupts it.
+dotnet run --project examples/TRNRun.Example -- "C:\TRNSYS18\Exe\TrnEXE64.exe"
 
-# Every .dck file in a directory, two at a time, kept in C:\decks\runs.sqlite3.
-dotnet run --project examples/TRNRun.BatchExample -- "C:\decks" "C:\TRNSYS18\Exe\TrnEXE64.exe" 2
+# 10 copies of the deck, two at a time, each reported (and released) as it finishes.
+dotnet run --project examples/TRNRun.BatchExample -- 2 "C:\TRNSYS18\Exe\TrnEXE64.exe"
 ```
 
 Both return `0` when every simulation succeeded, `1` when one failed, and `2`
-for usage errors. Only run independent decks concurrently; the daemon does not
-isolate shared TRNSYS output files.
+for usage errors.
 
 `examples/TRNRun.SimpleGuiExample` is the least a WPF window needs: it starts
-trnrund when it opens, keeping `runs.sqlite3` in the working directory, adds decks picked in a file dialog, copies each
-`SimulationInfo` and `LogEvent` from `FollowAsync` into two tables on the UI
-thread, cancels a run per row, and stops trnrund when it closes. Start from it
-when building your own GUI:
+trnrund and submits the deck when it opens, polls every simulation into a table
+twice a second, shows a run's logs and cancels it from buttons on its row, and
+stops trnrund when it closes. `examples/TRNRun.GuiExample` is a fuller window
+that runs 10 copies of the deck, or the decks and deck directories given on its
+command line; it polls only unfinished runs and reads a run's logs only when
+its log counts grow.
 
 ```powershell
 dotnet run --project examples/TRNRun.SimpleGuiExample
-```
-
-`examples/TRNRun.GuiExample` is a fuller WPF window:
-
-```powershell
-# Optionally followed by decks or deck directories to add at once.
 dotnet run --project examples/TRNRun.GuiExample -- "C:\decks"
 ```
-
-Add decks with its buttons, on the command line, or by dropping files and
-folders on it, then
-follow each run's status, progress and logs as they arrive; select runs to see
-only their logs, and double-click one to show its deck in Explorer. trnrund
-starts with the first deck added, so the database and concurrency chosen then
-apply until the window closes. An `await foreach` on the UI thread follows
-`FollowAsync`, and every other call to the daemon is awaited too, so none blocks
-the window.
-
-## Database safety
-
-The daemon never deletes runs or logs; a reused database keeps its history.
-Keep the database on a local disk, with its `-wal` and `-shm` files beside it;
-its parent directory must already exist. Only one daemon may own a database at
-a time. A database from another schema version is refused; start a new file.
-
-## Build, test and package
-
-On Windows, install the .NET 10 SDK, then build both native executables from
-the repository root with `just trnrun-bin` and `just trnrund-bin`. The library
-links them directly from `components/trnrun/build/trnrun.exe` and
-`components/trnrund/build/trnrund.exe`; a build fails with these instructions
-if either is missing. Then, from this directory:
-
-```powershell
-dotnet build TRNRun.slnx --configuration Release
-dotnet test TRNRun.slnx
-dotnet pack src/TRNRun/TRNRun.csproj --configuration Release --no-build --output ../../dist
-```
-
-From the repository root, `just dotnet-test` builds both executables and runs
-the tests, and `just dotnet-dist`, also run by `just deploy`, packs the
-`.nupkg` and `.snupkg` into `dist/`.
-
-Run SDK commands from this directory so `global.json` applies. The tests need
-neither TRNSYS nor Python: they run the bundled trnrund with
-`tests/TRNRun.FakeTrnrun`, which replays scripted decks in place of TRNRun, and
-test the protocol layer against `tests/TRNRun.FakeTrnrund`.
-
-Project-reference builds and NuGet consumers copy both executables to
-`native/` beneath the application's build and publish directories; the
-package's `buildTransitive/TRNRun.targets` keeps this layout for transitive
-consumers. Keep `native/` when deploying, including with single-file publish.
-Microsoft.Data.Sqlite brings its own native SQLite, `e_sqlite3.dll`, which
-.NET deploys beside the application.
-
-Before packing, `packaging/Validate-NativeExecutables.ps1` checks that both
-executables are win-x64 and that their `--version` equals the package
-`Version` in `src/TRNRun/TRNRun.csproj`, currently `0.8.0`, following the
-Python `hatch_build.py` convention. Keep it aligned with both `.nimble`
-versions.

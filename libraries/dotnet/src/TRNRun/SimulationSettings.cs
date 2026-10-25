@@ -2,69 +2,72 @@ using System.Globalization;
 
 namespace TRNRun;
 
-/// <summary>TRNRun options for a simulation; each property maps to the trnrun.exe flag in its doc.</summary>
+/// <summary>TRNRun options for a simulation; each property's doc names the trnrun.exe flag it becomes.</summary>
 /// <remarks>
-/// A <see langword="null"/> property is not passed, so TRNRun's default applies (<c>trnrun.exe --help</c>).
-/// Durations pass as whole milliseconds, rounded up; an infinite or zero timeout is unlimited.
-/// Relative paths resolve from the current directory, and trnrund validates values when a run is added.
+/// <para>A <see langword="null"/> property passes no flag, so TRNRun's default applies; <c>trnrun.exe --help</c> lists them.</para>
+/// <para>
+/// Durations are passed as whole milliseconds, rounded up. For the timeouts, <see cref="Timeout.InfiniteTimeSpan"/>
+/// and <see cref="TimeSpan.Zero"/> both mean no limit. Relative paths resolve from the current directory.
+/// </para>
+/// <para>trnrund validates the values when the simulation is added, so a bad value throws from <see cref="TRNRunDaemon.AddAsync"/>.</para>
 /// </remarks>
 public sealed record SimulationSettings
 {
-    /// <summary>TRNSYS executable, TrnEXE64.exe or TrnEXE.exe (<c>--trnexePath</c>).</summary>
+    /// <summary>TRNSYS executable, TrnEXE64.exe or TrnEXE.exe; must exist (<c>--trnexePath</c>).</summary>
     public string? TrnexePath { get; init; }
 
-    /// <summary>TRNSYS window behavior (<c>--guiVisibility</c>).</summary>
+    /// <summary>Whether the TRNSYS window shows, and whether it closes after the run (<c>--guiVisibility</c>).</summary>
     public GuiVisibility? GuiVisibility { get; init; }
 
-    /// <summary>Wait for the TRNSYS GUI during launch detection (<c>--waitForGui</c>).</summary>
+    /// <summary>Whether launch detection waits for the TRNSYS window to appear (<c>--waitForGui</c>).</summary>
     public bool? WaitForGui { get; init; }
 
-    /// <summary>Wait for the <c>.lst</c> component-order header during launch detection (<c>--waitForLst</c>).</summary>
+    /// <summary>Whether launch detection waits for the component-order header in the <c>.lst</c> file (<c>--waitForLst</c>).</summary>
     public bool? WaitForLst { get; init; }
 
-    /// <summary>Wait for the <c>.tmp</c> file during launch detection; requires Type3830 (<c>--waitForTmp</c>).</summary>
+    /// <summary>Whether launch detection waits for the <c>.tmp</c> file; requires Type3830 in the deck (<c>--waitForTmp</c>).</summary>
     public bool? WaitForTmp { get; init; }
 
-    /// <summary>Launch-detection timeout, excluding <see cref="ExtraDelay"/> (<c>--detectTimeout</c>).</summary>
+    /// <summary>How long launch detection may take, not counting <see cref="ExtraDelay"/> (<c>--detectTimeout</c>).</summary>
     public TimeSpan? DetectTimeout { get; init; }
 
-    /// <summary>Delay after detection passes (<c>--extraDelay</c>).</summary>
+    /// <summary>Extra wait after launch detection succeeds (<c>--extraDelay</c>).</summary>
     public TimeSpan? ExtraDelay { get; init; }
 
-    /// <summary>Output-file and process polling interval, at least 1 ms (<c>--pollMs</c>).</summary>
+    /// <summary>How often TRNRun checks the output files and the TRNSYS process; at least 1 ms (<c>--pollMs</c>).</summary>
     public TimeSpan? PollInterval { get; init; }
 
-    /// <summary>Stream <c>.log</c> entries as LOG events (<c>--watchLog</c>).</summary>
+    /// <summary>Whether to read <c>.log</c> entries into <see cref="Simulation.Logs"/> while TRNSYS runs (<c>--watchLog</c>).</summary>
     public bool? WatchLog { get; init; }
 
-    /// <summary>Stream <c>.tmp</c> updates as CONFIG and PROGRESS events, and detect stalls; requires Type3830 (<c>--watchTmp</c>).</summary>
+    /// <summary>Whether to report progress and the deck's times from the <c>.tmp</c> file, and detect stalls; requires Type3830 in the deck (<c>--watchTmp</c>).</summary>
     public bool? WatchTmp { get; init; }
 
-    /// <summary>Runtime-monitoring timeout, ending in <c>TIMEOUT</c> (<c>--watchTimeout</c>).</summary>
+    /// <summary>How long the run may take once launched before it ends as <see cref="SimulationStatus.Timeout"/> (<c>--watchTimeout</c>).</summary>
     public TimeSpan? WatchTimeout { get; init; }
 
-    /// <summary>Longest time without simulation progress before <c>STALLED</c>; requires <see cref="WatchTmp"/> (<c>--stallTimeout</c>).</summary>
+    /// <summary>How long the run may go without progress before it ends as <see cref="SimulationStatus.Stalled"/>; requires <see cref="WatchTmp"/> (<c>--stallTimeout</c>).</summary>
     public TimeSpan? StallTimeout { get; init; }
 
-    /// <summary>Delete <c>.tmp</c>, <c>.log</c>, <c>.lst</c> and <c>.PTI</c> artifacts on success (<c>--clean</c>).</summary>
+    /// <summary>Whether to delete the <c>.tmp</c>, <c>.log</c>, <c>.lst</c> and <c>.PTI</c> files after a successful run (<c>--clean</c>).</summary>
     public bool? CleanOnSuccess { get; init; }
 
-    /// <summary>Kill TRNSYS on a detection or watch timeout instead of waiting for it (<c>--killOnTimeout</c>).</summary>
+    /// <summary>Whether to kill TRNSYS when a detection or watch timeout expires, rather than leave it running (<c>--killOnTimeout</c>).</summary>
     public bool? KillOnTimeout { get; init; }
 
-    /// <summary>Kill TRNSYS on a stall instead of waiting for it (<c>--killOnStall</c>).</summary>
+    /// <summary>Whether to kill TRNSYS when it stalls, rather than leave it running (<c>--killOnStall</c>).</summary>
     public bool? KillOnStall { get; init; }
 
-    /// <summary>Minimum emitted log severity (<c>--severity</c>).</summary>
+    /// <summary>Least severe log entry reported; <see cref="LogSeverity.Warning"/> drops notices (<c>--severity</c>).</summary>
     public LogSeverity? Severity { get; init; }
 
-    /// <summary>Write emitted events to a <c>.jsonl</c> file beside the deck (<c>--writeEvents</c>).</summary>
+    /// <summary>Whether TRNRun also writes its events to a <c>.jsonl</c> file beside the deck (<c>--writeEvents</c>).</summary>
     public bool? WriteEvents { get; init; }
 
-    /// <summary>Returns unquoted argv entries for the properties that are set, with <see cref="TrnexePath"/> made absolute.</summary>
+    /// <summary>Returns the TRNRun flags for the properties that are set, one unquoted argument each, with <see cref="TrnexePath"/> made absolute.</summary>
     /// <exception cref="FileNotFoundException">A set <see cref="TrnexePath"/> is not an existing file.</exception>
-    /// <exception cref="ArgumentOutOfRangeException">An enum property holds an undefined value.</exception>
-    public IReadOnlyList<string> ToCliArgs()
+    /// <exception cref="ArgumentOutOfRangeException"><see cref="GuiVisibility"/> is not a defined value; other bad values are left for trnrund to refuse.</exception>
+    internal IReadOnlyList<string> ToCliArgs()
     {
         var args = new List<string>();
         Add(args, "trnexePath", TrnexePath is null ? null : ResolveTrnexe(TrnexePath));
@@ -82,7 +85,7 @@ public sealed record SimulationSettings
         Add(args, "clean", CleanOnSuccess);
         Add(args, "killOnTimeout", KillOnTimeout);
         Add(args, "killOnStall", KillOnStall);
-        Add(args, "severity", Severity?.ToDatabaseName());
+        Add(args, "severity", Severity?.ToString());
         Add(args, "writeEvents", WriteEvents);
         return args;
     }
@@ -104,7 +107,7 @@ public sealed record SimulationSettings
     private static void Add(List<string> args, string flag, TimeSpan? value) =>
         Add(args, flag, value is { } duration ? ((long)Math.Ceiling(duration.TotalMilliseconds)).ToString(CultureInfo.InvariantCulture) : null);
 
-    /// <summary>Returns TRNRun's unlimited, zero, for <see cref="Timeout.InfiniteTimeSpan"/>.</summary>
+    /// <summary>Maps <see cref="Timeout.InfiniteTimeSpan"/> to zero, which TRNRun reads as no limit.</summary>
     private static TimeSpan? Unlimited(TimeSpan? timeout) => timeout == Timeout.InfiniteTimeSpan ? TimeSpan.Zero : timeout;
 
     /// <summary>Returns the absolute TrnEXE path, checking that the file exists.</summary>
@@ -119,13 +122,13 @@ public sealed record SimulationSettings
         return trnexe;
     }
 
-    /// <summary>Returns TRNRun's keyword for a window behavior.</summary>
+    /// <summary>Returns the <c>--guiVisibility</c> keyword for a window behavior.</summary>
     private static string GuiVisibilityName(GuiVisibility value) => value switch
     {
-        TRNRun.GuiVisibility.KeepOpen => "keepOpen",
-        TRNRun.GuiVisibility.AutoClose => "autoClose",
-        TRNRun.GuiVisibility.Minimized => "minimized",
-        TRNRun.GuiVisibility.MinimizedAuto => "minimizedAuto",
+        TRNRun.GuiVisibility.KeepOpen => "keep",
+        TRNRun.GuiVisibility.AutoClose => "auto",
+        TRNRun.GuiVisibility.Minimized => "min",
+        TRNRun.GuiVisibility.MinimizedAuto => "minauto",
         TRNRun.GuiVisibility.Hidden => "hidden",
         _ => throw new ArgumentOutOfRangeException(nameof(GuiVisibility), value, "Unknown GUI visibility."),
     };

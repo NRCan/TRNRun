@@ -40,7 +40,7 @@ suite "protocol":
   teardown:
     # Queued first, so cancelling a running one starts nothing.
     for state in [ssQueued, ssRunning]:
-      for simId in scheduler.list(state):
+      for simId in scheduler.list({state}):
         discard scheduler.cancel(simId)
 
   test "ready answers true":
@@ -136,22 +136,27 @@ suite "protocol":
     check request(%*{"cmd": "release", "simId": simId}) == %*{"ok": true}
     check request(%*{"cmd": "simulation", "simId": simId}).rejects("Unknown simId: " & $simId)
 
-  test "simulations returns those in a state, oldest first":
+  test "simulations returns those in the given states, oldest first":
     let
       running = add(createDeck(dir, "wait-g1.dck"))
       queued = [add(createDeck(dir, "wait-g2.dck")), add(createDeck(dir, "wait-g3.dck"))]
-    proc simIds(state: string): seq[int] =
-      ## The simIds `simulations` returns for `state`.
+    proc simIds(state: JsonNode): seq[int] =
+      ## The simIds `simulations` returns for `state`, every state when null.
       let response = request(%*{"cmd": "simulations", "state": state})
       check response["ok"].getBool()
       result = @[]
       for simulation in response["simulations"]:
         result.add(simulation["simId"].getInt())
-    check simIds("RUNNING") == @[running]
-    check simIds("QUEUED") == @[queued[0], queued[1]]
-    check running notin simIds("FINISHED")
+    check simIds(%"RUNNING") == @[running]
+    check simIds(%"QUEUED") == @[queued[0], queued[1]]
+    check running notin simIds(%"FINISHED")
+    check simIds(%*["QUEUED", "RUNNING"]) == @[running, queued[0], queued[1]]
+    check simIds(newJArray()).len == 0
+    let all = simIds(newJNull())
+    check all[^3 .. ^1] == @[running, queued[0], queued[1]]
+    check request(%*{"cmd": "simulations"}) == request(%*{"cmd": "simulations", "state": nil})
     discard request(%*{"cmd": "cancel", "simId": running})
-    check running in simIds("FINISHED")
+    check running in simIds(%"FINISHED")
     let listed = request(%*{"cmd": "simulations", "state": "RUNNING"})["simulations"][0]
     check not listed.hasKey("logs")
 
@@ -169,9 +174,10 @@ suite "protocol":
     check request(%*{"cmd": "simulations", "state": "RUNNING", "withLogs": 1}).rejects(
       "'withLogs' must be true or false")
 
-  test "simulations refuses a missing or unknown state":
-    for node in [%*{"cmd": "simulations"}, %*{"cmd": "simulations", "state": "DONE"}]:
-      check request(node).rejects("'state' must be QUEUED, RUNNING or FINISHED")
+  test "simulations refuses an unknown state":
+    for state in [%"DONE", %1, %*["RUNNING", "DONE"], %*[["RUNNING"]], %*{"RUNNING": true}]:
+      check request(%*{"cmd": "simulations", "state": state}).rejects(
+        "'state' must be QUEUED, RUNNING or FINISHED, or an array of them")
 
   test "unknown simIds are refused":
     for cmd in ["simulation", "cancel", "release"]:

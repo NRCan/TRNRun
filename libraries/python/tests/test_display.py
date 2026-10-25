@@ -1,5 +1,6 @@
 """Display: render's one line per simulation, in a terminal and in a notebook."""
 
+from datetime import UTC, datetime
 from io import StringIO
 from pathlib import Path
 
@@ -68,6 +69,18 @@ def test_render_reported_progress() -> None:
     assert "Elapsed: 01:02:05" in line
     assert "ETA: 00:00:00" in line  # A negative estimate is clamped.
     assert f"[{'#' * 10}{'-' * 10}]  4,380 /  8,760 (50%)" in line
+
+
+def test_render_wall_clock_elapsed_without_progress() -> None:
+    """Without the runner's elapsed time, the time from start to finish shows."""
+    sim = Simulation(
+        sim_id=1,
+        state=SimulationState.FINISHED,
+        deck_file=Path("a.dck"),
+        started_at=datetime(2026, 10, 22, 14, 3, 12, tzinfo=UTC),
+        finished_at=datetime(2026, 10, 22, 14, 4, 17, tzinfo=UTC),
+    )
+    assert "Elapsed: 00:01:05" in render(sim).plain
 
 
 def test_render_name_and_bar_bounds() -> None:
