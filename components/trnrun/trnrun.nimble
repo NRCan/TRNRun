@@ -16,12 +16,12 @@ const
   buildDir = "build"
   cacheDir = buildDir & "/nimcache"
   distDir = "dist"
-  resourceScript = "../../assets/trnrun.rc"
+  resourceScript = "../../scripts/trnrun.rc"
   iconFile = "../../assets/trnrun-mark.ico"
   matlabBinDir = "../../libraries/matlab/toolbox/bin"
   pythonBinDir = "../../libraries/python/trnrun/bin"
   target = "x86_64-windows-gnu"
-  zigcc = "scripts/zigcc.bat"
+  zigcc = "../../scripts/zigcc.bat"
 
 # Build
 proc compileResource(): string =

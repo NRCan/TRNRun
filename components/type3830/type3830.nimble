@@ -41,7 +41,7 @@ const
   packageReadmeFile = "README.md"
   licenseSourceFile = "../../LICENSE"
   packageLicenseFile = "LICENSE"
-  zigcc = "scripts/zigcc.bat"
+  zigcc = "../../scripts/zigcc.bat"
 
   arch64 = Arch(
     cpu: "amd64",

@@ -5,6 +5,13 @@
 *.nim text eol=lf
 *.md text eol=lf
 *.m text eol=lf
+*.cs text eol=lf
+*.xaml text eol=lf
+*.csproj text eol=lf
+*.props text eol=lf
+*.targets text eol=lf
+*.slnx text eol=lf
+*.bat text eol=crlf
 
 *.exe binary
 *.dll binary

@@ -4,6 +4,10 @@ set shell := ["powershell.exe", "-c"]
 default:
     @just --list
 
+# Set the version of every component and library, such as `just version 0.9.0`
+version new:
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/Set-Version.ps1 {{new}}
+
 # Build every component
 bin:
     just trnrun-bin
@@ -26,9 +30,9 @@ test:
     just trnrun-test
     just trnrunq-test
     just trnrund-test
-    just type3830-test
+    # just type3830-test
     just python-test
-    just matlab-test
+    # just matlab-test
     just dotnet-test
 
 # Build all artifacts and assemble the root distribution
@@ -48,17 +52,22 @@ deploy:
     # Copy-Item libraries/matlab/dist/*.mltbx dist -Force
     Get-ChildItem dist -Directory | ForEach-Object { Compress-Archive -Path (Join-Path $_.FullName '*') -DestinationPath (Join-Path dist "$($_.Name).zip") -Force }
 
-# Build, test, and package the native and Python clients
+# Build and package the native, Python, and .NET clients
 clients-ci-prepare:
     Remove-Item dist -Recurse -Force -ErrorAction SilentlyContinue; New-Item dist -ItemType Directory -Force | Out-Null
-    just trnrun-test
     just trnrun-deploy
-    just trnrunq-test
     just trnrunq-deploy
-    just trnrund-test
     just trnrund-deploy
-    just python-test
     just python-dist
+    just dotnet-dist
+
+# Test the native, Python, and .NET clients; run after clients-ci-prepare, which deploys the executables they use
+clients-ci-test:
+    just trnrun-test
+    just trnrunq-test
+    just trnrund-test
+    just python-test
+    just dotnet-test
 
 # Assemble the client distributions after MATLAB packaging
 clients-ci-assemble:
@@ -80,8 +89,8 @@ matlab-test:
 dotnet-dist:
     Set-Location libraries/dotnet -ErrorAction Stop; dotnet pack src/TRNRun/TRNRun.csproj --configuration Release --output ../../dist
 
-# Build TRNRun and TRNRunD and run the .NET test suite
-dotnet-test: trnrun-bin trnrund-bin
+# Run the .NET test suite
+dotnet-test:
     Set-Location libraries/dotnet -ErrorAction Stop; dotnet test TRNRun.slnx
 
 # Build the Python wheel

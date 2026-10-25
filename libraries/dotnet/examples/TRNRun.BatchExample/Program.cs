@@ -1,4 +1,4 @@
-// Example: running copies of the example deck and reporting each one as it finishes.
+// Example: running copies of the example deck, printing progress every second and reporting each one as it finishes.
 //
 // Usage: TRNRun.BatchExample [workers] [TrnEXE64.exe]
 // workers defaults to 4; TrnEXE64.exe defaults to TRNRun's, C:\TRNSYS18\Exe\TrnEXE64.exe.
@@ -23,7 +23,8 @@ foreach (string deck in decks)
     File.Copy(master, deck, overwrite: true);
 }
 
-var settings = new SimulationSettings { TrnexePath = args.ElementAtOrDefault(1) };
+// The deck has Type3830, which WatchTmp needs to report progress.
+var settings = new SimulationSettings { TrnexePath = args.ElementAtOrDefault(1), WatchTmp = true };
 
 await using TRNRunDaemon daemon = await TRNRunDaemon.StartAsync(workers);
 foreach (string deck in decks)
@@ -38,7 +39,12 @@ int finished = 0;
 int failed = 0;
 while (finished < decks.Length)
 {
-    await Task.Delay(TimeSpan.FromMilliseconds(500));
+    await Task.Delay(TimeSpan.FromSeconds(1));
+    foreach (Simulation sim in await daemon.GetSimulationsAsync(SimulationState.Running))
+    {
+        Console.WriteLine($"  {sim.Label}: {sim.Percent?.ToString("P0") ?? "?"}, ETA {sim.Eta?.ToString(@"hh\:mm\:ss") ?? "?"}");
+    }
+
     foreach (Simulation sim in await daemon.GetSimulationsAsync(SimulationState.Finished, withLogs: true))
     {
         finished++;
