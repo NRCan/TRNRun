@@ -73,12 +73,11 @@ Install the TRNRun toolbox from the MATLAB Add-On Explorer.
 Run a deck:
 
 ```matlab
-config = trnrun.SimulationConfig(watch_tmp=true);
-manager = trnrun.SimulationManager();
+import trnrun.*
+manager = SimulationManager(workers=1);
 
-simulation = manager.add("C:\path\to\deck.dck", config);
-manager.wait();
-manager.shutdown();
+simulation = manager.add("C:\path\to\deck.dck", ...
+    SimulationSettings(watchTmp=true), waitFor="FINISHED");
 ```
 
 See the [MATLAB documentation](libraries/matlab/) for installation, concurrent
