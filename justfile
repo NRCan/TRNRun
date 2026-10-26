@@ -11,14 +11,12 @@ version new:
 # Build every component
 bin:
     just trnrun-bin
-    just trnrunq-bin
     just trnrund-bin
     just type3830-bin
 
 # Assemble every component distribution
 dist:
     just trnrun-dist
-    just trnrunq-dist
     just trnrund-dist
     just type3830-dist
     just python-dist
@@ -28,7 +26,6 @@ dist:
 # Run every component test suite
 test:
     just trnrun-test
-    just trnrunq-test
     just trnrund-test
     # just type3830-test
     just python-test
@@ -40,14 +37,12 @@ deploy:
     Remove-Item dist -Recurse -Force -ErrorAction SilentlyContinue; New-Item dist -ItemType Directory -Force | Out-Null
     just type3830-deploy
     just trnrun-deploy
-    just trnrunq-deploy
     just trnrund-deploy
     just python-dist
     # just matlab-dist
     just dotnet-dist
     Copy-Item components/type3830/dist/* dist -Recurse -Force
     Copy-Item components/trnrun/dist/* dist -Recurse -Force
-    Copy-Item components/trnrunq/dist/* dist -Recurse -Force
     Copy-Item components/trnrund/dist/* dist -Recurse -Force
     # Copy-Item libraries/matlab/dist/*.mltbx dist -Force
     Get-ChildItem dist -Directory | ForEach-Object { Compress-Archive -Path (Join-Path $_.FullName '*') -DestinationPath (Join-Path dist "$($_.Name).zip") -Force }
@@ -56,7 +51,6 @@ deploy:
 clients-ci-prepare:
     Remove-Item dist -Recurse -Force -ErrorAction SilentlyContinue; New-Item dist -ItemType Directory -Force | Out-Null
     just trnrun-deploy
-    just trnrunq-deploy
     just trnrund-deploy
     just python-dist
     just dotnet-dist
@@ -64,7 +58,6 @@ clients-ci-prepare:
 # Test the native, Python, and .NET clients; run after clients-ci-prepare, which deploys the executables they use
 clients-ci-test:
     just trnrun-test
-    just trnrunq-test
     just trnrund-test
     just python-test
     just dotnet-test
@@ -72,7 +65,6 @@ clients-ci-test:
 # Assemble the client distributions after MATLAB packaging
 clients-ci-assemble:
     Copy-Item components/trnrun/dist/* dist -Recurse -Force
-    Copy-Item components/trnrunq/dist/* dist -Recurse -Force
     Copy-Item components/trnrund/dist/* dist -Recurse -Force
     Copy-Item libraries/matlab/dist/*.mltbx dist -Force
     Get-ChildItem dist -Directory | ForEach-Object { Compress-Archive -Path (Join-Path $_.FullName '*') -DestinationPath (Join-Path dist "$($_.Name).zip") -Force }
@@ -116,22 +108,6 @@ trnrun-deploy:
 # Build TRNRun and run its tests
 trnrun-test: trnrun-bin
     Set-Location components/trnrun -ErrorAction Stop; nimble test
-
-# Build the TRNRunQ release executable
-trnrunq-bin:
-    Set-Location components/trnrunq -ErrorAction Stop; nimble bin
-
-# Assemble the TRNRunQ distribution
-trnrunq-dist:
-    Set-Location components/trnrunq -ErrorAction Stop; nimble dist
-
-# Build, assemble, and deploy TRNRunQ to the MATLAB toolbox
-trnrunq-deploy:
-    Set-Location components/trnrunq -ErrorAction Stop; nimble deploy
-
-# Deploy TRNRun and run the TRNRunQ tests
-trnrunq-test:
-    Set-Location components/trnrunq -ErrorAction Stop; nimble test
 
 # Build the TRNRunD release executable
 trnrund-bin:

@@ -12,19 +12,18 @@ Python, MATLAB, .NET, or the command line.
 
 ## Components
 
-| Component                            | Role                                                                  |
-| ------------------------------------ | --------------------------------------------------------------------- |
-| [TRNRun Runner](components/trnrun/)  | Runs and monitors one deck, emitting JSON Lines events.               |
-| [TRNRun Queue](components/trnrunq/)  | Runs multiple decks with bounded concurrency and merges their events. |
-| [TRNRun Daemon](components/trnrund/) | Queues and tracks simulations for one client over a JSON pipe.        |
-| [Type3830](components/type3830/)     | Reports simulation progress for monitoring and stall detection.       |
+| Component                            | Role                                                            |
+| ------------------------------------ | --------------------------------------------------------------- |
+| [TRNRun Runner](components/trnrun/)  | Runs and monitors one deck, emitting JSON Lines events.         |
+| [TRNRun Daemon](components/trnrund/) | Queues and tracks simulations for one client over a JSON pipe.  |
+| [Type3830](components/type3830/)     | Reports simulation progress for monitoring and stall detection. |
 
 ## Libraries
 
 | Client                      | Role                                                        | Bundles             |
 | --------------------------- | ----------------------------------------------------------- | ------------------- |
 | [Python](libraries/python/) | Python interface for running concurrent simulation batches. | `trnrun`, `trnrund` |
-| [MATLAB](libraries/matlab/) | MATLAB interface for running concurrent simulation batches. | `trnrun`, `trnrunq` |
+| [MATLAB](libraries/matlab/) | MATLAB interface for running concurrent simulation batches. | `trnrun`, `trnrund` |
 | [.NET](libraries/dotnet/)   | .NET interface for running concurrent simulation batches.   | `trnrun`, `trnrund` |
 
 ## Requirements

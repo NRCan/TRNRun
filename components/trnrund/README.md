@@ -344,6 +344,3 @@ default TRNSYS 18 executable path.
 - [TRNRun Runner](https://github.com/NRCan/TRNRun/tree/main/components/trnrun):
   runs a single TRNSYS simulation and reports its lifecycle as a JSON Lines
   event stream.
-- [TRNRun Queue](https://github.com/NRCan/TRNRun/tree/main/components/trnrunq):
-  runs batches of simulations through a bounded pool of runners and merges
-  their events into a single stream.

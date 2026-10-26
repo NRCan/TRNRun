@@ -484,9 +484,6 @@ They expect
 
 ## See also
 
-- [TRNRun Queue](https://github.com/NRCan/TRNRun/tree/main/components/trnrunq):
-  runs batches of simulations through a bounded pool of runners and merges
-  their events into a single stream.
 - [TRNRun Daemon](https://github.com/NRCan/TRNRun/tree/main/components/trnrund):
   runs simulations on behalf of a client application and answers for their
   progress, results, and logs over stdin and stdout.
