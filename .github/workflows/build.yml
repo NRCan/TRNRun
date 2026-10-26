@@ -66,6 +66,7 @@ jobs:
           just --version
 
       # MATLAB steps use matlab-actions for licensing, so just builds everything else around them.
+      # Type3830 is left out: building, deploying, and testing it needs an installed TRNSYS.
       - name: Build TRNRun
         run: just clean trnrun-deploy
 

@@ -130,7 +130,8 @@ classdef SimulationManager < handle
             while true
                 obj.refresh();
                 current = obj.tracked(simulations);
-                [~, reached] = ismember([current.state], obj.States);
+                % string() because [current.state] is a double [] when nothing is tracked.
+                [~, reached] = ismember(string([current.state]), obj.States);
                 if all(reached >= target)
                     return
                 end
