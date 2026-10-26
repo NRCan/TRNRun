@@ -1,5 +1,7 @@
 import std/[os, osproc, strutils, times, unittest]
 
+import ./junit
+
 const
   Trnsys17Exe = r"C:\Trnsys17\Exe\TrnEXE.exe"
   Trnsys18Exe = r"C:\TRNSYS18\Exe\TrnEXE64.exe"

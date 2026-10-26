@@ -1,5 +1,7 @@
 import std/[sequtils, unittest]
 
+import ./junit
+
 include ../src/monitor
 
 

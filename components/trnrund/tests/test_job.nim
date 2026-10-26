@@ -1,5 +1,7 @@
 import std/unittest
 
+import ./junit
+
 include ../src/job
 
 proc isProcessInJob(

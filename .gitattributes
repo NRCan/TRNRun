@@ -12,6 +12,8 @@
 *.targets text eol=lf
 *.slnx text eol=lf
 *.bat text eol=crlf
+*.dck text eol=crlf
+*.tmf text eol=crlf
 
 *.exe binary
 *.dll binary

@@ -1,6 +1,7 @@
 import std/[json, monotimes, os, osproc, streams, strutils, times, unittest]
 
 import ./fake_trnrun
+import ./junit
 
 const TestVersion = "daemon-test-version"
 

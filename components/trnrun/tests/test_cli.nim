@@ -1,6 +1,7 @@
 import std/unittest
 
 import ../src/[cli, events, settings]
+import ./junit
 
 
 suite "CLI options":

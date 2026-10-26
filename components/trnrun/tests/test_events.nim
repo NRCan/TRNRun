@@ -1,6 +1,7 @@
 import std/[json, options, times, unittest]
 
 import ../src/events
+import ./junit
 
 
 proc fixedTimestamp(): DateTime =

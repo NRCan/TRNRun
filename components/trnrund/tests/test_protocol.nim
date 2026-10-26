@@ -3,6 +3,7 @@ import std/[json, os, unittest]
 import ../src/protocol
 import ../src/scheduler
 import ./fake_trnrun
+import ./junit
 
 let dir = createDeckDir()
 

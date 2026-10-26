@@ -1,6 +1,7 @@
 import std/[atomics, os, unittest, winlean]
 
 import ../src/filedialog
+import ./junit
 
 
 const

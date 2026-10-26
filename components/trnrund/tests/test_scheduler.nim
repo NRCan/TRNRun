@@ -2,6 +2,7 @@ import std/[monotimes, options, os, strutils, times, unittest]
 
 import ../src/scheduler
 import ./fake_trnrun
+import ./junit
 
 proc simulationOf(scheduler: Scheduler, simId: int): Simulation =
   ## The simulation `simId`, which must exist.

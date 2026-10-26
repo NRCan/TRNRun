@@ -1,13 +1,138 @@
-name: Build Windows distributions
+name: Build and test Windows distributions
 
 on:
   workflow_dispatch:
+    inputs:
+      skip-tests:
+        description: Skip the test suites
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 jobs:
   build:
-    uses: ./.github/workflows/build-and-test.yml
-    with:
-      skip-tests: true
+    name: ${{ inputs.skip-tests && 'Build' || 'Build and test' }} TRNRun clients
+    runs-on: windows-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: libraries/python/uv.lock
+
+      - name: Set up MATLAB
+        uses: matlab-actions/setup-matlab@v3
+        with:
+          release: R2026a
+
+      - name: Set up Nim
+        uses: jiro4989/setup-nim-action@v2
+        with:
+          nim-version: "2.2.12"
+
+      - name: Set up Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: "0.17.0"
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: libraries/dotnet/global.json
+
+      - name: Set up just
+        uses: extractions/setup-just@v4
+
+      - name: Report tool versions
+        run: |
+          python --version
+          uv --version
+          nim --version
+          nimble --version
+          zig version
+          dotnet --version
+          just --version
+
+      # MATLAB steps use matlab-actions for licensing, so just builds everything else around them.
+      - name: Build TRNRun
+        run: just clean trnrun-deploy
+
+      - name: Build TRNRunD
+        run: just trnrund-deploy
+
+      - name: Build Python wheel
+        run: just python-dist
+
+      # The test steps check this id, so it must stay on the last build step.
+      - name: Build .NET package
+        id: build
+        run: just dotnet-dist
+
+      # Every suite runs once the build succeeds, even if an earlier suite failed.
+      - name: Test TRNRun
+        if: ${{ !inputs.skip-tests && !cancelled() && steps.build.outcome == 'success' }}
+        run: just trnrun-test
+
+      - name: Test TRNRunD
+        if: ${{ !inputs.skip-tests && !cancelled() && steps.build.outcome == 'success' }}
+        run: just trnrund-test
+
+      - name: Test Python client
+        if: ${{ !inputs.skip-tests && !cancelled() && steps.build.outcome == 'success' }}
+        run: just python-test
+
+      - name: Test .NET client
+        if: ${{ !inputs.skip-tests && !cancelled() && steps.build.outcome == 'success' }}
+        run: just dotnet-test
+
+      - name: Test MATLAB toolbox
+        if: ${{ !inputs.skip-tests && !cancelled() && steps.build.outcome == 'success' }}
+        uses: matlab-actions/run-build@v3
+        with:
+          tasks: test
+          startup-options: -sd libraries/matlab
+
+      - name: Publish test results
+        if: ${{ !inputs.skip-tests && !cancelled() && steps.build.outcome == 'success' }}
+        uses: EnricoMi/publish-unit-test-result-action/windows@7622c5bf3d112a72ab4fa3951c2aa5723d8ab92d # v2.25.0
+        with:
+          files: |
+            TestResults/*.xml
+            TestResults/*.trx
+            TestResults/nim/*.xml
+          # Job summary only, so the workflow needs no checks or pull-requests permission.
+          check_run: false
+          comment_mode: off
+
+      - name: Build MATLAB toolbox
+        uses: matlab-actions/run-build@v3
+        with:
+          tasks: clean package
+          startup-options: -sd libraries/matlab
+
+      - name: Assemble client distributions
+        run: just assemble
+
+      - name: Upload Windows distributions
+        uses: actions/upload-artifact@v7
+        with:
+          name: trnrun-windows-distributions
+          path: |
+            dist/*.whl
+            dist/*.mltbx
+            dist/*.zip
+            dist/*.nupkg
+            dist/*.snupkg
+          if-no-files-found: error

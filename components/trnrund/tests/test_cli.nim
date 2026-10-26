@@ -1,6 +1,7 @@
 import std/[cpuinfo, os, unittest]
 
 import ../src/cli
+import ./junit
 
 suite "command line":
   test "defaults to trnrun.exe beside the daemon and one worker per spare CPU":
