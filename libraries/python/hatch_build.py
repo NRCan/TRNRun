@@ -30,15 +30,12 @@ class CustomBuildHook(BuildHookInterface):
         package_version = self.metadata.version
 
         for executable in executables:
-            result = subprocess.run([executable, "--version"], check=True, capture_output=True, text=True)
+            result = subprocess.run([executable, "--version"], check=True, capture_output=True, text=True, timeout=30)
             executable_version = result.stdout.strip()
 
             if executable_version != package_version:
-                raise ValueError(
-                    f"{executable.name} version ",
-                    f"{executable_version!r} does not match package ",
-                    f"version {package_version!r}",
-                )
+                message = f"{executable.name} version {executable_version!r} does not match package version {package_version!r}"
+                raise ValueError(message)
 
         build_data["pure_python"] = False
         build_data["tag"] = "py3-none-win_amd64"

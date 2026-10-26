@@ -6,13 +6,13 @@ function simulations = example_manager()
 %   closes trnrund.
 
     example_folder = string(fileparts(mfilename("fullpath")));
-    addpath(fileparts(example_folder))
+    addpath(fullfile(example_folder, "..", "toolbox"))
     import trnrun.*
 
     % -------------------------------------------------------------------------
     % Configuration
     % -------------------------------------------------------------------------
-    master_dck = fullfile(example_folder, "..", "..", "..", "..", "decks", ...
+    master_dck = fullfile(example_folder, "..", "..", "..", "decks", ...
         "slow_wo_plot_w_tracking.dck");
     dck_folder = fullfile(example_folder, "runs");
     settings = SimulationSettings(watchTmp=true);

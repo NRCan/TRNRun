@@ -11,5 +11,6 @@
   <Folder Name="/tests/">
     <Project Path="tests/TRNRun.Tests/TRNRun.Tests.csproj" />
     <Project Path="tests/TRNRun.FakeTrnrun/TRNRun.FakeTrnrun.csproj" />
+    <Project Path="tests/TRNRun.ManualStress/TRNRun.ManualStress.csproj" />
   </Folder>
 </Solution>

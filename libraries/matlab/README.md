@@ -518,8 +518,8 @@ daemon.close();
 ## Examples
 
 The examples run `decks/slow_wo_plot_w_tracking.dck` from a clone of this
-repository; the toolbox does not ship the deck. Set `toolbox/examples` as the
-current folder, then run:
+repository. Set `libraries/matlab/examples` as
+the current folder, then run:
 
 - `simulation = example_single();` runs one deck with Type3830 progress.
 - `simulations = example_manager();` runs ten copies of a deck, five at a

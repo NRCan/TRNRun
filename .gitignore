@@ -38,7 +38,7 @@ codegen/
 .MATLABDriveTag
 libraries/matlab/toolbox/LICENSE
 libraries/matlab/toolbox/README.md
-libraries/matlab/toolbox/examples/dck/
+libraries/matlab/examples/runs/
 
 
 # Build & Dist

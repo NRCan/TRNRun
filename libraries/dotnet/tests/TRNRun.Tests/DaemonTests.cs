@@ -178,6 +178,19 @@ public sealed class DaemonTests : IDisposable
     }
 
     [Fact]
+    public async Task AQueuedRequestCanBeCancelledAndADyingTrnrundIsReported()
+    {
+        // A batch file stands in for trnrund: it answers the ready request, reads one more, then exits about a second later without answering.
+        string fake = Path.Combine(_decks.Directory, "dies.cmd");
+        File.WriteAllText(fake, "@set /p request=\r\n@echo {\"ok\":true}\r\n@set /p request=\r\n@ping -n 2 127.0.0.1 >nul\r\n");
+        await using TRNRunDaemon daemon = await TRNRunDaemon.StartAsync(trnrundPath: fake, trnrunPath: Decks.FakeTrnrun);
+        Task<JsonObject> sent = daemon.RequestAsync(new JsonObject { ["cmd"] = "ready" });
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMilliseconds(100));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => daemon.RequestAsync(new JsonObject { ["cmd"] = "ready" }, timeout.Token));
+        Assert.Contains("exited with code", (await Assert.ThrowsAsync<DaemonExitedException>(() => sent)).Message);
+    }
+
+    [Fact]
     public async Task RequestsFromThreadsTakeTurns()
     {
         using TRNRunDaemon daemon = await StartAsync();

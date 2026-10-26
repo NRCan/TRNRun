@@ -127,6 +127,8 @@ classdef SimulationManagerTest < matlab.unittest.TestCase
                 'MATLAB:validators:mustBeMember');
             testCase.verifyError(@() manager.wait(until="DONE"), ...
                 'MATLAB:validators:mustBeMember');
+            testCase.verifyError(@() manager.add(fullfile(testCase.Folder, 'missing.dck')), ...
+                'MATLAB:validators:mustBeFile');
             testCase.verifyEmpty(manager.daemon.simulations("QUEUED"));
             testCase.verifyEmpty(manager.simulations);
         end
@@ -158,6 +160,21 @@ classdef SimulationManagerTest < matlab.unittest.TestCase
 
             testCase.verifyEqual(simulation.trnrunArgs, "--watchTmp:true");
             testCase.verifyEqual(simulation.label, "tagged");
+        end
+
+        function nonAsciiTextRoundTrips(testCase)
+            %NONASCIITEXTROUNDTRIPS Accented paths and labels survive trnrund's UTF-8 pipes.
+
+            testCase.Folder = fullfile(testCase.Folder, "résultats");
+            mkdir(testCase.Folder);
+            manager = testCase.makeManager();
+            deck = testCase.deck();
+
+            simulation = manager.add(deck, label="bâtiment", waitFor="FINISHED");
+
+            testCase.verifyEqual(simulation.deckFile, deck);
+            testCase.verifyEqual(simulation.label, "bâtiment");
+            testCase.verifyTrue(simulation.succeeded);
         end
 
         function aFailedRunHasNotSucceeded(testCase)

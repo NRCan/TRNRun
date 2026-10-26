@@ -5,10 +5,10 @@ function simulation = example_daemon()
 %   releases it and returns it. Ctrl+C also closes trnrund.
 
     example_folder = string(fileparts(mfilename("fullpath")));
-    addpath(fileparts(example_folder))
+    addpath(fullfile(example_folder, "..", "toolbox"))
     import trnrun.*
 
-    deck_file = fullfile(example_folder, "..", "..", "..", "..", "decks", ...
+    deck_file = fullfile(example_folder, "..", "..", "..", "decks", ...
         "slow_wo_plot_w_tracking.dck");
 
     daemon = Daemon(workers=1);
