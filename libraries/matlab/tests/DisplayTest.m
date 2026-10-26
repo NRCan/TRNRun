@@ -1,14 +1,15 @@
 classdef DisplayTest < matlab.unittest.TestCase
     %DISPLAYTEST Unit tests for trnrun.internal.Display.
-    %   Covers throttling, lazy window creation, row caching, line layout,
+    %   Covers throttling, lazy window creation, row updates, line layout,
     %   completion batching, and teardown of interrupted progress.
     %
     %   Live progress goes to a uifigure text area; completed summaries go to
     %   the Command Window. Every test therefore captures console output with
-    %   EVALC and reads the live block from the text area.
+    %   EVALC and reads the live block from the text area. Simulations are
+    %   parsed from trnrund-shaped records, so no daemon is needed. SHOW
+    %   tracks a simulation and refreshes, as the manager does each poll.
 
     properties
-        Config
         ExistingFigures
     end
 
@@ -25,7 +26,6 @@ classdef DisplayTest < matlab.unittest.TestCase
         function trackFigures(testCase)
             %TRACKFIGURES Remember pre-existing figures so new ones can be closed.
 
-            testCase.Config = trnrun.SimulationConfig();
             testCase.ExistingFigures = findall(groot, 'Type', 'figure');
         end
     end
@@ -48,20 +48,18 @@ classdef DisplayTest < matlab.unittest.TestCase
         function rejectsInvalidRefreshInterval(testCase)
             %REJECTSINVALIDREFRESHINTERVAL The interval is a real, finite scalar.
 
-            finite = 'MATLAB:trnrun:internal:Display:expectedFinite';
-            scalar = 'MATLAB:trnrun:internal:Display:expectedScalar';
-            type = 'MATLAB:trnrun:internal:Display:invalidType';
-            real = 'MATLAB:trnrun:internal:Display:expectedReal';
+            finite = 'MATLAB:validators:mustBeFinite';
+            shape = 'MATLAB:validation:IncompatibleSize';
+            type = 'MATLAB:validation:UnableToConvert';
+            real = 'MATLAB:validators:mustBeReal';
             cases = {NaN, finite; Inf, finite; -Inf, finite; ...
-                [1 2], scalar; [], scalar; 'a', type; "1", type; {1}, type; ...
-                1 + 2i, real};
+                [1 2], shape; [], shape; {1}, type; 1 + 2i, real};
             for index = 1:size(cases, 1)
                 testCase.verifyError( ...
                     @() trnrun.internal.Display(cases{index, 1}), ...
                     cases{index, 2}, sprintf('input %d', index));
             end
         end
-
 
         function acceptsIntegerAndRationalIntervals(testCase)
             %ACCEPTSINTEGERANDRATIONALINTERVALS Numeric input is converted to double.
@@ -78,9 +76,9 @@ classdef DisplayTest < matlab.unittest.TestCase
 
             for interval = [0, -1]
                 display = trnrun.internal.Display(interval);
-                simulation = testCase.makeSimulation(1);
+                simulation = makeSimulation(1);
                 output = [ ...
-                    capture(@() display.simulationStarted(simulation)), ...
+                    show(display, simulation), ...
                     capture(@() display.simulationFinished(simulation)), ...
                     capture(@() display.refresh(true)), ...
                     capture(@() delete(display))];
@@ -105,7 +103,7 @@ classdef DisplayTest < matlab.unittest.TestCase
             testCase.verifyEmpty(testCase.newFigures(), ...
                 'An empty refresh has nothing to show.');
 
-            capture(@() display.simulationStarted(testCase.makeSimulation(1)));
+            show(display, makeSimulation(1));
             testCase.verifyNumElements(testCase.newFigures(), 1);
             testCase.verifyNumElements(testCase.textArea().Value, 1, ...
                 'The first simulation must be rendered immediately.');
@@ -115,7 +113,7 @@ classdef DisplayTest < matlab.unittest.TestCase
             %TEXTAREAISREADONLYANDUNWRAPPED Fixed-width columns must not be reflowed.
 
             display = testCase.makeDisplay(3600);
-            capture(@() display.simulationStarted(testCase.makeSimulation(1)));
+            show(display, makeSimulation(1));
             area = testCase.textArea();
 
             testCase.verifyEqual(char(area.Editable), 'off');
@@ -127,13 +125,12 @@ classdef DisplayTest < matlab.unittest.TestCase
             %CLOSEDWINDOWISNEVERREOPENED Closing the window opts out of live updates.
 
             display = testCase.makeDisplay(3600);
-            simulation = testCase.makeSimulation(1);
-            capture(@() display.simulationStarted(simulation));
+            show(display, makeSimulation(1));
             window = testCase.newFigures();
             close(window);
             testCase.assertFalse(isgraphics(window));
 
-            capture(@() display.simulationStarted(testCase.makeSimulation(2)));
+            show(display, makeSimulation(2));
             capture(@() display.refresh(true));
 
             testCase.verifyEmpty(testCase.newFigures(), ...
@@ -144,7 +141,7 @@ classdef DisplayTest < matlab.unittest.TestCase
             %DELETECLOSESTHEWINDOW Deleting the display tears down its window.
 
             display = trnrun.internal.Display(3600);
-            capture(@() display.simulationStarted(testCase.makeSimulation(1)));
+            show(display, makeSimulation(1));
             window = testCase.newFigures();
 
             capture(@() delete(display));
@@ -156,14 +153,13 @@ classdef DisplayTest < matlab.unittest.TestCase
         % Throttling
         % -----------------------------------------------------------------
 
-
         function laterSimulationsAreThrottled(testCase)
             %LATERSIMULATIONSARETHROTTLED Additional starts wait for the interval.
 
             display = testCase.makeDisplay(3600);
-            capture(@() display.simulationStarted(testCase.makeSimulation(1)));
-            capture(@() display.simulationStarted(testCase.makeSimulation(2)));
-            capture(@() display.simulationStarted(testCase.makeSimulation(3)));
+            show(display, makeSimulation(1));
+            show(display, makeSimulation(2));
+            show(display, makeSimulation(3));
             area = testCase.textArea();
 
             testCase.verifyNumElements(area.Value, 1);
@@ -176,10 +172,8 @@ classdef DisplayTest < matlab.unittest.TestCase
             %REFRESHHONOURSTHEINTERVAL An elapsed interval redraws without forcing.
 
             display = testCase.makeDisplay(1);
-            first = testCase.makeSimulation(1);
-            second = testCase.makeSimulation(2);
-            capture(@() display.simulationStarted(first));
-            capture(@() display.simulationStarted(second));
+            show(display, makeSimulation(1));
+            show(display, makeSimulation(2));
             area = testCase.textArea();
             testCase.assertNumElements(area.Value, 1);
 
@@ -193,19 +187,19 @@ classdef DisplayTest < matlab.unittest.TestCase
             %LIVEPROGRESSNEVERWRITESTOTHECONSOLE Only completions reach the Command Window.
 
             display = testCase.makeDisplay(3600);
-            simulation = testCase.makeSimulation(1);
+            simulation = makeSimulation(1);
 
-            testCase.verifyEmpty(capture(@() display.simulationStarted(simulation)));
+            testCase.verifyEmpty(show(display, simulation));
             testCase.verifyEmpty(capture(@() display.refresh(true)));
         end
 
-        function duplicateStartsAreIgnored(testCase)
-            %DUPLICATESTARTSAREIGNORED A simulation appears at most once.
+        function duplicateTracksAreIgnored(testCase)
+            %DUPLICATETRACKSAREIGNORED A simulation appears at most once.
 
             display = testCase.makeDisplay(3600);
-            simulation = testCase.makeSimulation(1);
-            capture(@() display.simulationStarted(simulation));
-            capture(@() display.simulationStarted(simulation));
+            simulation = makeSimulation(1);
+            show(display, simulation);
+            show(display, simulation);
             capture(@() display.refresh(true));
 
             testCase.verifyNumElements(testCase.textArea().Value, 1);
@@ -219,12 +213,11 @@ classdef DisplayTest < matlab.unittest.TestCase
             %RENDERSEVERYFIELDOFAPROGRESSINGRUN One line carries the whole run summary.
 
             display = testCase.makeDisplay(3600);
-            simulation = testCase.makeSimulation(1, "model.dck");
-            simulation.applyEvent(statusEvent("RUNNING"));
-            simulation.applyEvent(configEvent(8760));
-            simulation.applyEvent(progressEvent(0.5, 1234567, 3661000, 90000000));
-            simulation.applyEvent(logEvent("Warning"));
-            capture(@() display.simulationStarted(simulation));
+            simulation = makeSimulation(1, 'deckFile', 'model.dck', ...
+                'trnrunStatus', 'RUNNING', 'stopTime', 8760, 'percent', 0.5, ...
+                'simTime', 1234567, 'elapsedMs', 3661000, 'etaMs', 90000000, ...
+                'warnings', 1);
+            show(display, simulation);
             line = testCase.textArea().Value{1};
 
             testCase.verifyTrue(startsWith(line, '[1] model.dck'));
@@ -237,26 +230,38 @@ classdef DisplayTest < matlab.unittest.TestCase
         end
 
         function rendersPlaceholdersBeforeTheFirstProgress(testCase)
-            %RENDERSPLACEHOLDERSBEFORETHEFIRSTPROGRESS A pending row still fills every column.
+            %RENDERSPLACEHOLDERSBEFORETHEFIRSTPROGRESS A run without progress still fills every column.
 
             display = testCase.makeDisplay(3600);
-            capture(@() display.simulationStarted( ...
-                testCase.makeSimulation(1, "model.dck")));
+            show(display, makeSimulation(1));
             line = testCase.textArea().Value{1};
 
             testCase.verifySubstring(line, 'Elapsed: --:--:--');
             testCase.verifySubstring(line, 'ETA: --:--:--');
             testCase.verifySubstring(line, '[--------------------] - / -');
-            testCase.verifySubstring(line, 'Status:     ');
+            testCase.verifySubstring(line, 'Status: RUNNING', ...
+                'Without a TRNRun status, the state is shown.');
         end
 
-        function omitsSimulationTimeWithoutAConfigEvent(testCase)
-            %OMITSSIMULATIONTIMEWITHOUTACONFIGEVENT The stop time comes only from CONFIG.
+        function showsTheLabelInsteadOfTheDeckPath(testCase)
+            %SHOWSTHELABELINSTEADOFTHEDECKPATH A label names the row.
 
             display = testCase.makeDisplay(3600);
-            simulation = testCase.makeSimulation(1);
-            simulation.applyEvent(progressEvent(0.25, 100, 1000, 3000));
-            capture(@() display.simulationStarted(simulation));
+            show(display, makeSimulation(1, ...
+                'label', 'building-a', 'deckFile', 'C:\models\model.dck'));
+            line = testCase.textArea().Value{1};
+
+            testCase.verifyTrue(startsWith(line, '[1] building-a'));
+            testCase.verifyFalse(contains(line, 'model.dck'));
+        end
+
+        function omitsSimulationTimeWithoutAStopTime(testCase)
+            %OMITSSIMULATIONTIMEWITHOUTASTOPTIME The stop time comes only from CONFIG.
+
+            display = testCase.makeDisplay(3600);
+            simulation = makeSimulation(1, 'percent', 0.25, 'simTime', 100, ...
+                'elapsedMs', 1000, 'etaMs', 3000);
+            show(display, simulation);
             line = testCase.textArea().Value{1};
 
             testCase.verifySubstring(line, '[#####---------------] - / -');
@@ -267,8 +272,8 @@ classdef DisplayTest < matlab.unittest.TestCase
             %TRUNCATESOVERLONGDECKPATHSFROMTHELEFT The deck name must stay readable.
 
             display = testCase.makeDisplay(3600);
-            capture(@() display.simulationStarted(testCase.makeSimulation(1, ...
-                "C:\a\deeply\nested\output\directory\run_20.dck")));
+            show(display, makeSimulation(1, 'deckFile', ...
+                'C:\a\deeply\nested\output\directory\run_20.dck'));
             line = testCase.textArea().Value{1};
 
             testCase.verifySubstring(line, '...');
@@ -280,11 +285,10 @@ classdef DisplayTest < matlab.unittest.TestCase
             %KEEPSCOLUMNSALIGNEDACROSSPATHLENGTHS Truncation must not shift the columns.
 
             display = testCase.makeDisplay(3600);
-            paths = ["a.dck", "C:\a\deeply\nested\output\dir\run.dck", ...
-                "exactly_thirty_two_characters.dk"];
+            paths = {'a.dck', 'C:\a\deeply\nested\output\dir\run.dck', ...
+                'exactly_thirty_two_characters.dk'};
             for index = 1:numel(paths)
-                    capture(@() display.simulationStarted( ...
-                    testCase.makeSimulation(index + 9, paths(index))));
+                show(display, makeSimulation(index + 9, 'deckFile', paths{index}));
             end
             capture(@() display.refresh(true));
             lines = cellstr(testCase.textArea().Value);
@@ -297,9 +301,9 @@ classdef DisplayTest < matlab.unittest.TestCase
             %CLAMPSNEGATIVEANDUNDEFINEDTIMES Missing timing reads as zero, not garbage.
 
             display = testCase.makeDisplay(3600);
-            simulation = testCase.makeSimulation(1);
-            simulation.applyEvent(progressEvent(0.25, 10, NaN, -1000));
-            capture(@() display.simulationStarted(simulation));
+            simulation = makeSimulation(1, 'percent', 0.25, 'simTime', 10, ...
+                'elapsedMs', [], 'etaMs', -1000);
+            show(display, simulation);
 
             testCase.verifySubstring(testCase.textArea().Value{1}, ...
                 'Elapsed: 00:00:00 | ETA: 00:00:00');
@@ -309,9 +313,9 @@ classdef DisplayTest < matlab.unittest.TestCase
             %REPORTSINFINITEETAASINF An unbounded estimate is labelled, not clamped.
 
             display = testCase.makeDisplay(3600);
-            simulation = testCase.makeSimulation(1);
-            simulation.applyEvent(progressEvent(0.1, 10, 0, Inf));
-            capture(@() display.simulationStarted(simulation));
+            simulation = makeSimulation(1, 'percent', 0.1, 'simTime', 10, ...
+                'elapsedMs', 0, 'etaMs', Inf);
+            show(display, simulation);
 
             testCase.verifySubstring(testCase.textArea().Value{1}, 'ETA: Inf');
         end
@@ -320,9 +324,9 @@ classdef DisplayTest < matlab.unittest.TestCase
             %DOESNOTWRAPHOURSATTWENTYFOUR Long runs report their true elapsed hours.
 
             display = testCase.makeDisplay(3600);
-            simulation = testCase.makeSimulation(1);
-            simulation.applyEvent(progressEvent(0.5, 10, 360000999, 1000));
-            capture(@() display.simulationStarted(simulation));
+            simulation = makeSimulation(1, 'percent', 0.5, 'simTime', 10, ...
+                'elapsedMs', 360000999, 'etaMs', 1000);
+            show(display, simulation);
 
             testCase.verifySubstring(testCase.textArea().Value{1}, ...
                 'Elapsed: 100:00:00 | ETA: 00:00:01');
@@ -339,9 +343,9 @@ classdef DisplayTest < matlab.unittest.TestCase
                 '[####################]', ...
                 '[####################]'};
             for index = 1:numel(fractions)
-                simulation = testCase.makeSimulation(index);
-                simulation.applyEvent(progressEvent(fractions(index), 1, 0, 0));
-                capture(@() display.simulationStarted(simulation));
+                simulation = makeSimulation(index, 'percent', fractions(index), ...
+                    'simTime', 1, 'elapsedMs', 0, 'etaMs', 0);
+                show(display, simulation);
                 capture(@() display.refresh(true));
                 testCase.verifySubstring(testCase.textArea().Value{index}, ...
                     expected{index}, sprintf('fraction %g', fractions(index)));
@@ -352,32 +356,32 @@ classdef DisplayTest < matlab.unittest.TestCase
             %GROUPSTHOUSANDSWITHOUTTOUCHINGSIGNSORNAN Separators apply to digits only.
 
             display = testCase.makeDisplay(3600);
-            simulation = testCase.makeSimulation(1);
-            simulation.applyEvent(configEvent(-1234567));
-            simulation.applyEvent(progressEvent(0.5, 999.6, 0, 0));
-            capture(@() display.simulationStarted(simulation));
+            simulation = makeSimulation(1, 'stopTime', -1234567, ...
+                'percent', 0.5, 'simTime', 999.6, 'elapsedMs', 0, 'etaMs', 0);
+            show(display, simulation);
 
             testCase.verifySubstring(testCase.textArea().Value{1}, ...
                 ' 1,000 / -1,234,567');
         end
 
         % -----------------------------------------------------------------
-        % Row caching
+        % Row updates
         % -----------------------------------------------------------------
 
         function updatingOneRowLeavesTheOthersUnchanged(testCase)
-            %UPDATINGONEROWLEAVESTHEOTHERSUNCHANGED Cached rows are reused verbatim.
+            %UPDATINGONEROWLEAVESTHEOTHERSUNCHANGED Unchanged simulations keep their rows verbatim.
 
             display = testCase.makeDisplay(3600);
-            simulations = arrayfun(@(index) testCase.makeSimulation(index), 1:3, ...
-                'UniformOutput', false);
+            simulations = trnrun.Simulation.empty(1, 0);
             for index = 1:3
-                capture(@() display.simulationStarted(simulations{index}));
+                simulations(index) = makeSimulation(index);
+                show(display, simulations(index));
             end
             capture(@() display.refresh(true));
             before = testCase.textArea().Value;
 
-            simulations{2}.applyEvent(progressEvent(0.75, 20, 1000, 1000));
+            testCase.report(simulations(2), 'percent', 0.75, 'simTime', 20, ...
+                'elapsedMs', 1000, 'etaMs', 1000);
             capture(@() display.refresh(true));
             after = testCase.textArea().Value;
 
@@ -386,22 +390,21 @@ classdef DisplayTest < matlab.unittest.TestCase
             testCase.verifySubstring(after{2}, '(75%)');
         end
 
-        function cachedRowsTrackLogAndStatusChanges(testCase)
-            %CACHEDROWSTRACKLOGANDSTATUSCHANGES The cache key covers every rendered field.
+        function rowsTrackLogAndStatusChanges(testCase)
+            %ROWSTRACKLOGANDSTATUSCHANGES Each redraw renders the latest report.
 
             display = testCase.makeDisplay(3600);
-            simulation = testCase.makeSimulation(1);
-            capture(@() display.simulationStarted(simulation));
+            simulation = makeSimulation(1);
+            show(display, simulation);
 
-            simulation.applyEvent(statusEvent("RUNNING"));
+            testCase.report(simulation, 'trnrunStatus', 'LAUNCHING');
             capture(@() display.refresh(true));
-            testCase.verifySubstring(testCase.textArea().Value{1}, 'Status: RUNNING');
+            testCase.verifySubstring(testCase.textArea().Value{1}, 'Status: LAUNCHING');
 
-            simulation.applyEvent(logEvent("Fatal"));
+            testCase.report(simulation, 'trnrunStatus', 'LAUNCHING', 'fatals', 1);
             capture(@() display.refresh(true));
             testCase.verifySubstring(testCase.textArea().Value{1}, 'N:0 W:0 F:1');
         end
-
 
         % -----------------------------------------------------------------
         % Completion
@@ -411,9 +414,8 @@ classdef DisplayTest < matlab.unittest.TestCase
             %COMPLETIONSAREBATCHEDUNTILAREFRESH Finishing alone prints nothing.
 
             display = testCase.makeDisplay(3600);
-            [first, second] = testCase.makeTwoStarted(display);
-            first.applyEvent(statusEvent("DONE"));
-            first.markCompleted(completionEvent());
+            [first, second] = testCase.makeTwoTracked(display);
+            testCase.finish(first, 'DONE');
 
             testCase.verifyEmpty([ ...
                 capture(@() display.simulationFinished(first)), ...
@@ -427,17 +429,16 @@ classdef DisplayTest < matlab.unittest.TestCase
                 'Summaries must not rely on backspace erasure.');
             testCase.verifyNumElements(testCase.textArea().Value, 1);
             testCase.verifyTrue(startsWith(testCase.textArea().Value{1}, ...
-                sprintf('[%d]', second.id)));
+                sprintf('[%d]', second.simId)));
         end
 
         function theLastCompletionBypassesThrottling(testCase)
             %THELASTCOMPLETIONBYPASSESTHROTTLING An idle display must not hold the summary.
 
             display = testCase.makeDisplay(3600);
-            simulation = testCase.makeSimulation(1);
-            capture(@() display.simulationStarted(simulation));
-            simulation.applyEvent(statusEvent("ERROR"));
-            simulation.markCompleted(completionEvent());
+            simulation = makeSimulation(1);
+            show(display, simulation);
+            testCase.finish(simulation, 'ERROR');
 
             output = [capture(@() display.simulationFinished(simulation)), ...
                 capture(@() display.refresh())];
@@ -449,9 +450,9 @@ classdef DisplayTest < matlab.unittest.TestCase
             %CLEARSTHELIVEBLOCKAFTERTHELASTCOMPLETION No stale rows outlive the batch.
 
             display = testCase.makeDisplay(3600);
-            simulation = testCase.makeSimulation(1);
-            capture(@() display.simulationStarted(simulation));
-            simulation.markCompleted(completionEvent());
+            simulation = makeSimulation(1);
+            show(display, simulation);
+            testCase.finish(simulation, 'DONE');
             capture(@() display.simulationFinished(simulation));
             capture(@() display.refresh());
 
@@ -462,9 +463,9 @@ classdef DisplayTest < matlab.unittest.TestCase
             %COMPLETEDSUMMARIESARENEVERREPEATED A finished run prints exactly once.
 
             display = testCase.makeDisplay(3600);
-            simulation = testCase.makeSimulation(1);
-            capture(@() display.simulationStarted(simulation));
-            simulation.markCompleted(completionEvent());
+            simulation = makeSimulation(1);
+            show(display, simulation);
+            testCase.finish(simulation, 'DONE');
             capture(@() display.simulationFinished(simulation));
             capture(@() display.refresh());
 
@@ -476,11 +477,10 @@ classdef DisplayTest < matlab.unittest.TestCase
             %FLUSHESCOMPLETIONSAFTERTHEWINDOWISCLOSED Final output does not need a window.
 
             display = testCase.makeDisplay(3600);
-            [first, second] = testCase.makeTwoStarted(display);
+            [first, second] = testCase.makeTwoTracked(display);
             close(testCase.newFigures());
             for simulation = [first, second]
-                simulation.applyEvent(statusEvent("DONE"));
-                simulation.markCompleted(completionEvent());
+                testCase.finish(simulation, 'DONE');
                 capture(@() display.simulationFinished(simulation));
             end
 
@@ -489,14 +489,12 @@ classdef DisplayTest < matlab.unittest.TestCase
             testCase.verifyEqual(count(string(output), 'Status: DONE'), 2);
         end
 
-        function ignoresCompletionOfAnUnstartedSimulation(testCase)
-            %IGNORESCOMPLETIONOFANUNSTARTEDSIMULATION Unknown runs have no row to finish.
+        function ignoresCompletionOfAnUntrackedSimulation(testCase)
+            %IGNORESCOMPLETIONOFANUNTRACKEDSIMULATION Unknown runs have no row to finish.
 
             display = testCase.makeDisplay(3600);
-            started = testCase.makeSimulation(1);
-            capture(@() display.simulationStarted(started));
-            stranger = testCase.makeSimulation(2);
-            stranger.markCompleted(completionEvent());
+            show(display, makeSimulation(1));
+            stranger = makeSimulation(2, 'state', 'FINISHED');
 
             testCase.verifyEmpty([ ...
                 capture(@() display.simulationFinished(stranger)), ...
@@ -512,9 +510,7 @@ classdef DisplayTest < matlab.unittest.TestCase
             %DELETEPRINTSINTERRUPTEDPROGRESSONCE Unfinished rows survive as console text.
 
             display = trnrun.internal.Display(3600);
-            simulation = testCase.makeSimulation(1);
-            simulation.applyEvent(statusEvent("RUNNING"));
-            capture(@() display.simulationStarted(simulation));
+            show(display, makeSimulation(1, 'trnrunStatus', 'RUNNING'));
 
             output = capture(@() delete(display));
 
@@ -539,23 +535,26 @@ classdef DisplayTest < matlab.unittest.TestCase
             testCase.addTeardown(@() deleteQuietly(display));
         end
 
-        function simulation = makeSimulation(testCase, id, deckPath)
-            %MAKESIMULATION Create an accepted simulation with a short deck name.
+        function report(~, simulation, varargin)
+            %REPORT Update SIMULATION in place from makeSimulation defaults plus overrides.
 
-            if nargin < 3
-                deckPath = sprintf('run_%02d.dck', id);
-            end
-            simulation = trnrun.Simulation(deckPath, testCase.Config, id);
-            simulation.markAccepted();
+            simulation.update(makeSimulation(simulation.simId, ...
+                'deckFile', simulation.deckFile, varargin{:}));
         end
 
-        function [first, second] = makeTwoStarted(testCase, display)
-            %MAKETWOSTARTED Add two simulations to the display and flush them.
+        function finish(testCase, simulation, status)
+            %FINISH Report SIMULATION finished with TRNRun status STATUS.
 
-            first = testCase.makeSimulation(1);
-            second = testCase.makeSimulation(2);
-            capture(@() display.simulationStarted(first));
-            capture(@() display.simulationStarted(second));
+            testCase.report(simulation, 'state', 'FINISHED', 'trnrunStatus', status);
+        end
+
+        function [first, second] = makeTwoTracked(~, display)
+            %MAKETWOTRACKED Add two simulations to the display and flush them.
+
+            first = makeSimulation(1);
+            second = makeSimulation(2);
+            show(display, first);
+            show(display, second);
             capture(@() display.refresh(true));
         end
 
@@ -583,40 +582,31 @@ function folder = toolboxFolder()
     folder = fullfile(fileparts(fileparts(mfilename('fullpath'))), 'toolbox');
 end
 
-function event = statusEvent(status)
-    %STATUSEVENT Build the STATUS fields the display reads.
+function simulation = makeSimulation(id, varargin)
+    %MAKESIMULATION Parse a RUNNING trnrund record; name-value pairs override fields, [] is null.
 
-    event = struct('kind', "STATUS", 'status', string(status));
+    record = struct('simId', id, 'label', [], 'state', 'RUNNING', ...
+        'deckFile', sprintf('run_%02d.dck', id), 'trnrunArgs', [], ...
+        'trnrunStatus', [], 'trnrunMessage', [], 'percent', [], ...
+        'simTime', [], 'elapsedMs', [], 'etaMs', [], 'startTime', [], ...
+        'stopTime', [], 'timeStep', [], 'setting', [], ...
+        'notices', 0, 'warnings', 0, 'fatals', 0, 'succeeded', [], ...
+        'exitCode', [], 'error', [], 'submittedAt', [], 'startedAt', [], ...
+        'finishedAt', []);
+    for index = 1:2:numel(varargin)
+        record.(varargin{index}) = varargin{index + 1};
+    end
+    simulation = trnrun.Simulation(record);
 end
 
-function event = progressEvent(percent, time, elapsed, eta)
-    %PROGRESSEVENT Build the PROGRESS fields the display reads, in milliseconds.
+function output = show(display, simulation) %#ok<INUSD>
+    %SHOW Track SIMULATION and refresh, as the manager does each poll.
 
-    event = struct('kind', "PROGRESS", 'percent', percent, 'time', time, ...
-        'elapsedMs', elapsed, 'etaMs', eta);
-end
-
-function event = configEvent(stop)
-    %CONFIGEVENT Build the CONFIG fields the display reads.
-
-    event = struct('kind', "CONFIG", 'stop', stop);
-end
-
-function event = logEvent(severity)
-    %LOGEVENT Build the LOG fields the severity tallies read.
-
-    event = struct('kind', "LOG", 'severity', string(severity));
-end
-
-function event = completionEvent()
-    %COMPLETIONEVENT Build a QUEUE/COMPLETED event.
-
-    event = struct('kind', "QUEUE", 'event', "COMPLETED");
+    output = evalc('display.track(simulation); display.refresh();');
 end
 
 function output = capture(fcn) %#ok<INUSD>
     %CAPTURE Run FCN and return everything it wrote to the Command Window.
-    %   EVALC reads fcn from this workspace, which the Code Analyzer cannot see.
 
     output = evalc('fcn()');
 end

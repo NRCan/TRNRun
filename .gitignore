@@ -39,9 +39,6 @@ codegen/
 libraries/matlab/toolbox/LICENSE
 libraries/matlab/toolbox/README.md
 libraries/matlab/toolbox/examples/dck/
-libraries/matlab2/toolbox/LICENSE
-libraries/matlab2/toolbox/README.md
-libraries/matlab2/toolbox/examples/dck/
 
 
 # Build & Dist

@@ -495,33 +495,20 @@ while (remaining > 0)
 
 ## Examples
 
-Runnable examples are available in the
-[TRNRun repository](https://github.com/NRCan/TRNRun/tree/main/libraries/dotnet/examples).
-Every example runs the repository's `decks/slow_wo_plot_w_tracking.dck`, which has
-Type3830 for progress and no plotter, copied beside the example's executable so
-TRNSYS writes its outputs there. Run from this directory; the TrnEXE path is
-optional and defaults to `C:\TRNSYS18\Exe\TrnEXE64.exe`:
+Runnable examples are in
+[`examples`](https://github.com/NRCan/TRNRun/tree/main/libraries/dotnet/examples).
 
 ```powershell
-# The deck once, printing progress and warnings. Ctrl+C interrupts it.
-dotnet run --project examples/TRNRun.Example -- "C:\TRNSYS18\Exe\TrnEXE64.exe"
+# One simulation in the console.
+dotnet run --project examples/TRNRun.Example
 
-# 10 copies of the deck, two at a time, each reported (and released) as it finishes.
-dotnet run --project examples/TRNRun.BatchExample -- 2 "C:\TRNSYS18\Exe\TrnEXE64.exe"
-```
+# 10 simulations, two at a time.
+dotnet run --project examples/TRNRun.BatchExample -- 2
 
-Both return `0` when every simulation succeeded, `1` when one failed, and `2`
-for usage errors.
-
-`examples/TRNRun.SimpleGuiExample` is the least a WPF window needs: it starts
-trnrund and submits the deck when it opens, polls every simulation into a table
-twice a second, shows a run's logs and cancels it from buttons on its row, and
-stops trnrund when it closes. `examples/TRNRun.GuiExample` is a fuller window
-that runs 10 copies of the deck, or the decks and deck directories given on its
-command line; it polls only unfinished runs and reads a run's logs only when
-its log counts grow.
-
-```powershell
+# A minimal GUI, and a fuller one.
 dotnet run --project examples/TRNRun.SimpleGuiExample
-dotnet run --project examples/TRNRun.GuiExample -- "C:\decks"
+dotnet run --project examples/TRNRun.GuiExample
 ```
+
+The console examples take an optional TrnEXE path as their last argument
+(default `C:\TRNSYS18\Exe\TrnEXE64.exe`).

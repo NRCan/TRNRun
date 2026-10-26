@@ -1,197 +1,111 @@
 classdef Simulation < handle
-    %SIMULATION Track event state for one queued simulation.
-    %   The manager folds queue output into this object as it pumps the
-    %   queue; handle semantics let callers observe updates live.
+    %SIMULATION One simulation as trnrund last reported it.
+    %   Properties mirror trnrund's simulation fields. A value TRNRun has not
+    %   reported yet is missing, NaN, or NaT.
     %
-    %   Queue completion and runner outcome are tracked separately: a run
-    %   succeeded only if the queue reported COMPLETED *and* the runner's
-    %   latest status is DONE.
-
-    properties (Constant)
-        TerminalStatuses (1,:) string = ["DONE" "ERROR" "CANCELLED" "TIMEOUT" "STALLED"]
-    end
-
-    properties (SetAccess = immutable)
-        id (1,1) double
-        deckPath (1,1) string
-        config (1,1) trnrun.SimulationConfig
-    end
+    %   A trnrun.SimulationManager updates it in place, only during a manager call.
 
     properties (SetAccess = private)
-        isAccepted (1,1) logical = false
-        completionEvent struct {mustBeScalarOrEmpty} = struct([]) % QUEUE/COMPLETED
-        status struct {mustBeScalarOrEmpty} = struct([])          % latest STATUS
-        progress struct {mustBeScalarOrEmpty} = struct([])        % latest PROGRESS
-        configEvent struct {mustBeScalarOrEmpty} = struct([])     % latest CONFIG
-        settingEvent struct {mustBeScalarOrEmpty} = struct([])    % latest SETTING
-        logs struct = struct([])                                 % all LOG events, oldest first
-
-        % Running totals maintained as logs arrive, so repeated reads during
-        % display refreshes do not rescan the whole log history.
-        logCount (1,1) double = 0        % total LOG events received
-        notices (1,1) double = 0         % severity totals; unknown severities
-        warnings (1,1) double = 0        % contribute to logCount only
+        simId (1,1) double = NaN               % assigned by trnrund, never reused
+        label (1,1) string = missing           % text it was added with
+        state (1,1) string = missing           % QUEUED, RUNNING or FINISHED
+        deckFile (1,1) string = missing        % absolute deck path
+        trnrunArgs (1,:) string = strings(1, 0) % TRNRun flags it was added with
+        trnrunStatus (1,1) string = missing    % latest TRNRun status, such as RUNNING or DONE
+        trnrunMessage (1,1) string = missing   % detail of trnrunStatus
+        percent (1,1) double = NaN             % completion, from 0 to 1
+        simTime (1,1) double = NaN             % latest simulation time, in simulated hours
+        elapsedMs (1,1) double = NaN           % wall-clock milliseconds since the start
+        etaMs (1,1) double = NaN               % estimated wall-clock milliseconds remaining
+        startTime (1,1) double = NaN           % deck start, stop and step, in simulated hours
+        stopTime (1,1) double = NaN
+        timeStep (1,1) double = NaN
+        setting = []                           % struct of the settings TRNRun applied
+        notices (1,1) double = 0               % log entries so far, by severity
+        warnings (1,1) double = 0
         fatals (1,1) double = 0
-    end
-
-    properties (Dependent, SetAccess = private)
-        state                            % 'pending', 'running' or 'finished'
-        isRunning (1,1) logical          % true until finished (includes pending)
-        isFinished (1,1) logical
-        hasTerminalStatus (1,1) logical
-        succeeded (1,1) logical
+        logs = []                              % struct array of log entries, oldest first
+        succeeded (1,1) logical = false        % finished with DONE, exit code 0 and no error
+        exitCode (1,1) double = NaN            % TRNRun's exit code
+        error (1,1) string = missing           % why trnrund failed or cancelled it
+        submittedAt (1,1) datetime = NaT       % UTC; startedAt stays NaT if it never started
+        startedAt (1,1) datetime = NaT
+        finishedAt (1,1) datetime = NaT
     end
 
     methods
-        function obj = Simulation(deckPath, config, simId)
-            %SIMULATION Create event state for one queued simulation.
-            %   OBJ = trnrun.Simulation(DECKPATH, CONFIG, SIMID) creates a
-            %   handle object with no recorded events. DECKPATH is the deck
-            %   path, CONFIG is a trnrun.SimulationConfig value, and SIMID is
-            %   the numeric queue identifier. The run remains unfinished until
-            %   markCompleted is called.
+        function obj = Simulation(record)
+            %SIMULATION Parse a jsondecoded simulation record from trnrund.
 
-            % Report the offending argument directly; property validation
-            % alone would blame the property rather than the input.
-            if ~isa(config, 'trnrun.SimulationConfig') || ~isscalar(config)
-                error('trnrun:InvalidConfig', ...
-                    'CONFIG must be a scalar trnrun.SimulationConfig.');
-            end
-            if ~isnumeric(simId) || ~isscalar(simId) || ~isreal(simId) || ...
-                    ~isfinite(simId) || simId < 1 || mod(simId, 1) ~= 0
-                error('trnrun:InvalidInteger', ...
-                    'SIMID must be a positive integer-valued numeric scalar.');
-            end
-
-            obj.id = simId;
-            obj.deckPath = deckPath;
-            obj.config = config;
-        end
-
-        function applyEvent(obj, event)
-            %APPLYEVENT Record a recognized runner event unless the run is finished.
-
-            if obj.isFinished
+            if nargin == 0
                 return
             end
-
-            switch event.kind
-                case "STATUS"
-                    obj.status = event;
-                case "PROGRESS"
-                    obj.progress = event;
-                case "CONFIG"
-                    obj.configEvent = event;
-                case "SETTING"
-                    obj.settingEvent = event;
-                case "LOG"
-                    obj.logs = [obj.logs, event];
-                    obj.logCount = obj.logCount + 1;
-                    obj.tallySeverity(event);
+            obj.simId = record.simId;
+            obj.label = text(record.label);
+            obj.state = record.state;
+            obj.deckFile = record.deckFile;
+            obj.trnrunArgs = reshape(string(record.trnrunArgs), 1, []);
+            obj.trnrunStatus = text(record.trnrunStatus);
+            obj.trnrunMessage = text(record.trnrunMessage);
+            obj.percent = number(record.percent);
+            obj.simTime = number(record.simTime);
+            obj.elapsedMs = number(record.elapsedMs);
+            obj.etaMs = number(record.etaMs);
+            obj.startTime = number(record.startTime);
+            obj.stopTime = number(record.stopTime);
+            obj.timeStep = number(record.timeStep);
+            obj.setting = record.setting;
+            obj.notices = record.notices;
+            obj.warnings = record.warnings;
+            obj.fatals = record.fatals;
+            if isfield(record, 'logs')
+                obj.logs = record.logs;
             end
+            obj.succeeded = isequal(record.succeeded, true);
+            obj.exitCode = number(record.exitCode);
+            obj.error = text(record.error);
+            obj.submittedAt = timestamp(record.submittedAt);
+            obj.startedAt = timestamp(record.startedAt);
+            obj.finishedAt = timestamp(record.finishedAt);
         end
-
-        function value = logTable(obj)
-            %LOGTABLE Return retained log events as a table, oldest first.
-            %   Fields and values are unchanged. With no retained logs the
-            %   result is table(), because no log schema is available yet.
-
-            if isempty(obj.logs)
-                value = table();
-            else
-                value = struct2table(obj.logs, 'AsArray', true);
-            end
-        end
-
-        function markAccepted(obj)
-            %MARKACCEPTED Record that a queue worker accepted the run.
-
-            obj.isAccepted = true;
-        end
-
-        function markCompleted(obj, event)
-            %MARKCOMPLETED Retain the QUEUE/COMPLETED event and finish the run.
-            %   A rejected event leaves the simulation unchanged. exitCode is
-            %   optional, so a completion without one still finishes the run.
-
-            if ~isstruct(event) || ~isscalar(event) || ...
-                    ~isfield(event, 'kind') || ~isfield(event, 'event') || ...
-                    ~isequal(string(event.kind), "QUEUE") || ...
-                    ~isequal(string(event.event), "COMPLETED")
-                error('trnrun:InvalidCompletionEvent', ...
-                    'EVENT must be a scalar QUEUE/COMPLETED event struct.');
-            end
-
-            if ~obj.isFinished
-                obj.completionEvent = event;
-            end
-        end
-
-        function value = get.state(obj)
-            %GET.STATE Return lifecycle stage as a character vector.
-            %   Queue completion wins over acceptance, so a run completed
-            %   without acceptance still reports 'finished'. Runner status
-            %   does not affect the stage.
-
-            if obj.isFinished
-                value = 'finished';
-            elseif obj.isAccepted
-                value = 'running';
-            else
-                value = 'pending';
-            end
-        end
-
-        function value = get.isRunning(obj)
-            %GET.ISRUNNING Return true until queue completion, including pending runs.
-
-            value = ~obj.isFinished;
-        end
-
-        function value = get.isFinished(obj)
-            %GET.ISFINISHED Return true when a queue completion event is recorded.
-
-            value = ~isempty(obj.completionEvent);
-        end
-
-        function value = get.hasTerminalStatus(obj)
-            %GET.HASTERMINALSTATUS Return true when the latest runner status is terminal.
-
-            value = ~isempty(obj.status) && ...
-                ismember(string(obj.status.status), obj.TerminalStatuses);
-        end
-
-        function value = get.succeeded(obj)
-            %GET.SUCCEEDED Return true after queue completion with runner status DONE.
-
-            value = obj.isFinished && ~isempty(obj.status) && ...
-                string(obj.status.status) == "DONE";
-        end
-
     end
 
-    methods (Access = private)
-        function tallySeverity(obj, event)
-            %TALLYSEVERITY Add one log event to its severity total, ignoring case.
-            %   Absent, empty and unrecognized severities are counted by
-            %   logCount alone.
+    methods (Access = {?trnrun.SimulationManager, ?matlab.unittest.TestCase})
+        function update(obj, latest)
+            %UPDATE Copy every property of LATEST, a newer report.
 
-            if ~isfield(event, 'severity')
-                return
-            end
-            severity = string(event.severity);
-            if ~isscalar(severity) || ismissing(severity)
-                return
-            end
-
-            switch lower(severity)
-                case "notice"
-                    obj.notices = obj.notices + 1;
-                case "warning"
-                    obj.warnings = obj.warnings + 1;
-                case "fatal"
-                    obj.fatals = obj.fatals + 1;
+            for name = string(properties(obj))'
+                obj.(name) = latest.(name);
             end
         end
+    end
+end
+
+function value = text(value)
+    %TEXT Convert a decoded JSON string, or null, to a string.
+
+    if isnumeric(value)
+        value = string(missing);
+    end
+    value = string(value);
+end
+
+function value = number(value)
+    %NUMBER Convert a decoded JSON number, or null, to a double.
+
+    if isempty(value)
+        value = NaN;
+    end
+end
+
+function value = timestamp(value)
+    %TIMESTAMP Parse a UTC timestamp, or null as NaT.
+
+    if isnumeric(value)
+        value = NaT;
+        value.TimeZone = 'UTC';
+    else
+        value = datetime(value, 'InputFormat', 'uuuu-MM-dd''T''HH:mm:ss.SSS''Z''', ...
+            'TimeZone', 'UTC');
     end
 end

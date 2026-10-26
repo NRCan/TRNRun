@@ -6,11 +6,11 @@
   </picture>
 </p>
 
-Thin MATLAB wrapper for running and monitoring
-[TRNSYS](https://www.trnsys.com/) batch simulations. The
-library uses the `trnrun.exe` runner and `trnrunq.exe` queue. MATLAB downloads
-and installs both native clients from the matching GitHub release when the
-toolbox is installed.
+A thin MATLAB wrapper for running and monitoring
+[TRNSYS](https://www.trnsys.com/) batch simulations. The toolbox includes the
+[`trnrun.exe`](https://github.com/NRCan/TRNRun/tree/main/components/trnrun) runner and the
+[`trnrund.exe`](https://github.com/NRCan/TRNRun/tree/main/components/trnrund)
+daemon.
 
 ## Contents
 
@@ -18,10 +18,10 @@ toolbox is installed.
 - [Installation](#installation)
 - [Quick start](#quick-start)
 - [Run a batch](#run-a-batch)
-- [Submit without waiting for acceptance](#submit-without-waiting-for-acceptance)
-- [`trnrun.SimulationConfig`](#trnrunsimulationconfig)
-- [`trnrun.SimulationManager`](#trnrunsimulationmanager)
-- [`trnrun.Simulation`](#trnrunsimulation)
+- [`SimulationSettings`](#simulationsettings)
+- [`SimulationManager`](#simulationmanager)
+- [`Simulation`](#simulation)
+- [`Daemon`](#daemon)
 - [Examples](#examples)
 
 ## Requirements
@@ -29,509 +29,500 @@ toolbox is installed.
 - Windows x64
 - MATLAB R2021a or newer
 - TRNSYS 17 or 18
-- Optional: [Type3830 Progress Tracker](https://github.com/NRCan/TRNRun/tree/main/components/type3830) for
-  progress and stall monitoring
+- Optional: [Type3830 Progress Tracker](https://github.com/NRCan/TRNRun/tree/main/components/type3830)
+  for progress, ETA, cancellation, and stall detection
 
 ## Installation
 
-Install with MATLAB's Add-On Explorer:
+Install `TRNRun` from the `.mltbx` file:
 
-```text
-Home > Add-Ons > Get Add-Ons > Search "TRNRun" > Install
-```
+1. Download `trnrun-v<version>-win_amd64.mltbx` from the latest
+   [GitHub Release](https://github.com/NRCan/TRNRun/releases/latest).
+2. Double-click the `.mltbx` or run:
 
-Or download the package from
-[GitHub Releases](https://github.com/NRCan/TRNRun/releases), navigate to it in
-MATLAB's Current Folder browser, and double-click the `.mltbx` file. Follow the
-installer prompts to install the toolbox and both native clients.
+   ```matlab
+   matlab.addons.install("C:\Users\me\Downloads\trnrun-v<version>-win_amd64.mltbx");
+   ```
+
+3. Confirm the install. TRNRun now appears under
+   **Home > Add-Ons > Manage Add-Ons**.
 
 ## Quick start
 
 ```matlab
 function simulation = run_deck(deck_path)
-    config = trnrun.SimulationConfig(watch_tmp=true);
-    manager = trnrun.SimulationManager(maxConcurrent=1);
-
-    simulation = manager.add(deck_path, config);
-    manager.wait(simulation);
+    import trnrun.*
+    manager = SimulationManager(workers=1);
+    simulation = manager.add(deck_path, SimulationSettings(watchTmp=true), ...
+        waitFor="FINISHED");
 
     if simulation.succeeded
-        fprintf("Completed: %s\n", char(simulation.deckPath));
+        fprintf("Completed: %s\n", simulation.deckFile);
     else
-        fprintf("Failed: %s\n", char(simulation.deckPath));
+        fprintf("Failed: %s (%s)\n", simulation.deckFile, simulation.trnrunStatus);
     end
-
-    manager.shutdown();
 end
 ```
+
+Running simulations appear in a progress window. When a simulation finishes,
+it is printed once to the Command Window. Closing the window stops the live
+updates but not the simulations.
 
 ## Run a batch
 
 ```matlab
 function simulations = run_batch(deck_folder)
+    import trnrun.*
     decks = dir(fullfile(deck_folder, "*.dck"));
-    deck_paths = fullfile(string({decks.folder}), string({decks.name}));
-    config = trnrun.SimulationConfig(watch_tmp=true);
+    settings = SimulationSettings(watchTmp=true);
+    manager = SimulationManager(workers=4);
 
-    manager = trnrun.SimulationManager(maxConcurrent=4);
-
-    for deck_path = deck_paths
-        manager.add(deck_path, config);
+    for deck = decks'
+        manager.add(fullfile(deck.folder, deck.name), settings, waitFor="RUNNING");
     end
-
     manager.wait();
-    simulations = manager.simulations;
-    fprintf("%d succeeded, %d failed\n", numel(manager.succeeded), numel(manager.failed));
 
-    manager.shutdown();
+    simulations = manager.simulations;
+    fprintf("%d of %d succeeded\n", nnz([simulations.succeeded]), numel(simulations));
 end
 ```
 
-## Submit without waiting for acceptance
+## `SimulationSettings`
 
-Use `blocking=false` when submissions must not wait for queue acceptance (for
-example, when all workers are occupied). The returned handles start in the
-`pending` state. Call `poll()` from your own loop to apply ready updates; it
-returns immediately with the number of applied updates, or `0` if none are
-ready.
+`SimulationSettings` defines how one deck is launched and monitored.
+Each property that is set becomes the
+[`trnrun.exe` option](https://github.com/NRCan/TRNRun/tree/main/components/trnrun#settings)
+of the same name, such as `watchTmp` for `--watchTmp`. A property left empty is
+not passed, so the runner's default, listed below, applies. trnrund checks the
+values when the simulation is added.
 
 ```matlab
-manager = trnrun.SimulationManager(maxConcurrent=2);
-config = trnrun.SimulationConfig(watch_tmp=true);
-
-first = manager.add("C:\path\to\first.dck", config, blocking=false);
-second = manager.add("C:\path\to\second.dck", config, blocking=false);
-
-while ~isempty(manager.active)
-    count = manager.poll();
-    if count == 0
-        pause(0.1); % Let the queue make progress without busy-spinning.
-    end
-end
-
-fprintf("%d submitted, %d accepted, %d succeeded\n", ...
-    numel(manager.submitted), numel(manager.simulations), ...
-    numel(manager.succeeded));
-manager.shutdown();
+import trnrun.*
+settings = SimulationSettings(watchTmp=true, pollMs=10);
+manager.add(deck, settings);
 ```
 
-`poll()` does not run in the background: MATLAB-visible state, results and
-built-in display updates remain stale until `poll()`, `wait()`, or
-`shutdown()` reads queue output. The transport can still wait briefly while
-sending a request; `blocking=false` only skips the wait for `QUEUE/ACCEPTED`.
-If you do not need to integrate with an event loop, `manager.wait()` also
-finishes pending submissions.
+### Executable and window
 
-## `trnrun.SimulationConfig`
+- _`trnexePath`_ (`string`, default: `C:\TRNSYS18\Exe\TrnEXE64.exe`)
 
-`SimulationConfig` defines how one deck is launched and monitored.
+  Path to the `TrnEXE64.exe` or `TrnEXE.exe` executable. A relative path
+  resolves from MATLAB's current folder. A missing file raises an error before
+  the simulation is queued.
 
-### Executables and window
+- _`guiVisibility`_ (`string`, default: `"hidden"`)
 
-- _`trnrun_path`_ (`string`, default: MATLAB-managed `trnrun.exe`)
+  Controls the TRNSYS simulation window:
 
-  Path to the `trnrun.exe` executable downloaded with the toolbox.
-
-- _`trnexe_path`_ (`string`, default:
-  `C:\TRNSYS18\Exe\TrnEXE64.exe`)
-
-  Path to the `TrnEXE64.exe` or `TrnEXE.exe` executable.
-
-- _`gui_visibility`_ (`string`, default: `"hidden"`)
-
-  Controls the TRNSYS simulation window. Values are case-insensitive:
-
-  - `keep` / `keepOpen`: show the window and leave it open after the simulation.
-  - `auto` / `autoClose`: show the window and close it after the simulation.
-  - `min` / `minimized`: minimize the window and leave it open afterward.
-  - `minAuto` / `minimizedAuto`: minimize the window and close it afterward.
+  - `keep`: show the window and leave it open after the simulation.
+  - `auto`: show the window and close it after the simulation.
+  - `min`: minimize the window and leave it open afterward.
+  - `minAuto`: minimize the window and close it afterward.
   - `hidden`: hide the window and close it after the simulation.
 
 ### Launch detection
 
-- _`wait_for_gui`_ (`logical`, default: `true`)
+- _`waitForGui`_ (`logical`, default: `true`)
 
-  Wait for a recognized TRNSYS simulation window as part of launch-readiness
-  checks.
+  Wait for a recognized TRNSYS simulation window as part of the
+  launch-readiness checks.
 
-- _`wait_for_lst`_ (`logical`, default: `true`)
+- _`waitForLst`_ (`logical`, default: `true`)
 
   Wait for the component-order header in the deck's `.lst` file.
 
-- _`wait_for_tmp`_ (`logical`, default: `false`)
+- _`waitForTmp`_ (`logical`, default: `false`)
 
   Wait for a Type3830 `.tmp` file. Do not enable this for a deck without
-  Type3830, or launch detection waits until its deadline.
+  Type3830, or launch detection will wait until its deadline.
 
-- _`detect_timeout_ms`_ (`double`, default: `300000`)
+- _`detectTimeout`_ (`double`, default: `300000`)
 
   Maximum time, in milliseconds, to wait for launch readiness. Set to `0` to
-  wait indefinitely. The runner holds the launch mutex until detection
-  completes.
+  wait indefinitely. The runner holds the launch mutex for the current Windows
+  session until detection completes.
 
-- _`extra_delay_ms`_ (`double`, default: `0`)
+- _`extraDelay`_ (`double`, default: `0`)
 
   Additional delay in milliseconds after all enabled readiness checks pass.
 
 ### Runtime monitoring
 
-- _`poll_ms`_ (`double`, default: `100`)
+- _`pollMs`_ (`double`, default: `100`)
 
-  Positive integer polling interval in milliseconds for the TRNSYS process and
-  output files. MATLAB rejects zero and negative values.
+  Polling interval in milliseconds for the TRNSYS process and output files.
 
-- _`watch_log`_ (`logical`, default: `true`)
+- _`watchLog`_ (`logical`, default: `true`)
 
-  Read the deck's `.log` file and emit parsed `LOG` events.
+  Read the deck's `.log` file and report its entries as `logs`.
 
-- _`watch_tmp`_ (`logical`, default: `false`)
+- _`watchTmp`_ (`logical`, default: `false`)
 
-  Read Type3830 `.tmp` updates and emit configuration and progress events.
-  Required for progress-based `CANCELLED` and `STALLED` outcomes.
+  Read Type3830 `.tmp` updates and report the simulation period and progress.
+  Required for progress-based `CANCELLED` and `STALLED` outcomes. Without
+  Type3830 in the deck, an early exit is reported as `DONE`.
 
-- _`watch_timeout_ms`_ (`double`, default: `0`)
+- _`watchTimeout`_ (`double`, default: `0`)
 
-  Nonnegative integer runtime-monitoring duration in milliseconds. `0` means
-  unlimited.
+  Maximum runtime-monitoring duration in milliseconds. `0` means unlimited.
 
-- _`stall_timeout_ms`_ (`double`, default: `0`)
+- _`stallTimeout`_ (`double`, default: `0`)
 
   Maximum milliseconds without simulation-time progress. `0` disables stall
-  detection. Requires `watch_tmp=true` and a valid Type3830 snapshot.
+  detection. Requires `watchTmp=true` and a valid Type3830 snapshot.
 
-- _`kill_on_timeout`_ (`logical`, default: `false`)
+- _`killOnTimeout`_ (`logical`, default: `false`)
 
-  Terminate the owned TRNSYS process when launch detection or runtime
-  monitoring times out. If disabled, a detection timeout proceeds to runtime
-  monitoring; after a runtime-monitoring timeout, `trnrun.exe` waits for the
-  process to exit.
+  Terminate the TRNSYS process when launch detection or runtime monitoring
+  times out. If disabled, a detection timeout proceeds to runtime monitoring;
+  after a runtime-monitoring timeout, the runner stops polling and waits for
+  the process to exit.
 
-- _`kill_on_stall`_ (`logical`, default: `false`)
+- _`killOnStall`_ (`logical`, default: `false`)
 
-  Terminate the owned TRNSYS process after detecting a stall. If disabled,
-  `trnrun.exe` waits for the process to exit.
-
+  Terminate the TRNSYS process after detecting a stall. Without it, the runner
+  waits for the process to exit.
 
 ### Output and cleanup
 
-- _`clean_on_success`_ (`logical`, default: `false`)
+- _`clean`_ (`logical`, default: `false`)
 
   Delete `.tmp`, `.log`, `.lst`, and `.PTI` sidecar files after a successful
   run.
 
 - _`severity`_ (`string`, default: `"Notice"`)
 
-  Minimum emitted log severity: `Notice`, `Warning`, or `Fatal`,
-  case-insensitively.
+  Minimum reported log severity: `Notice`, `Warning`, or `Fatal`.
 
-- _`write_events`_ (`logical`, default: `false`)
+- _`writeEvents`_ (`logical`, default: `false`)
 
-  Mirror emitted runner events to a `.jsonl` file beside the deck, replacing
-  any existing file when the run starts.
+  Mirror the runner events to a `.jsonl` file beside the deck, replacing any
+  existing file when the run starts.
 
 A configuration with every property set explicitly:
 
 ```matlab
-config = trnrun.SimulationConfig( ...
-    trnrun_path="C:\path\to\trnrun.exe", ...
-    trnexe_path="C:\TRNSYS18\Exe\TrnEXE64.exe", ...
-    gui_visibility="hidden", ...
-    wait_for_gui=true, ...
-    wait_for_lst=true, ...
-    wait_for_tmp=true, ...
-    detect_timeout_ms=300000, ...
-    extra_delay_ms=0, ...
-    poll_ms=100, ...
-    watch_log=true, ...
-    watch_tmp=true, ...
-    watch_timeout_ms=300000, ...
-    stall_timeout_ms=300000, ...
-    clean_on_success=true, ...
-    kill_on_timeout=true, ...
-    kill_on_stall=true, ...
+import trnrun.*
+settings = SimulationSettings( ...
+    trnexePath="C:\TRNSYS18\Exe\TrnEXE64.exe", ...
+    guiVisibility="hidden", ...
+    waitForGui=true, ...
+    waitForLst=true, ...
+    waitForTmp=true, ...
+    detectTimeout=300000, ...
+    extraDelay=0, ...
+    pollMs=100, ...
+    watchLog=true, ...
+    watchTmp=true, ...
+    watchTimeout=300000, ...
+    stallTimeout=300000, ...
+    clean=true, ...
+    killOnTimeout=true, ...
+    killOnStall=true, ...
     severity="Notice", ...
-    write_events=false);
+    writeEvents=false);
 ```
 
-## `trnrun.SimulationManager`
+## `SimulationManager`
 
-`trnrun.SimulationManager` owns one queue process and controls how simulations
-are submitted, monitored, and displayed. It is intended for use from one
-thread. Simulation state advances only while blocking `add()`, `poll()`,
-`wait()`, or `shutdown()` reads queue output. Non-blocking `add()`
-submits without processing updates.
+`SimulationManager` owns one `trnrund.exe` and keeps a
+`Simulation` per run up to date. Nothing runs in the background.
+Simulations and the progress window update only while a manager method runs.
 
 ### Parameters
 
-- _`maxConcurrent`_ (`double`, default: logical processor count minus one, at
-  least `1`)
+- _`workers`_ (`double`, default: logical processor count minus one, at least `1`)
 
-  Maximum number of runners that may execute concurrently. Additional
-  submissions wait for a worker.
+  Maximum number of simulations running at once. Additional simulations wait
+  in the queue.
 
-- _`refreshInterval`_ (`double`, default: `1.0`)
+- _`refreshInterval`_ (`double`, default: `1`)
 
-  Minimum seconds between progress-window updates while events are being read.
-  Set to `0` or a negative value to disable all built-in display output.
+  Seconds between progress-window redraws. `0` or less disables the window
+  and the Command Window output.
 
-- _`trnrunqPath`_ (`string`, default: MATLAB-managed `trnrunq.exe`)
+- _`pollInterval`_ (`double`, default: `0.1`)
 
-  Path to the `trnrunq.exe` executable downloaded with the toolbox.
+  Seconds between refreshes while `add` or `wait` block.
 
-A manager with every parameter set explicitly:
+- _`trnrundPath`_ (`string`, default: installed `trnrund.exe`)
+
+  Path to the `trnrund.exe` executable.
+
+- _`trnrunPath`_ (`string`, default: installed `trnrun.exe`)
+
+  Path to the `trnrun.exe` executable.
+
+An explicitly configured manager:
 
 ```matlab
-manager = trnrun.SimulationManager( ...
-    maxConcurrent=4, ...
-    refreshInterval=1.0, ...
-    trnrunqPath="C:\path\to\trnrunq.exe");
+import trnrun.*
+manager = SimulationManager( ...
+    workers=4, ...
+    refreshInterval=1, ...
+    pollInterval=0.1, ...
+    trnrundPath="C:\path\to\trnrund.exe", ...
+    trnrunPath="C:\path\to\trnrun.exe");
 ```
 
 ### Methods and properties
 
-- _`submitted`_ (`trnrun.Simulation` array)
+- _`simulation = add(deckFile, settings, label=..., waitFor=...)`_
 
-  Snapshot of all successfully submitted handles in submission order, including
-  those not yet accepted by the queue and those already finished. Failed sends
-  are excluded.
+  Queues `deckFile`; a relative path resolves from the current folder.
+  `settings` is optional. A `label` is shown instead of the deck path.
+  `waitFor` blocks until the simulation is at least `"QUEUED"` (the default,
+  which returns at once), `"RUNNING"`, or `"FINISHED"`. A simulation that ends
+  without starting, such as a cancelled one, counts as past `"RUNNING"`.
 
-- _`active`_ (`trnrun.Simulation` array)
+- _`wait(simulations, until="FINISHED", timeout=Inf)`_
 
-  Snapshot of unfinished submitted handles, including pending requests that
-  have not yet received `QUEUE/ACCEPTED`.
+  Blocks until every simulation reaches `until`, calling `refresh` every
+  `pollInterval` seconds. With no simulations given, it waits for every
+  simulation added. Raises `trnrun:Timeout` once `timeout` seconds have passed.
 
-- _`simulations`_ (`trnrun.Simulation` array)
+- _`refresh()`_
 
-  Snapshot of all queue-accepted simulations in submission order.
+  Updates every running and finished simulation from trnrund once and redraws
+  the window. Each finished simulation gets its logs, then trnrund releases it.
 
-- _`succeeded`_ (`trnrun.Simulation` array)
+- _`cancel(simulations)`_
 
-  Snapshot of accepted simulations that completed successfully.
+  Stops queued or running simulations and leaves finished ones unchanged. The
+  next `refresh` shows them `FINISHED` with status `CANCELLED`.
 
-- _`failed`_ (`trnrun.Simulation` array)
+- _`simulations`_ (`Simulation` array)
 
-  Snapshot of accepted simulations that completed without succeeding. Pending
-  and running simulations are not included.
+  Every simulation the manager has seen, oldest first.
 
-- _`simulation = add(deckFile, config, blocking=true)`_
+- _`daemon`_ (`Daemon`)
 
-  Validate and submit `deckFile` using a copy of `config`. The default
-  `blocking=true` preserves the two-argument behavior: return its
-  `trnrun.Simulation` only after `QUEUE/ACCEPTED`. If every worker is occupied,
-  this may wait until an earlier simulation finishes. With `blocking=false`,
-  return the handle immediately after `transport.send` succeeds without waiting
-  for acceptance or reading updates; its initial state is `pending`. The send
-  itself may still take time. Acceptance is not a prerequisite for inclusion in
-  `submitted` or `active`.
+  The trnrund this manager owns, for direct requests.
 
-- _`count = poll()`_
-
-  Non-blockingly consume currently ready queue output and apply its events.
-  Return the number of updates actually applied, or `0` when none are ready.
-  Malformed, unroutable, duplicate and post-completion events do not count;
-  they may be retained in `sessionDiagnostics`. A premature queue EOF with
-  unfinished runs raises an error rather than treating those runs as failures.
-  Do not call `poll()` reentrantly from another manager operation or after
-  shutdown starts.
-
-- _`wait()`_
-
-  Process events until every unfinished submitted simulation completes,
-  including requests still pending acceptance. There is no client-side timeout.
-
-- _`wait(simulation)`_
-
-  Return when one manager-owned simulation completes while continuing to
-  process updates from other runs. Passing a finished simulation returns
-  immediately; a simulation owned by another manager is rejected.
-
-
-- _`shutdown()`_
-
-  Close queue input, drain pending and accepted work, and reap the queue process. A
-  successful shutdown is idempotent and leaves simulation results readable.
-
-
-Live progress appears in one resizable, read-only window, and completed
-summaries are appended to the Command Window. Closing the progress window
-stops live display updates without stopping simulations.
+Deleting the manager, or clearing its last reference, stops `trnrund.exe`,
+cancelling unfinished runs, and closes the progress window.
 
 Example manager workflow with every method and property:
 
 ```matlab
-function [first, second] = manager_example()
-    config = trnrun.SimulationConfig(watch_tmp=true);
-    manager = trnrun.SimulationManager(maxConcurrent=2);
+import trnrun.*
 
-    first = manager.add("C:\path\to\first.dck", config, blocking=false);
-    second = manager.add("C:\path\to\second.dck", config, blocking=false);
+manager = SimulationManager(workers=2);
+settings = SimulationSettings(watchTmp=true);
 
-    manager.poll();
-    manager.wait(first);
-    manager.wait();
+first = manager.add("C:\path\to\first.dck", settings, waitFor="RUNNING");
+second = manager.add("C:\path\to\second.dck", settings, label="second");
 
-    fprintf("Submitted: %d\n", numel(manager.submitted));
-    fprintf("Active: %d\n", numel(manager.active));
-    fprintf("Simulations: %d\n", numel(manager.simulations));
-    fprintf("Succeeded: %d\n", numel(manager.succeeded));
-    fprintf("Failed: %d\n", numel(manager.failed));
-    fprintf("Session diagnostics: %d\n", ...
-        numel(manager.sessionDiagnostics));
-    fprintf("First succeeded: %d\n", first.succeeded);
-    fprintf("Second succeeded: %d\n", second.succeeded);
+manager.wait(first);
+fprintf("First status: %s\n", first.trnrunStatus);
 
-    manager.shutdown();
-end
+manager.cancel(second);
+manager.wait(timeout=60);
+manager.refresh();
+fprintf("Simulations: %d\n", numel(manager.simulations));
+fprintf("First succeeded: %d\n", first.succeeded);
+fprintf("Second status: %s\n", second.trnrunStatus);
+
+delete(manager);
 ```
 
-## `trnrun.Simulation`
+## `Simulation`
 
-`SimulationManager.add()` returns a `trnrun.Simulation` handle containing the
-current state and results of one run. The manager updates this object as it
-processes queue events; applications normally inspect it rather than
-constructing or updating it directly.
+`SimulationManager.add()` returns a `Simulation` handle for one run, which the
+manager updates in place on each refresh. Its properties are trnrund's
+[simulation fields](https://github.com/NRCan/TRNRun/tree/main/components/trnrund#simulation-fields).
+A value TRNRun has not reported yet is `missing` text, `NaN`, or `NaT`.
 
-### Identity and configuration
+### Properties
 
-- _`id`_ (`double`)
+- _`simId`_ (`double`)
 
-  Manager-assigned simulation identifier. The queue uses its string form as the
-  run ID.
+  Identifier assigned by trnrund, never reused.
 
-- _`deckPath`_ (`string`)
+- _`deckFile`_ (`string`)
 
-  Absolute path to a manager-submitted deck. A directly constructed
-  `Simulation` stores the supplied path unchanged.
+  Absolute path to the submitted deck.
 
-- _`config`_ (`trnrun.SimulationConfig`)
+- _`label`_ (`string`)
 
-  Independent configuration snapshot used for this run.
+  Label it was added with; `missing` if none.
 
-### Events
+- _`trnrunArgs`_ (`string` array)
 
-- _`status`_ (`struct` or `[]`)
+  Runner options it was added with, such as `--watchTmp:true`.
 
-  Latest runner status, or `[]` before the first status event. Terminal status
-  values are `DONE`, `ERROR`, `CANCELLED`, `TIMEOUT`, and `STALLED`.
+- _`state`_ (`string`)
 
-- _`progress`_ (`struct` or `[]`)
+  `QUEUED` while waiting for a worker, `RUNNING` once the runner started, and
+  `FINISHED` once it completed, failed, or was cancelled.
 
-  Latest Type3830 progress event, or `[]` when progress has not been reported.
-  `percent` is a fraction from `0` to `1`; `elapsedMs` and `etaMs` are milliseconds.
+- _`trnrunStatus`_, _`trnrunMessage`_ (`string`)
 
-- _`configEvent`_ (`struct` or `[]`)
-
-  Latest simulation-time configuration event, containing `start`, `stop`, and
-  `step`, or `[]` before Type3830 reports it.
-
-- _`settingEvent`_ (`struct` or `[]`)
-
-  `trnrun.exe` settings reported when the simulation starts, or `[]`
-  before they are received.
-
-- _`completionEvent`_ (`struct` or `[]`)
-
-  Queue completion metadata, including `exitCode`, or `[]` until the queue
-  finishes the request. Manager-parsed events use `NaN` when the wire
-  `exitCode` is null or omitted.
-
-- _`logs`_ (`struct` array)
-
-  All log events in arrival order. MATLAB does not impose a retention limit, so
-  memory use grows with log volume.
-
-### State and outcome
-
-- _`isRunning`_ (`logical`)
-
-  Whether the simulation is pending or running and has not received queue
-  completion.
-
-- _`isAccepted`_ (`logical`)
-
-  Whether a queue worker has accepted the request.
-
-- _`isFinished`_ (`logical`)
-
-  Whether the queue has reported completion for the request.
-
-- _`hasTerminalStatus`_ (`logical`)
-
-  Whether the runner has reported one of the canonical terminal statuses.
+  Latest runner status, such as `DONE` or `STALLED`, and its detail.
 
 - _`succeeded`_ (`logical`)
 
-  Whether the queue completed the request and the latest runner status is
-  exactly `DONE`.
+  `true` only once finished with status `DONE`, exit code `0`, and no
+  `error`.
 
-### Log counters
+- _`exitCode`_ (`double`)
 
-- _`logCount`_ (`double`)
+  Runner exit code; `NaN` if it was cancelled or never started.
 
-  Total number of received log events.
+- _`error`_ (`string`)
 
-- _`notices`_ (`double`)
+  Why trnrund failed or cancelled the run.
 
-  Number of received `Notice` log events.
+- _`simTime`_, _`percent`_, _`elapsedMs`_, _`etaMs`_ (`double`)
 
-- _`warnings`_ (`double`)
+  Latest Type3830 progress. `simTime` is in simulated hours, `percent` is a
+  fraction from `0` to `1`, and `elapsedMs` and `etaMs` are milliseconds.
 
-  Number of received `Warning` log events.
+- _`startTime`_, _`stopTime`_, _`timeStep`_ (`double`)
 
-- _`fatals`_ (`double`)
+  Simulation period reported by Type3830, in simulated hours.
 
-  Number of received `Fatal` log events.
+- _`setting`_ (`struct`)
 
-- _`logTable()`_
+  Settings the runner applied, its defaults included, keyed by the runner's
+  option names.
 
-  Return all retained logs as a table in arrival order without changing their
-  fields or values. With no logs, it returns `table()` because no schema is
-  available.
+- _`notices`_, _`warnings`_, _`fatals`_ (`double`)
 
-An example inspecting the documented properties and the log-table helper:
+  Number of log entries so far, by severity.
+
+- _`logs`_ (`struct` array)
+
+  Log entries, oldest first; filled in once the simulation finishes.
+
+- _`submittedAt`_, _`startedAt`_, _`finishedAt`_ (`datetime`)
+
+  UTC times; `startedAt` stays `NaT` for a simulation that never started.
+
+An example inspecting every property:
 
 ```matlab
-function inspect_simulation(simulation)
-    fprintf("ID: "); disp(simulation.id)
-    fprintf("Deck: "); disp(simulation.deckPath)
-    fprintf("Config: "); disp(simulation.config)
-    fprintf("Running: "); disp(simulation.isRunning)
-    fprintf("Accepted: "); disp(simulation.isAccepted)
-    fprintf("Finished: "); disp(simulation.isFinished)
-    fprintf("Terminal status received: "); disp(simulation.hasTerminalStatus)
-    fprintf("Succeeded: "); disp(simulation.succeeded)
-    fprintf("Status: "); disp(simulation.status)
-    fprintf("Progress: "); disp(simulation.progress)
-    fprintf("Simulation config event: "); disp(simulation.configEvent)
-    fprintf("Runner settings: "); disp(simulation.settingEvent)
-    fprintf("Queue completion: "); disp(simulation.completionEvent)
-    fprintf("Logs: "); disp(simulation.logs)
-    fprintf("Log table: "); disp(simulation.logTable())
-    fprintf("Log count: "); disp(simulation.logCount)
-    fprintf("Notices: "); disp(simulation.notices)
-    fprintf("Warnings: "); disp(simulation.warnings)
-    fprintf("Fatals: "); disp(simulation.fatals)
+import trnrun.*
+
+manager = SimulationManager(workers=1);
+simulation = manager.add("C:\path\to\deck.dck", SimulationSettings(watchTmp=true));
+manager.wait(simulation);
+delete(manager);
+
+fprintf("ID: %d\n", simulation.simId);
+fprintf("Deck: %s\n", simulation.deckFile);
+fprintf("Label: %s\n", simulation.label);
+fprintf("Runner options: %s\n", join(simulation.trnrunArgs, " "));
+fprintf("State: %s\n", simulation.state);
+fprintf("Status: %s %s\n", simulation.trnrunStatus, simulation.trnrunMessage);
+fprintf("Succeeded: %d\n", simulation.succeeded);
+fprintf("Exit code: %g\n", simulation.exitCode);
+fprintf("Error: %s\n", simulation.error);
+fprintf("Progress: %g at %g h\n", simulation.percent, simulation.simTime);
+fprintf("Elapsed: %g ms, ETA: %g ms\n", simulation.elapsedMs, simulation.etaMs);
+fprintf("Period: %g to %g by %g h\n", simulation.startTime, simulation.stopTime, simulation.timeStep);
+disp(simulation.setting);
+fprintf("Notices: %d\n", simulation.notices);
+fprintf("Warnings: %d\n", simulation.warnings);
+fprintf("Fatals: %d\n", simulation.fatals);
+fprintf("Logs: %d entries\n", numel(simulation.logs));
+fprintf("Times: %s, %s, %s\n", string(simulation.submittedAt), ...
+    string(simulation.startedAt), string(simulation.finishedAt));
+```
+
+## `Daemon`
+
+`Daemon` is a thin client with one method per
+[trnrund command](https://github.com/NRCan/TRNRun/tree/main/components/trnrund#request-protocol),
+for applications that do their own polling. It takes the `workers`,
+`trnrundPath`, and `trnrunPath` parameters of
+[`SimulationManager`](#parameters).
+
+### Methods
+
+- _`simId = add(deckFile, settings, label=...)`_
+
+  Queue `deckFile` and return its `simId`, as for `SimulationManager.add`.
+
+- _`simulation = simulation(simId, withLogs=false)`_
+
+  Return one simulation, without `logs` unless `withLogs` is `true`.
+
+- _`simulations = simulations(state, withLogs=false)`_
+
+  Return every unreleased simulation in `state`, oldest first. `state` may be
+  several states, such as `["QUEUED", "RUNNING"]`.
+
+- _`cancel(simId)`_
+
+  Stop a queued or running simulation; one already finished is left unchanged.
+
+- _`release(simId)`_
+
+  Forget a finished simulation and its logs.
+
+- _`response = request(request)`_
+
+  Send any raw trnrund request struct and return its decoded response.
+
+- _`close()`_
+
+  Stop `trnrund.exe`, killing unfinished runs. Deleting the daemon, or
+  clearing its last reference, does the same.
+
+`trnrun:RequestError` is raised when trnrund refuses a request, such as for a
+missing deck, an unknown `simId`, or releasing an unfinished run, and
+`trnrun:DaemonExited`, with trnrund's exit code and stderr, when it no longer
+answers. Simulation outcomes do not raise: inspect each simulation's
+`succeeded`, `trnrunStatus`, and `exitCode` instead.
+
+Example daemon workflow with every method:
+
+```matlab
+import trnrun.*
+
+daemon = Daemon(workers=2);
+settings = SimulationSettings(watchTmp=true);
+
+first = daemon.add("C:\path\to\first.dck", settings);
+second = daemon.add("C:\path\to\second.dck", settings, label="second");
+
+disp(daemon.simulation(first));
+fprintf("Running: %d\n", numel(daemon.simulations("RUNNING")));
+
+daemon.cancel(second);
+cancelled = daemon.simulation(second);
+while cancelled.state ~= "FINISHED"
+    pause(0.1);
+    cancelled = daemon.simulation(second);
 end
+cancelled = daemon.simulation(second, withLogs=true);
+fprintf("Second status: %s, %d log entries\n", cancelled.trnrunStatus, numel(cancelled.logs));
+daemon.release(second);
+
+try
+    daemon.release(first);
+catch exception
+    if exception.identifier ~= "trnrun:RequestError"
+        rethrow(exception);
+    end
+    fprintf("First not finished: %s\n", exception.message);
+end
+
+raw = daemon.request(struct("cmd", "simulations", "state", "RUNNING"));
+disp(raw);
+
+daemon.close();
 ```
 
 ## Examples
 
-Runnable examples are available in the
-[TRNRun repository](https://github.com/NRCan/TRNRun/tree/main/libraries/matlab/toolbox/examples).
+The examples run `decks/slow_wo_plot_w_tracking.dck` from a clone of this
+repository; the toolbox does not ship the deck. Set `toolbox/examples` as the
+current folder, then run:
 
-- [`example_single.m`](https://github.com/NRCan/TRNRun/blob/main/libraries/matlab/toolbox/examples/example_single.m)
-  runs one deck with Type3830 progress reporting.
-- [`example_manager.m`](https://github.com/NRCan/TRNRun/blob/main/libraries/matlab/toolbox/examples/example_manager.m)
-  runs copied decks with bounded concurrency.
-
-Set `toolbox/examples` as the current folder, then run:
-
-```matlab
-simulation = example_single();
-```
-
-or
-
-```matlab
-simulations = example_manager();
-```
+- `simulation = example_single();` runs one deck with Type3830 progress.
+- `simulations = example_manager();` runs ten copies of a deck, five at a
+  time.
+- `simulation = example_daemon();` runs one deck with `Daemon` and
+  polls it itself.

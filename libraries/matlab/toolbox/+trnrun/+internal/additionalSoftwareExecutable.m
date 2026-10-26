@@ -1,7 +1,5 @@
 function path = additionalSoftwareExecutable(softwareName, executableName)
-    %ADDITIONALSOFTWAREEXECUTABLE Locate a MATLAB-managed native executable.
-    %   Source checkouts fall back to toolbox/bin, where native client builds
-    %   are deployed for development and testing.
+    %ADDITIONALSOFTWAREEXECUTABLE Locate an installed native executable, else the one in toolbox/bin.
 
     packageFolder = fileparts(fileparts(mfilename("fullpath")));
     toolboxFolder = fileparts(packageFolder);

@@ -1,8 +1,9 @@
 function simulations = example_manager()
-%EXAMPLE_MANAGER Run multiple TRNSYS simulations with trnrun.SimulationManager.
-%   SIMULATIONS = EXAMPLE_MANAGER() copies the bundled example deck several
-%   times, submits every copy through one manager with bounded concurrency,
-%   and returns the accepted simulations once they have all finished.
+%EXAMPLE_MANAGER Run copies of a deck, many at a time, with live progress.
+%   SIMULATIONS = EXAMPLE_MANAGER() copies the repository's example deck ten
+%   times, runs five at a time through one trnrun.SimulationManager, and
+%   returns the simulations once they have all finished. Ctrl+C also
+%   closes trnrund.
 
     example_folder = string(fileparts(mfilename("fullpath")));
     addpath(fileparts(example_folder))
@@ -11,31 +12,30 @@ function simulations = example_manager()
     % -------------------------------------------------------------------------
     % Configuration
     % -------------------------------------------------------------------------
-    trnexe_path = "C:\TRNSYS18\Exe\TrnEXE64.exe";
-    master_dck = fullfile(example_folder, "dck", "slow_wo_plot_w_tracking.dck");
+    master_dck = fullfile(example_folder, "..", "..", "..", "..", "decks", ...
+        "slow_wo_plot_w_tracking.dck");
     dck_folder = fullfile(example_folder, "runs");
-
-    sim_count = 20;
-    max_concurrent = 10;
-    refresh_interval = 0.1;
-
-    config = SimulationConfig(trnexe_path=trnexe_path, watch_tmp=true);
+    settings = SimulationSettings(watchTmp=true);
 
     % -------------------------------------------------------------------------
     % Run
     % -------------------------------------------------------------------------
-    dck_files = copy_dck(master_dck, dck_folder, sim_count);
+    dck_files = copy_dck(master_dck, dck_folder, 10);
 
-    manager = SimulationManager(maxConcurrent=max_concurrent, refreshInterval=refresh_interval);
-
+    manager = SimulationManager(workers=5, refreshInterval=0.1);
     for dck = dck_files
-        manager.add(dck, config);
+        manager.add(dck, settings, waitFor="RUNNING");
     end
     manager.wait();
-    manager.shutdown();
-
     simulations = manager.simulations;
+    delete(manager);  % close trnrund; the simulations stay readable
 
+    failed = simulations(~[simulations.succeeded]);
+    fprintf("%d/%d succeeded\n", numel(simulations) - numel(failed), numel(simulations));
+    for sim = failed
+        fprintf("  [%d] %s: %s %s\n", sim.simId, sim.deckFile, ...
+            sim.trnrunStatus, sim.trnrunMessage);
+    end
 end
 
 function dck_files = copy_dck(src, dst_dir, n)
