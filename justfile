@@ -1,4 +1,4 @@
-set shell := ["powershell.exe", "-c"]
+set shell := ["powershell.exe", "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"]
 
 # List available recipes
 default:
@@ -6,177 +6,152 @@ default:
 
 # Set the version of every component and library, such as `just version 0.9.0`
 version new:
-    powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/Set-Version.ps1 {{new}}
+    ./scripts/Set-Version.ps1 {{new}}
 
 # Build every component
-bin:
-    just trnrun-bin
-    just trnrunq-bin
-    just trnrund-bin
-    just type3830-bin
-
-# Assemble every component distribution
-dist:
-    just trnrun-dist
-    just trnrunq-dist
-    just trnrund-dist
-    just type3830-dist
-    just python-dist
-    just matlab-dist
-    just dotnet-dist
+bin: \
+    trnrun-bin \
+    trnrund-bin \
+    type3830-bin
 
 # Run every component test suite
-test:
-    just trnrun-test
-    just trnrunq-test
-    just trnrund-test
-    # just type3830-test
-    just python-test
-    # just matlab-test
-    just dotnet-test
+test: \
+    trnrun-test \
+    trnrund-test \
+    type3830-test \
+    python-test \
+    matlab-test \
+    dotnet-test
 
 # Build all artifacts and assemble the root distribution
-deploy:
-    Remove-Item dist -Recurse -Force -ErrorAction SilentlyContinue; New-Item dist -ItemType Directory -Force | Out-Null
-    just type3830-deploy
-    just trnrun-deploy
-    just trnrunq-deploy
-    just trnrund-deploy
-    just python-dist
-    # just matlab-dist
-    just dotnet-dist
-    Copy-Item components/type3830/dist/* dist -Recurse -Force
-    Copy-Item components/trnrun/dist/* dist -Recurse -Force
-    Copy-Item components/trnrunq/dist/* dist -Recurse -Force
-    Copy-Item components/trnrund/dist/* dist -Recurse -Force
-    # Copy-Item libraries/matlab/dist/*.mltbx dist -Force
-    Get-ChildItem dist -Directory | ForEach-Object { Compress-Archive -Path (Join-Path $_.FullName '*') -DestinationPath (Join-Path dist "$($_.Name).zip") -Force }
+deploy: \
+    clean \
+    type3830-deploy \
+    trnrun-deploy \
+    trnrund-deploy \
+    python-dist \
+    dotnet-dist \
+    matlab-dist \
+    assemble
 
-# Build and package the native, Python, and .NET clients
-clients-ci-prepare:
-    Remove-Item dist -Recurse -Force -ErrorAction SilentlyContinue; New-Item dist -ItemType Directory -Force | Out-Null
-    just trnrun-deploy
-    just trnrunq-deploy
-    just trnrund-deploy
-    just python-dist
-    just dotnet-dist
+# Recreate an empty root dist directory
+clean:
+    Remove-Item dist -Recurse -Force -ErrorAction SilentlyContinue; New-Item dist -ItemType Directory | Out-Null
 
-# Test the native, Python, and .NET clients; run after clients-ci-prepare, which deploys the executables they use
-clients-ci-test:
-    just trnrun-test
-    just trnrunq-test
-    just trnrund-test
-    just python-test
-    just dotnet-test
-
-# Assemble the client distributions after MATLAB packaging
-clients-ci-assemble:
-    Copy-Item components/trnrun/dist/* dist -Recurse -Force
-    Copy-Item components/trnrunq/dist/* dist -Recurse -Force
-    Copy-Item components/trnrund/dist/* dist -Recurse -Force
+# Copy the component distributions and MATLAB toolbox into dist and zip each component
+assemble:
+    Copy-Item components/*/dist/* dist -Recurse -Force
     Copy-Item libraries/matlab/dist/*.mltbx dist -Force
     Get-ChildItem dist -Directory | ForEach-Object { Compress-Archive -Path (Join-Path $_.FullName '*') -DestinationPath (Join-Path dist "$($_.Name).zip") -Force }
 
+# Run any nimble task in a component, such as `just nimble type3830 debug64`
+nimble component task:
+    Set-Location components/{{component}} -ErrorAction Stop; nimble {{task}}
+
 # Package the MATLAB toolbox
+[group('matlab')]
+[working-directory('libraries/matlab')]
 matlab-dist:
-    Set-Location libraries/matlab -ErrorAction Stop; matlab -batch "buildtool clean package"
+    matlab -batch "buildtool clean package"
 
 # Run the MATLAB test suite
+[group('matlab')]
+[working-directory('libraries/matlab')]
 matlab-test:
-    Set-Location libraries/matlab -ErrorAction Stop; matlab -batch "buildtool test"
+    matlab -batch "buildtool test"
 
 # Pack the .NET NuGet and symbol packages; links trnrun.exe and trnrund.exe from their build directories
+[group('dotnet')]
+[working-directory('libraries/dotnet')]
 dotnet-dist:
-    Set-Location libraries/dotnet -ErrorAction Stop; dotnet pack src/TRNRun/TRNRun.csproj --configuration Release --output ../../dist
+    dotnet pack src/TRNRun/TRNRun.csproj --configuration Release --output ../../dist
 
 # Run the .NET test suite
+[group('dotnet')]
+[working-directory('libraries/dotnet')]
 dotnet-test:
-    Set-Location libraries/dotnet -ErrorAction Stop; dotnet test TRNRun.slnx
+    dotnet test TRNRun.slnx --logger "trx;LogFileName=dotnet.trx" --results-directory ../../TestResults
 
 # Build the Python wheel
+[group('python')]
+[working-directory('libraries/python')]
 python-dist:
-    Set-Location libraries/python -ErrorAction Stop; uv build --wheel --out-dir ../../dist
+    uv build --wheel --out-dir ../../dist
 
 # Run the Python test suite
+[group('python')]
+[working-directory('libraries/python')]
 python-test:
-    Set-Location libraries/python -ErrorAction Stop; uv run pytest
+    uv run pytest --junitxml=../../TestResults/python.xml
 
 # Build the TRNRun release executable
+[group('trnrun')]
+[working-directory('components/trnrun')]
 trnrun-bin:
-    Set-Location components/trnrun -ErrorAction Stop; nimble bin
+    nimble bin
 
 # Assemble the TRNRun distribution
+[group('trnrun')]
+[working-directory('components/trnrun')]
 trnrun-dist:
-    Set-Location components/trnrun -ErrorAction Stop; nimble dist
+    nimble dist
 
-# Build, assemble, and deploy TRNRun to the Python package
+# Build, assemble, and deploy TRNRun to the Python and MATLAB packages
+[group('trnrun')]
+[working-directory('components/trnrun')]
 trnrun-deploy:
-    Set-Location components/trnrun -ErrorAction Stop; nimble deploy
+    nimble deploy
 
 # Build TRNRun and run its tests
+[group('trnrun')]
+[working-directory('components/trnrun')]
 trnrun-test: trnrun-bin
-    Set-Location components/trnrun -ErrorAction Stop; nimble test
-
-# Build the TRNRunQ release executable
-trnrunq-bin:
-    Set-Location components/trnrunq -ErrorAction Stop; nimble bin
-
-# Assemble the TRNRunQ distribution
-trnrunq-dist:
-    Set-Location components/trnrunq -ErrorAction Stop; nimble dist
-
-# Build, assemble, and deploy TRNRunQ to the MATLAB toolbox
-trnrunq-deploy:
-    Set-Location components/trnrunq -ErrorAction Stop; nimble deploy
-
-# Deploy TRNRun and run the TRNRunQ tests
-trnrunq-test:
-    Set-Location components/trnrunq -ErrorAction Stop; nimble test
+    nimble test
 
 # Build the TRNRunD release executable
+[group('trnrund')]
+[working-directory('components/trnrund')]
 trnrund-bin:
-    Set-Location components/trnrund -ErrorAction Stop; nimble bin
+    nimble bin
 
 # Assemble the TRNRunD distribution
+[group('trnrund')]
+[working-directory('components/trnrund')]
 trnrund-dist:
-    Set-Location components/trnrund -ErrorAction Stop; nimble dist
+    nimble dist
 
-# Build, assemble, and deploy TRNRunD to the Python package
+# Build, assemble, and deploy TRNRunD to the Python and MATLAB packages
+[group('trnrund')]
+[working-directory('components/trnrund')]
 trnrund-deploy:
-    Set-Location components/trnrund -ErrorAction Stop; nimble deploy
+    nimble deploy
 
 # Run the TRNRunD tests against a fake TRNRun
+[group('trnrund')]
+[working-directory('components/trnrund')]
 trnrund-test:
-    Set-Location components/trnrund -ErrorAction Stop; nimble test
+    nimble test
 
 # Build all Type3830 DLLs
+[group('type3830')]
+[working-directory('components/type3830')]
 type3830-bin:
-    Set-Location components/type3830 -ErrorAction Stop; nimble bin
+    nimble bin
 
 # Assemble the Type3830 distributions
+[group('type3830')]
+[working-directory('components/type3830')]
 type3830-dist:
-    Set-Location components/type3830 -ErrorAction Stop; nimble dist
+    nimble dist
 
 # Build and deploy Type3830 to installed TRNSYS versions
+[group('type3830')]
+[working-directory('components/type3830')]
 type3830-deploy:
-    Set-Location components/type3830 -ErrorAction Stop; nimble deploy
+    nimble deploy
 
 # Build TRNRun and run the Type3830 integration tests
+[group('type3830')]
+[working-directory('components/type3830')]
 type3830-test:
-    Set-Location components/type3830 -ErrorAction Stop; nimble test
-
-# Build the 64-bit release Type3830 DLL
-type3830-release64:
-    Set-Location components/type3830 -ErrorAction Stop; nimble release64
-
-# Build the 64-bit debug Type3830 DLL
-type3830-debug64:
-    Set-Location components/type3830 -ErrorAction Stop; nimble debug64
-
-# Build the 32-bit release Type3830 DLL
-type3830-release32:
-    Set-Location components/type3830 -ErrorAction Stop; nimble release32
-
-# Build the 32-bit debug Type3830 DLL
-type3830-debug32:
-    Set-Location components/type3830 -ErrorAction Stop; nimble debug32
+    nimble test

@@ -6,21 +6,33 @@ This repository uses third-party dependencies and build tools.
 
 # Runtime Dependencies
 
-## Python
+## Python Library
+
+### Python
 
 - Repository: https://github.com/python/cpython
 - License: Python Software Foundation License Version 2
 - License text: https://docs.python.org/3/license.html
 
-Copyright © Python Software Foundation. All rights reserved.
+Copyright (C) Python Software Foundation. All rights reserved.
 
-## Rich
+### Rich
 
 - Repository: https://github.com/Textualize/rich
 - License: MIT License
 - License text: https://github.com/Textualize/rich/blob/master/LICENSE
 
 Copyright (c) 2020 Will McGugan
+
+## .NET Library
+
+### .NET
+
+- Repository: https://github.com/dotnet/runtime
+- License: MIT License
+- License text: https://github.com/dotnet/runtime/blob/main/LICENSE.TXT
+
+Copyright (c) .NET Foundation and Contributors
 
 ---
 

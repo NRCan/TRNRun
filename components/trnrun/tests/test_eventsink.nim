@@ -1,6 +1,7 @@
 import std/[json, os, strutils, times, unittest]
 
 import ../src/[events, eventsink]
+import ./junit
 
 
 when defined(windows):

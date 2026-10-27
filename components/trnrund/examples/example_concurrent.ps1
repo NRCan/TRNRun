@@ -67,7 +67,7 @@ try {
     # add replies with the simId the daemon assigned; Update-Runs asks for each
     # simulation by it, and names it by its label.
     # Adding every run at once lets the daemon queue the surplus and start each
-    # as a worker frees; see example_waiting.ps1 to keep that queue client-side.
+    # as a worker frees; see example_sequential.ps1 to keep that queue client-side.
 
     1..$RunCount | ForEach-Object {
         $Name = 'example-{0:D2}' -f $_

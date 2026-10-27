@@ -1,6 +1,7 @@
 import std/[os, osproc, strutils, unittest]
 
 import ../src/[settings, trnexe]
+import ./junit
 
 
 if paramCount() >= 1 and

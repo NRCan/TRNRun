@@ -8,7 +8,7 @@
 
 Thin Python wrapper for running and monitoring
 [TRNSYS](https://www.trnsys.com/) batch simulations. The package includes the
-`trnrun.exe` runner and the
+[`trnrun.exe`](https://github.com/NRCan/TRNRun/tree/main/components/trnrun) runner and the
 [`trnrund.exe`](https://github.com/NRCan/TRNRun/tree/main/components/trnrund)
 daemon.
 
@@ -22,7 +22,6 @@ daemon.
 - [`SimulationManager`](#simulationmanager)
 - [`Simulation`](#simulation)
 - [`Daemon`](#daemon)
-- [Custom display](#custom-display)
 - [Examples](#examples)
 
 ## Requirements
@@ -524,55 +523,6 @@ try:
 
 finally:
     daemon.close()
-```
-
-## Custom display
-
-### Using the manager
-
-To draw your own display, turn the built-in one off with `display=False` and
-call `refresh()` yourself:
-
-```python
-from time import sleep
-
-from trnrun import SimulationManager
-
-with SimulationManager(workers=2, display=False) as manager:
-    simulations = [
-        manager.add(deck, watch_tmp=True)
-        for deck in (r"C:\path\to\first.dck", r"C:\path\to\second.dck")
-    ]
-    while not all(simulation.is_finished for simulation in simulations):
-        manager.refresh()
-        for simulation in simulations:
-            progress = f"{simulation.percent:.0%}" if simulation.percent is not None else "no progress yet"
-            print(f"[{simulation.sim_id}] {simulation.deck_file.name}: {progress} ({simulation.status})")
-        sleep(1)
-```
-
-### Using the daemon
-
-Or follow the simulations with `Daemon`, releasing each one once finished:
-
-```python
-from time import sleep
-
-from trnrun import Daemon
-
-decks = (r"C:\path\to\first.dck", r"C:\path\to\second.dck")
-with Daemon(workers=2) as daemon:
-    for deck in decks:
-        daemon.add(deck, watch_tmp=True)
-    remaining = len(decks)
-    while remaining:
-        for simulation in daemon.simulations("RUNNING"):
-            print(simulation)
-        for simulation in daemon.simulations("FINISHED"):
-            print(f"[{simulation.sim_id}] {simulation.deck_file.name}: {simulation.status}")
-            daemon.release(simulation.sim_id)
-            remaining -= 1
-        sleep(1)
 ```
 
 ## Examples

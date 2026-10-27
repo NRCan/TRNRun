@@ -1,7 +1,13 @@
 classdef Display < handle
-    %DISPLAY Show throttled live progress in a native MATLAB text window.
-    %   Completed summaries are appended to the Command Window. Closing the
-    %   progress window disables live updates, not simulations or final output.
+    %DISPLAY Show throttled live progress in a uifigure text window.
+    %   Finished simulations are printed once to the Command Window. Closing
+    %   the window stops live updates only, not the runs or final output.
+    %
+    %   Example:
+    %       display = trnrun.internal.Display(1);  % redraw at most every second; <= 0 disables
+    %       display.track(simulation);
+    %       display.simulationFinished(simulation);
+    %       display.refresh();
 
     properties (Access = private)
         enabled = true
@@ -10,8 +16,6 @@ classdef Display < handle
         sims = trnrun.Simulation.empty(1, 0)
         finished = false(1, 0)
         activeText = ''
-        rowStates = cell(1, 0)
-        rowLines = cell(1, 0)
         window = []
         textArea = []
     end
@@ -19,49 +23,32 @@ classdef Display < handle
     properties (Constant, Access = private)
         PathWidth = 32
         ProgressBarWidth = 20
-        MillisecondsPerSecond = 1000
     end
 
     methods
         function obj = Display(refreshInterval)
-            %DISPLAY Create a throttled simulation summary display.
-            %   OBJ = trnrun.internal.Display(REFRESHINTERVAL) sets the minimum
-            %   interval between ordinary refreshes, in seconds. The interval
-            %   must be a real, finite numeric scalar; values at or below zero
-            %   disable all simulation output.
-            %
-            %   The first simulation forces a redraw. Completions are batched
-            %   into the next refresh; the last completion bypasses throttling.
-            %   The progress window opens on the first simulation. Deleting
-            %   the display closes it and prints any interrupted progress.
+            %DISPLAY Create a display redrawing at most every REFRESHINTERVAL seconds.
 
-            validateattributes(refreshInterval, {'numeric'}, ...
-                {'real', 'scalar', 'finite'}, 'trnrun.internal.Display', 'refreshInterval');
-            refreshInterval = double(refreshInterval);
+            arguments
+                refreshInterval (1,1) double {mustBeReal, mustBeFinite}
+            end
+
             obj.enabled = refreshInterval > 0;
             obj.refreshInterval = refreshInterval;
             obj.lastRefresh = tic;
         end
 
-        function simulationStarted(obj, simulation)
-            %SIMULATIONSTARTED Add a simulation to the active display and redraw.
+        function track(obj, simulation)
+            %TRACK Show a simulation from the next refresh on; tracking it again does nothing.
 
-            if ~obj.enabled
-                return
-            end
-            wasEmpty = isempty(obj.sims);
-            if ~any(obj.sims == simulation)
+            if obj.enabled && ~any(obj.sims == simulation)
                 obj.sims(end + 1) = simulation;
                 obj.finished(end + 1) = false;
-                obj.rowStates{end + 1} = [];
-                obj.rowLines{end + 1} = '';
             end
-            obj.refresh(wasEmpty);
         end
 
         function simulationFinished(obj, simulation)
-            %SIMULATIONFINISHED Queue a final summary for the next refresh.
-            %   Simulations that were never started are ignored.
+            %SIMULATIONFINISHED Queue a tracked simulation's final summary for the next refresh.
 
             if ~obj.enabled
                 return
@@ -70,33 +57,34 @@ classdef Display < handle
         end
 
         function refresh(obj, force)
-            %REFRESH Redraw active summaries, optionally bypassing the interval.
+            %REFRESH Print finished summaries and redraw; force=true ignores the interval.
+            %   Nothing shown yet, or every simulation finished, also ignores it.
 
             if nargin < 2
                 force = false;
             end
-            allFinished = ~isempty(obj.sims) && all(obj.finished);
-            if ~obj.enabled || (~force && ~allFinished && ...
+            hasSims = ~isempty(obj.sims);
+            idle = hasSims && isempty(obj.activeText);
+            allFinished = hasSims && all(obj.finished);
+            if ~obj.enabled || (~force && ~idle && ~allFinished && ...
                     toc(obj.lastRefresh) < obj.refreshInterval)
                 return
             end
             done = obj.sims(obj.finished);
             obj.sims = obj.sims(~obj.finished);
-            obj.rowStates = obj.rowStates(~obj.finished);
-            obj.rowLines = obj.rowLines(~obj.finished);
             obj.finished = false(1, numel(obj.sims));
 
             if ~isempty(done)
                 fprintf('%s\n', obj.renderLines(done));
             end
-            text = obj.renderLines(obj.sims, true);
+            text = obj.renderLines(obj.sims);
             obj.updateActive(text);
             obj.activeText = text;
             obj.lastRefresh = tic;
         end
 
         function delete(obj)
-            %DELETE Close the window and preserve interrupted progress as text.
+            %DELETE Close the window and print interrupted progress.
 
             if isgraphics(obj.window)
                 delete(obj.window);
@@ -110,30 +98,15 @@ classdef Display < handle
     end
 
     methods (Access = private)
-        function text = renderLines(obj, sims, useCache)
-            %RENDERLINES Join summaries, reusing unchanged active rows.
+        function text = renderLines(obj, sims)
+            %RENDERLINES Join the summaries of SIMS, one line each.
 
-            if nargin < 3 || ~useCache
-                text = strjoin(arrayfun(@(sim) obj.renderLine(sim), sims, ...
-                    'UniformOutput', false), newline);
-                return
-            end
-            for index = 1:numel(sims)
-                sim = sims(index);
-                % Value snapshots detect updates to mutable simulation handles.
-                % The immutable id and deckPath need not be compared.
-                state = {sim.status, sim.progress, sim.configEvent, ...
-                    sim.notices, sim.warnings, sim.fatals};
-                if ~isequaln(obj.rowStates{index}, state)
-                    obj.rowLines{index} = obj.renderLine(sim);
-                    obj.rowStates{index} = state;
-                end
-            end
-            text = strjoin(obj.rowLines, newline);
+            text = strjoin(arrayfun(@(sim) obj.renderLine(sim), sims, ...
+                'UniformOutput', false), newline);
         end
 
         function updateActive(obj, text)
-            %UPDATEACTIVE Assign the whole live block without clearing it first.
+            %UPDATEACTIVE Show TEXT in the window, opening it on first use.
 
             if isempty(obj.window) && ~isempty(text)
                 obj.window = uifigure('Name', 'TRNRun progress', ...
@@ -155,34 +128,39 @@ classdef Display < handle
         end
 
         function line = renderLine(obj, simulation)
-            %RENDERLINE Format one simulation as a single status summary line.
+            %RENDERLINE Format one simulation as a status line.
 
-            path = char(simulation.deckPath);
+            name = simulation.label;
+            if ismissing(name) || name == ""
+                name = simulation.deckFile;
+            end
+            path = char(name);
             if numel(path) > obj.PathWidth
                 path = ['...' path((end - obj.PathWidth + 4):end)];
             end
 
-            status = '';
-            if ~isempty(simulation.status)
-                status = char(simulation.status.status);
+            % Before TRNRun reports a status, show the state.
+            status = simulation.trnrunStatus;
+            if ismissing(status)
+                status = simulation.state;
             end
+            status = char(status);
 
             percent = 0;
             simPercent = '';
             elapsed = '--:--:--';
             eta = '--:--:--';
             simProgress = '- / -';
-            if ~isempty(simulation.progress)
-                percent = simulation.progress.percent;
+            % NaN until TRNRun's first PROGRESS event, which needs Type3830.
+            if ~isnan(simulation.percent)
+                percent = simulation.percent;
                 simPercent = sprintf('(%.0f%%)', 100 * percent);
-                elapsed = formatHhmmss( ...
-                    simulation.progress.elapsedMs / obj.MillisecondsPerSecond);
-                eta = formatHhmmss( ...
-                    simulation.progress.etaMs / obj.MillisecondsPerSecond);
-                if ~isempty(simulation.configEvent)
+                elapsed = formatHhmmss(simulation.elapsedMs / 1000);
+                eta = formatHhmmss(simulation.etaMs / 1000);
+                if ~isnan(simulation.stopTime)
                     simProgress = sprintf('%6s / %6s', ...
-                        formatNumber(simulation.progress.time), ...
-                        formatNumber(simulation.configEvent.stop));
+                        formatNumber(simulation.simTime), ...
+                        formatNumber(simulation.stopTime));
                 end
             end
 
@@ -190,15 +168,14 @@ classdef Display < handle
                 simulation.notices, simulation.warnings, simulation.fatals);
             line = sprintf( ...
                 '[%d] %-*s | Status: %-10s | Logs: %-12s | Elapsed: %-8s | ETA: %-8s | %s %s %-6s', ...
-                simulation.id, obj.PathWidth, path, status, logs, elapsed, eta, ...
+                simulation.simId, obj.PathWidth, path, status, logs, elapsed, eta, ...
                 progressBar(percent, obj.ProgressBarWidth), simProgress, simPercent);
         end
     end
 end
 
 function text = formatHhmmss(seconds)
-    %FORMATHHMMSS Format seconds as HH:MM:SS, truncating and clamping to zero.
-    %   Hours are not wrapped at 24, and NaN reads as 00:00:00.
+    %FORMATHHMMSS Format seconds as HH:MM:SS; NaN and negatives read as 00:00:00.
 
     if isnan(seconds) || seconds < 0
         seconds = 0;
@@ -221,8 +198,6 @@ end
 
 function text = formatNumber(value)
     %FORMATNUMBER Round a number and insert thousands separators.
-    %   Each digit followed by a whole number of trailing digit triples gains
-    %   a comma, which leaves a leading sign, NaN and Inf untouched.
 
     text = regexprep(sprintf('%.0f', value), '\d(?=(\d{3})+$)', '$0,');
 end

@@ -2,6 +2,7 @@ import std/[os, unittest]
 
 import ../src/validate
 import ./fake_trnrun
+import ./junit
 
 let dir = createDeckDir()
 

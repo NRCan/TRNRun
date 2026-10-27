@@ -3,6 +3,7 @@ import std/[json, options, unittest]
 import ../src/events
 from ../../trnrun/src/events as trnrunEvents import nil
 from ../../trnrun/src/settings as trnrunSettings import nil
+import ./junit
 
 proc parseLine(line: string): SimulationEvent =
   ## Parses one TRNRun event line, which must be a valid event.

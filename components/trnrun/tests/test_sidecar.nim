@@ -1,6 +1,7 @@
 import std/[os, unittest]
 
 import ../src/sidecar
+import ./junit
 
 
 proc removeIfExists(path: string) =

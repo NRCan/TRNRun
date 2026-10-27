@@ -2,6 +2,7 @@ import std/[monotimes, options, os, times, unittest]
 
 import ../src/trnrun
 import ./fake_trnrun
+import ./junit
 
 proc waitForExit(trnrun: var Trnrun): seq[string] =
   ## Reads lines until TRNRun exits, then its last ones; fails after 5 seconds.

@@ -1,6 +1,7 @@
 import std/[os, osproc, strutils, unittest]
 
 import ../src/processwait
+import ./junit
 
 
 const ChildMode = "--processwait-child"

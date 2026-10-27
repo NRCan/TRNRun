@@ -1,6 +1,7 @@
 import std/[os, strutils, unittest]
 
 import ../src/validate
+import ./junit
 
 
 proc createDeck(directory, name: string): string =

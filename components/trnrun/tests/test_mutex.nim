@@ -1,5 +1,7 @@
 import std/[atomics, os, unittest]
 
+import ./junit
+
 include ../src/mutex
 
 

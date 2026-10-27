@@ -28,7 +28,6 @@
   <ItemGroup>
     <None Include="../../README.md" Pack="true" PackagePath="/" />
     <None Include="../../../../LICENSE" Pack="true" PackagePath="/" />
-    <None Include="../../../../THIRD-PARTY-NOTICES.md" Pack="true" PackagePath="/" />
     <!-- Link the real native build outputs; do not keep a second staged copy. -->
     <None Include="$(_NativeRunnerPath)" Link="native/trnrun.exe"
           Pack="true" PackagePath="native/" ExcludeFromSingleFile="true"

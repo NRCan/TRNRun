@@ -40,6 +40,19 @@ public sealed class SimulationSettingsTests
             settings.ToCliArgs());
     }
 
+    [Theory]
+    [InlineData(GuiVisibility.KeepOpen, "keep")]
+    [InlineData(GuiVisibility.AutoClose, "auto")]
+    [InlineData(GuiVisibility.Minimized, "min")]
+    [InlineData(GuiVisibility.MinimizedAuto, "minauto")]
+    [InlineData(GuiVisibility.Hidden, "hidden")]
+    public void EveryGuiVisibilityBecomesTrnrunsKeyword(GuiVisibility visibility, string keyword) =>
+        Assert.Equal([$"--guiVisibility:{keyword}"], new SimulationSettings { GuiVisibility = visibility }.ToCliArgs());
+
+    [Fact]
+    public void AnUndefinedGuiVisibilityThrows() =>
+        Assert.Throws<ArgumentOutOfRangeException>(() => new SimulationSettings { GuiVisibility = (GuiVisibility)99 }.ToCliArgs());
+
     [Fact]
     public void AMissingTrnexeThrows() =>
         Assert.Throws<FileNotFoundException>(() => new SimulationSettings { TrnexePath = "missing.exe" }.ToCliArgs());

@@ -1,6 +1,7 @@
 import std/[json, os, sequtils, strutils, unittest]
 
 import ../src/[events, eventsink, settings, simulate, status]
+import ./junit
 
 
 const

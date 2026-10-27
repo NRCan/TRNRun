@@ -334,7 +334,7 @@ default TRNSYS 18 executable path.
 
 - [`example_concurrent.ps1`](https://github.com/NRCan/TRNRun/blob/main/components/trnrund/examples/example_concurrent.ps1)
   adds every simulation at once and lets the daemon queue them.
-- [`example_waiting.ps1`](https://github.com/NRCan/TRNRun/blob/main/components/trnrund/examples/example_waiting.ps1)
+- [`example_sequential.ps1`](https://github.com/NRCan/TRNRun/blob/main/components/trnrund/examples/example_sequential.ps1)
   adds the next simulation only once the previous one has started.
 - [`example_percent.ps1`](https://github.com/NRCan/TRNRun/blob/main/components/trnrund/examples/example_percent.ps1)
   does the same while printing each simulation's progress.
@@ -344,6 +344,3 @@ default TRNSYS 18 executable path.
 - [TRNRun Runner](https://github.com/NRCan/TRNRun/tree/main/components/trnrun):
   runs a single TRNSYS simulation and reports its lifecycle as a JSON Lines
   event stream.
-- [TRNRun Queue](https://github.com/NRCan/TRNRun/tree/main/components/trnrunq):
-  runs batches of simulations through a bounded pool of runners and merges
-  their events into a single stream.

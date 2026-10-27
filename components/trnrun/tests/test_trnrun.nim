@@ -1,5 +1,7 @@
 import std/[json, os, osproc, streams, strutils, unittest]
 
+import ./junit
+
 
 if paramCount() >= 1 and
     paramStr(1).splitFile().ext.toLowerAscii() in [".dck", ".trd"]:

@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/TRNRun/TRNRun.csproj" />
+  </ItemGroup>
+
+  <!-- Both decks, copied beside the program so TRNSYS writes its outputs there, not in the source tree. -->
+  <ItemGroup>
+    <None Include="../../../../decks/fast_wo_plot_w_tracking.dck;../../../../decks/slow_wo_plot_w_tracking.dck"
+          LinkBase="dck" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

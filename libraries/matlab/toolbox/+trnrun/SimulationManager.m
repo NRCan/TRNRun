@@ -1,412 +1,168 @@
 classdef SimulationManager < handle
-    %SIMULATIONMANAGER Submit and monitor simulations through one queue process.
+    %SIMULATIONMANAGER Run many simulations on one trnrund and follow them.
+    %   REFRESH updates every simulation in place, so the one ADD returned
+    %   stays current; its logs are filled in once it finishes.
+    %
+    %   Nothing runs in the background: ADD with waitFor and WAIT refresh
+    %   every pollInterval seconds while they block. Call REFRESH otherwise.
+    %
+    %   Running simulations show in a progress window; finished ones print
+    %   once to the Command Window. Deleting the manager cancels unfinished runs.
+    %
+    %   Example:
+    %       manager = trnrun.SimulationManager(workers=4);
+    %       simulation = manager.add("model.dck", trnrun.SimulationSettings(watchTmp=true));
+    %       manager.wait();
+    %       simulation.succeeded
 
-    properties (Dependent, SetAccess = private)
-        submitted
-        simulations
-        active
-        succeeded
-        failed
-        sessionDiagnostics
+    properties (SetAccess = private)
+        daemon = []                                  % the trnrun.Daemon this manager owns
+        simulations = trnrun.Simulation.empty(1, 0)  % every simulation seen, oldest first
+    end
+
+    properties
+        pollInterval (1,1) double {mustBeNonnegative, mustBeFinite} = 0.1 % seconds between refreshes while blocking
     end
 
     properties (Access = private)
-        transport
-        display
-        sims = trnrun.Simulation.empty(1, 0)
-        nextId (1,1) double = 1
-        queueEof (1,1) logical = false
-        shutdownStarted (1,1) logical = false
-        shutdownComplete (1,1) logical = false
-        busy (1,1) logical = false
-        diagnostics (1,:) string = strings(1, 0)
+        display = []
     end
 
     properties (Constant, Access = private)
-        MaxSessionDiagnostics = 200
+        States = ["QUEUED", "RUNNING", "FINISHED"]
     end
 
     methods
         function obj = SimulationManager(options)
-            %SIMULATIONMANAGER Create a manager backed by one TRNRun queue process.
-            %   OBJ = trnrun.SimulationManager() starts the queue with default
-            %   settings. Supply name-value arguments to customize its behavior:
-            %
-            %   maxConcurrent - Positive integer limit on concurrent runs.
-            %       Defaults to NUMBER_OF_PROCESSORS minus one, with a minimum
-            %       of one; missing or invalid processor counts use one.
-            %   refreshInterval - Real, finite display refresh interval in
-            %       seconds (default 1). Values at or below zero disable output.
-            %   trnrunqPath - Path to the queue executable. Defaults to the
-            %       MATLAB-managed TRNRunQ installation.
-            %
-            %   Use add to submit runs, poll to apply ready updates without
-            %   waiting, or wait to process updates until completion. Call
-            %   shutdown to close queue input, drain output, and wait for exit.
-            %   Deleting the manager releases its owned transport and display,
-            %   whose destructors perform best-effort cleanup.
-            %
-            %   Example:
-            %       manager = trnrun.SimulationManager( ...
-            %           maxConcurrent=4, refreshInterval=0.5);
-            %       simulation = manager.add(deckFile, config);
-            %       manager.wait(simulation);
-            %       manager.shutdown();
+            %SIMULATIONMANAGER Start trnrund.
+            %   workers                 - Simulations run at once (default: CPU count - 1).
+            %   refreshInterval         - Seconds between redraws (default 1); <= 0 disables output.
+            %   pollInterval            - Seconds between refreshes while blocking (default 0.1).
+            %   trnrundPath, trnrunPath - Executables, as for trnrun.Daemon.
 
             arguments
-                options.maxConcurrent (1,1) double ...
-                    {mustBeInteger, mustBePositive, mustBeFinite} = defaultConcurrency()
-                options.refreshInterval (1,1) double ...
-                    {mustBeReal, mustBeFinite} = 1.0
-                options.trnrunqPath (1,1) string = ...
-                    trnrun.internal.additionalSoftwareExecutable("TRNRunQ", "trnrunq.exe")
+                options.workers (1,1) double {mustBeInteger, mustBePositive}
+                options.refreshInterval (1,1) double {mustBeReal, mustBeFinite} = 1
+                options.pollInterval (1,1) double {mustBeNonnegative, mustBeFinite} = 0.1
+                options.trnrundPath (1,1) string
+                options.trnrunPath (1,1) string
             end
 
+            obj.pollInterval = options.pollInterval;
+            daemonOptions = rmfield(options, {'refreshInterval', 'pollInterval'});
+            daemonArgs = namedargs2cell(daemonOptions);
+            obj.daemon = trnrun.Daemon(daemonArgs{:});
             obj.display = trnrun.internal.Display(options.refreshInterval);
-            obj.transport = trnrun.internal.QueueProcess( ...
-                options.trnrunqPath, options.maxConcurrent);
         end
 
-        function simulation = add(obj, deckFile, config, options)
-            %ADD Submit one run; optionally return before QUEUE/ACCEPTED.
-            %   With blocking=false, the returned handle starts pending.
-            %   Call poll, wait, or shutdown to apply queue updates.
+        function simulation = add(obj, deckFile, settings, options)
+            %ADD Queue a deck and return its simulation; waitFor blocks until "RUNNING" or "FINISHED".
 
             arguments
                 obj (1,1) trnrun.SimulationManager
-                deckFile (1,1) string {mustBeFile}
-                config (1,1) trnrun.SimulationConfig
-                options.blocking (1,1) logical = true
+                deckFile (1,1) string
+                settings (1,1) trnrun.SimulationSettings = trnrun.SimulationSettings()
+                options.label (1,1) string = missing
+                options.waitFor (1,1) string ...
+                    {mustBeMember(options.waitFor, ["QUEUED", "RUNNING", "FINISHED"])} = "QUEUED"
             end
 
-            guard = obj.enterOperation('add'); %#ok<NASGU>
-            obj.requireOpen();
-            config = config.validate();
-
-            [found, info] = fileattrib(deckFile);
-            if ~found
-                error('trnrun:DeckNotFound', ...
-                    'Cannot resolve deck file: %s', deckFile);
-            end
-
-            runId = obj.nextId;
-            obj.nextId = obj.nextId + 1;
-            simulation = trnrun.Simulation(info.Name, config, runId);
-
-            request = struct( ...
-                'runId', sprintf('%d', runId), ...
-                'deckFile', info.Name, ...
-                'runnerPath', char(config.trnrun_path), ...
-                'runnerArgs', {config.to_cli_args()});
-
-            obj.sims(end + 1) = simulation;
-            try
-                obj.transport.send(request);
-            catch exception
-                % A failed write may have reached the queue; never reuse its ID.
-                obj.sims(end) = [];
-                rethrow(exception);
-            end
-
-            if options.blocking
-                while ~simulation.isAccepted
-                    obj.readNextUpdate();
-                end
+            simId = obj.daemon.add(deckFile, settings, label=options.label);
+            simulation = obj.daemon.simulation(simId);
+            obj.simulations(end + 1) = simulation;
+            if options.waitFor ~= "QUEUED"
+                obj.wait(simulation, until=options.waitFor);
             end
         end
 
-        function count = poll(obj)
-            %POLL Apply all currently ready queue updates without waiting.
-            %   Returns the number of applied events. A zero result can mean
-            %   either no line is ready yet or the queue reached clean EOF.
-            %   MATLAB state does not advance automatically between calls.
-
-            guard = obj.enterOperation('poll'); %#ok<NASGU>
-            obj.requireOpen();
-            count = 0;
-            while ~obj.queueEof
-                simulation = obj.readNextUpdate(true);
-                if isempty(simulation)
-                    break
-                end
-                count = count + 1;
-            end
-        end
-
-        function wait(obj, simulation)
-            %WAIT Wait for one owned simulation, or all simulations when omitted.
+        function cancel(obj, simulations)
+            %CANCEL Stop queued or running simulations; the next refresh shows them CANCELLED.
 
             arguments
                 obj (1,1) trnrun.SimulationManager
-                simulation trnrun.Simulation {mustBeScalarOrEmpty} = ...
-                    trnrun.Simulation.empty(1, 0)
+                simulations trnrun.Simulation
             end
 
-            guard = obj.enterOperation('wait'); %#ok<NASGU>
-            if isempty(simulation)
-                pending = obj.sims(~[obj.sims.isFinished]);
-            else
-                if ~any(obj.sims == simulation)
-                    error('trnrun:ForeignSimulation', ...
-                        'Simulation does not belong to this manager.');
+            for simulation = obj.tracked(simulations)
+                % A collected one is released, so trnrund no longer knows its simId.
+                if simulation.state ~= "FINISHED"
+                    obj.daemon.cancel(simulation.simId);
                 end
-                pending = simulation(~simulation.isFinished);
-            end
-
-            if isempty(pending)
-                return
-            end
-            obj.requireOpen();
-
-            while ~isempty(pending)
-                obj.readNextUpdate();
-                pending = pending(~[pending.isFinished]);
             end
         end
 
+        function refresh(obj)
+            %REFRESH Update every simulation once, collect finished ones, and redraw.
 
-        function shutdown(obj)
-            %SHUTDOWN Close input, drain output, and reap the queue.
-
-            if obj.shutdownComplete
-                return
-            end
-            guard = obj.enterOperation('shutdown'); %#ok<NASGU>
-            obj.shutdownStarted = true;
-            obj.transport.close();
-
-            % Reap even when draining fails, without hiding the original error.
-            failure = [];
-            exitCode = [];
-            try
-                while ~obj.queueEof
-                    obj.readNextUpdate();
+            running = obj.daemon.simulations("RUNNING");
+            finished = obj.daemon.simulations("FINISHED", withLogs=true);
+            % One that finished between the two requests is in both.
+            running = running(~ismember([running.simId], [finished.simId]));
+            for latest = [running, finished]
+                simulation = obj.tracked(latest);
+                if simulation == latest
+                    obj.simulations(end + 1) = latest;
+                else
+                    simulation.update(latest);
                 end
-            catch exception
-                failure = exception;
-            end
-
-            try
-                exitCode = obj.transport.wait();
-            catch exception
-                if isempty(failure)
-                    rethrow(exception);
+                obj.display.track(simulation);
+                if simulation.state == "FINISHED"
+                    obj.daemon.release(simulation.simId);
+                    obj.display.simulationFinished(simulation);
                 end
-                obj.addDiagnostic("queue reap failed: " + exception.message);
+            end
+            obj.display.refresh();
+        end
+
+        function wait(obj, simulations, options)
+            %WAIT Block until SIMULATIONS (default all) reach until (default "FINISHED"); raises trnrun:Timeout.
+
+            arguments
+                obj (1,1) trnrun.SimulationManager
+                simulations trnrun.Simulation = obj.simulations
+                options.until (1,1) string ...
+                    {mustBeMember(options.until, ["QUEUED", "RUNNING", "FINISHED"])} = "FINISHED"
+                options.timeout (1,1) double {mustBeNonnegative} = Inf
             end
 
-            if ~isempty(failure)
-                throwAsCaller(failure);
+            target = find(obj.States == options.until);
+            started = tic;
+            while true
+                obj.refresh();
+                current = obj.tracked(simulations);
+                % string() because [current.state] is a double [] when nothing is tracked.
+                [~, reached] = ismember(string([current.state]), obj.States);
+                if all(reached >= target)
+                    return
+                end
+                if toc(started) >= options.timeout
+                    error('trnrun:Timeout', 'Simulations not %s after %g s.', ...
+                        options.until, options.timeout);
+                end
+                pause(obj.pollInterval);
             end
-            if ~isempty(exitCode) && exitCode ~= 0
-                error('trnrun:QueueExitFailure', ...
-                    'TRNRun queue exited with code %d.%s', ...
-                    exitCode, obj.transportDiagnosticSuffix());
+        end
+
+        function delete(obj)
+            %DELETE Close trnrund, cancelling unfinished runs, and the progress window.
+
+            % Empty only when construction failed.
+            if ~isempty(obj.daemon)
+                delete(obj.daemon);
             end
-            obj.shutdownComplete = true;
+            if ~isempty(obj.display)
+                delete(obj.display);
+            end
         end
-
-        function value = get.submitted(obj)
-            %GET.SUBMITTED Return every tracked simulation, including pending runs.
-
-            value = obj.sims;
-        end
-
-        function value = get.simulations(obj)
-            %GET.SIMULATIONS Return simulations accepted by the queue.
-
-            value = obj.sims([obj.sims.isAccepted]);
-        end
-
-        function value = get.active(obj)
-            %GET.ACTIVE Return unfinished runs, including pending submissions.
-
-            value = obj.sims(~[obj.sims.isFinished]);
-        end
-
-        function value = get.succeeded(obj)
-            %GET.SUCCEEDED Return accepted simulations that succeeded.
-
-            accepted = obj.simulations;
-            value = accepted([accepted.succeeded]);
-        end
-
-        function value = get.failed(obj)
-            %GET.FAILED Return accepted simulations that finished without success.
-
-            accepted = obj.simulations;
-            value = accepted([accepted.isFinished] & ~[accepted.succeeded]);
-        end
-
-        function value = get.sessionDiagnostics(obj)
-            %GET.SESSIONDIAGNOSTICS Return retained queue and protocol diagnostics.
-
-            value = obj.diagnostics;
-        end
-
     end
 
     methods (Access = private)
-        function simulation = readNextUpdate(obj, nonblocking)
-            %READNEXTUPDATE Apply the next valid update, or return empty if none.
+        function simulations = tracked(obj, simulations)
+            %TRACKED Swap each simulation for the one this manager keeps, matched by simId.
 
-            if nargin < 2
-                nonblocking = false;
-            end
-            while true
-                if nonblocking
-                    line = obj.transport.pollLine();
-                    if isstring(line) && ismissing(line)
-                        simulation = [];
-                        return
-                    end
-                else
-                    line = obj.transport.readLine();
-                end
-
-                % Numeric [] is EOF; an empty character vector is a blank line.
-                if isnumeric(line) && isempty(line)
-                    obj.queueEof = true;
-                    unfinished = obj.sims(~[obj.sims.isFinished]);
-                    if ~isempty(unfinished)
-                        error('trnrun:PrematureQueueEOF', ...
-                            ['TRNRun queue closed before accepting or completing ' ...
-                             'run IDs: %s.%s'], ...
-                            strjoin(string([unfinished.id]), ', '), ...
-                            obj.transportDiagnosticSuffix());
-                    end
-                    simulation = [];
-                    return
-                end
-
-                try
-                    [runId, event] = trnrun.internal.parseStreamLine(line);
-                catch exception
-                    if ~strcmp(exception.identifier, 'trnrun:EventParseError')
-                        rethrow(exception);
-                    end
-                    obj.addDiagnostic("dropped malformed queue line: " + line);
-                    continue
-                end
-
-                if isempty(runId)
-                    obj.addDiagnostic("unroutable queue output: " + line);
-                    continue
-                end
-
-                % Match wire IDs exactly: "01" and "1.0" are not run "1".
-                index = find(string([obj.sims.id]) == string(runId), 1);
-                if isempty(index)
-                    obj.addDiagnostic("unroutable queue output: " + line);
-                    continue
-                end
-
-                simulation = obj.sims(index);
-                if simulation.isFinished
-                    obj.addDiagnostic("update after completion: " + line);
-                    continue
-                end
-
-                switch event.kind
-                    case 'QUEUE'
-                        switch event.event
-                            case 'ACCEPTED'
-                                if simulation.isAccepted
-                                    obj.addDiagnostic( ...
-                                        "duplicate acceptance for run ID " + runId);
-                                    continue
-                                end
-                                simulation.markAccepted();
-                                obj.display.simulationStarted(simulation);
-
-                            case 'COMPLETED'
-                                simulation.markCompleted(event);
-                                if ~simulation.isAccepted
-                                    error('trnrun:QueueProtocolError', ...
-                                        'Run ID %d completed before it was accepted.', ...
-                                        simulation.id);
-                                end
-                                obj.display.simulationFinished(simulation);
-
-                            otherwise
-                                obj.addDiagnostic("unknown queue event: " + line);
-                                continue
-                        end
-
-                    otherwise
-                        simulation.applyEvent(event);
-                end
-                obj.display.refresh();
-                return
-            end
-        end
-
-        function requireOpen(obj)
-            %REQUIREOPEN Reject operations after shutdown has started.
-
-            if obj.shutdownStarted
-                error('trnrun:ManagerShutdown', ...
-                    'Cannot start an operation after manager shutdown has started.');
-            end
-        end
-
-        function guard = enterOperation(obj, operation)
-            %ENTEROPERATION Reject reentrancy and return a cleanup guard.
-            %   Transport waits can invoke graphics callbacks.
-
-            if obj.busy
-                error('trnrun:ReentrantOperation', ...
-                    'Cannot call %s while another manager operation is active.', ...
-                    operation);
-            end
-            obj.busy = true;
-            guard = onCleanup(@() obj.leaveOperation());
-        end
-
-        function leaveOperation(obj)
-            %LEAVEOPERATION Clear the active-operation flag.
-
-            obj.busy = false;
-        end
-
-        function addDiagnostic(obj, text)
-            %ADDDIAGNOSTIC Append a session diagnostic and discard excess old entries.
-
-            obj.diagnostics(end + 1) = text;
-            if numel(obj.diagnostics) > obj.MaxSessionDiagnostics
-                obj.diagnostics(1) = [];
-            end
-        end
-
-        function suffix = transportDiagnosticSuffix(obj)
-            %TRANSPORTDIAGNOSTICSUFFIX Format available queue stderr for an error.
-
-            suffix = "";
-            try
-                details = obj.transport.diagnostics();
-                if details.stderr_dropped > 0
-                    suffix = string(sprintf( ...
-                        ' (%d older stderr lines dropped)', ...
-                        details.stderr_dropped));
-                end
-                if ~isempty(details.stderr)
-                    suffix = suffix + " Queue stderr: " + ...
-                        strjoin(string(details.stderr), ' | ');
-                end
-            catch
-                % Optional diagnostics must not mask the original queue error.
-            end
+            simulations = reshape(simulations, 1, []);
+            [found, index] = ismember([simulations.simId], [obj.simulations.simId]);
+            simulations(found) = obj.simulations(index(found));
         end
     end
-end
-
-function value = defaultConcurrency()
-    %DEFAULTCONCURRENCY Reserve one logical processor, allowing at least one run.
-    %   Windows reports logical processors independently of MATLAB's thread limit.
-
-    count = str2double(getenv('NUMBER_OF_PROCESSORS'));
-    if ~isfinite(count) || count < 1
-        count = 1;
-    end
-    value = max(fix(count) - 1, 1);
 end
