@@ -17,7 +17,7 @@ function options = toolboxOptions()
     %TOOLBOXOPTIONS Configure toolbox metadata and packaging options.
 
     % Never change: MATLAB matches upgrades by this identifier.
-    identifier = "trnrun";
+    identifier = "68A62C11-ADCC-498E-9D44-63CB5DA60A0F";
 
     options = matlab.addons.toolbox.ToolboxOptions(toolboxFolder(), identifier, ...
         ToolboxName="TRNRun", ...
