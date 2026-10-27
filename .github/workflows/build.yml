@@ -105,17 +105,9 @@ jobs:
           tasks: test
           startup-options: -sd libraries/matlab
 
-      - name: Publish test results
+      - name: Summarize Nim, Python, and .NET test results
         if: ${{ !inputs.skip-tests && !cancelled() && steps.build.outcome == 'success' }}
-        uses: EnricoMi/publish-unit-test-result-action/windows@7622c5bf3d112a72ab4fa3951c2aa5723d8ab92d # v2.25.0
-        with:
-          files: |
-            TestResults/*.xml
-            TestResults/*.trx
-            TestResults/nim/*.xml
-          # Job summary only, so the workflow needs no checks or pull-requests permission.
-          check_run: false
-          comment_mode: off
+        run: ./scripts/Write-TestSummary.ps1 TestResults >> $env:GITHUB_STEP_SUMMARY
 
       - name: Build MATLAB toolbox
         uses: matlab-actions/run-build@v3
