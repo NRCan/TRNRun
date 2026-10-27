@@ -120,7 +120,7 @@ try {
         $Verdict = if ($Simulation.succeeded) { 'PASS' } else { 'FAIL' }
         Write-Host (
             "$Verdict - ${Name}: $($Simulation.trnrunStatus), " +
-            "$($Simulation.logs.Count) logs, " +
+            "$($Simulation.notices + $Simulation.warnings + $Simulation.fatals) logs, " +
             "$($Simulation.warnings) warnings"
         )
         if (-not $Simulation.succeeded) {
