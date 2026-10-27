@@ -96,7 +96,7 @@ trnrun-bin:
 trnrun-dist:
     nimble dist
 
-# Build, assemble, and deploy TRNRun to the Python package
+# Build, assemble, and deploy TRNRun to the Python and MATLAB packages
 [group('trnrun')]
 [working-directory('components/trnrun')]
 trnrun-deploy:
@@ -120,7 +120,7 @@ trnrund-bin:
 trnrund-dist:
     nimble dist
 
-# Build, assemble, and deploy TRNRunD to the Python package
+# Build, assemble, and deploy TRNRunD to the Python and MATLAB packages
 [group('trnrund')]
 [working-directory('components/trnrund')]
 trnrund-deploy:

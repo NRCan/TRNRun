@@ -109,7 +109,7 @@ task dist, "Build and assemble the distribution":
   compileExe()
   assembleDistribution()
 
-task deploy, "Build, assemble, and deploy to the manager":
+task deploy, "Build, assemble, and deploy to the Python and MATLAB packages":
   compileExe()
   assembleDistribution()
   deployPackage()
