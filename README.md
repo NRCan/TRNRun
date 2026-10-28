@@ -13,8 +13,8 @@ Python, MATLAB, .NET, or the command line.
 <table>
   <tr>
     <th width="33%">TRNRun Runner</th>
-    <th width="33%">Python Display</th>
-    <th width="33%">.NET GUI</th>
+    <th width="33%">Terminal Display</th>
+    <th width="33%">GUI</th>
   </tr>
   <tr>
     <td><video src="https://github.com/user-attachments/assets/b5e91df8-a9dc-4add-9117-24786cb10db9"></video></td>
