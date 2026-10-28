@@ -12,13 +12,13 @@ Python, MATLAB, .NET, or the command line.
 
 <table>
   <tr>
-    <th width="33%">Python</th>
-    <th width="33%">Runner</th>
-    <th width="33%">.NET</th>
+    <th width="33%">TRNRun Runner</th>
+    <th width="33%">Python Display</th>
+    <th width="33%">.NET GUI</th>
   </tr>
   <tr>
-    <td><video src="https://github.com/user-attachments/assets/b94c493f-0c1c-42a6-b559-b17b61d1612b"></video></td>
     <td><video src="https://github.com/user-attachments/assets/b5e91df8-a9dc-4add-9117-24786cb10db9"></video></td>
+    <td><video src="https://github.com/user-attachments/assets/b94c493f-0c1c-42a6-b559-b17b61d1612b"></video></td>
     <td><video src="https://github.com/user-attachments/assets/9ece228e-33aa-48f3-a872-dce78c1dc777"></video></td>
   </tr>
 </table>
