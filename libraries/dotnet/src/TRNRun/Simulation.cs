@@ -19,8 +19,8 @@ public sealed record Simulation
     /// <summary>Label given to <see cref="TRNRunDaemon.AddAsync"/>, if any.</summary>
     public string? Label { get; init; }
 
-    /// <summary>TRNRun command-line flags the settings became, such as <c>--watchTmp:true</c>.</summary>
-    public IReadOnlyList<string> TrnrunArgs { get; init; } = [];
+    /// <summary>TRNRun options the settings became, as a raw JSON object keyed by TRNRun's camelCase option names, such as <c>{"watchTmp":true}</c>.</summary>
+    public JsonElement? TrnrunOptions { get; init; }
 
     /// <summary>TRNRun's latest status; it can already be <see cref="SimulationStatus.Done"/> while <see cref="State"/> is still <see cref="SimulationState.Running"/>, so wait on <see cref="State"/>.</summary>
     [JsonPropertyName("trnrunStatus")]

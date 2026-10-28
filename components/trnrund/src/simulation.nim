@@ -3,7 +3,7 @@
 ## Timestamps are UTC ISO 8601 text with milliseconds, such as
 ## `2026-10-09T14:03:12.345Z`, which sort chronologically as text.
 
-import std/[options, times]
+import std/[json, options, times]
 import ./events
 
 export events
@@ -30,7 +30,7 @@ type
     submittedAt*: string
     startedAt*, finishedAt*: Option[string]
     deckFile*: string
-    trnrunArgs*: seq[string]
+    trnrunOptions*: JsonNode ## As the client sent them; an object, empty when none.
     startTime*, stopTime*, timeStep*: Option[float]
     setting*: Option[SettingEvent]
     logs*: seq[LogEvent] ## Oldest first.
@@ -46,7 +46,7 @@ proc timestamp(): string =
 proc initSimulation*(
     simId: int,
     deckFile: sink string,
-    trnrunArgs: sink seq[string],
+    trnrunOptions: JsonNode,
     label: sink Option[string],
 ): Simulation =
   ## A new `QUEUED` simulation, submitted now.
@@ -56,7 +56,7 @@ proc initSimulation*(
     state: ssQueued,
     submittedAt: timestamp(),
     deckFile: deckFile,
-    trnrunArgs: trnrunArgs,
+    trnrunOptions: trnrunOptions,
   )
 
 proc start*(self: var Simulation) =

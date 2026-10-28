@@ -10,7 +10,7 @@ classdef Simulation < handle
         label (1,1) string = missing           % text it was added with
         state (1,1) string = missing           % QUEUED, RUNNING or FINISHED
         deckFile (1,1) string = missing        % absolute deck path
-        trnrunArgs (1,:) string = strings(1, 0) % TRNRun flags it was added with
+        trnrunOptions (1,1) struct = struct()   % TRNRun options it was added with
         trnrunStatus (1,1) string = missing    % latest TRNRun status, such as RUNNING or DONE
         trnrunMessage (1,1) string = missing   % detail of trnrunStatus
         percent (1,1) double = NaN             % completion, from 0 to 1
@@ -44,7 +44,7 @@ classdef Simulation < handle
             obj.label = text(record.label);
             obj.state = record.state;
             obj.deckFile = record.deckFile;
-            obj.trnrunArgs = reshape(string(record.trnrunArgs), 1, []);
+            obj.trnrunOptions = record.trnrunOptions;
             obj.trnrunStatus = text(record.trnrunStatus);
             obj.trnrunMessage = text(record.trnrunMessage);
             obj.percent = number(record.percent);

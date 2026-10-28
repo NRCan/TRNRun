@@ -22,24 +22,25 @@ const
   TimeoutMs = 3_600_000
   RemoveStagedCopies = true
   TrnexePath = r"C:\TRNSYS18\Exe\TrnEXE64.exe"
-  TrnrunArgs = [
-    "--trnexePath:" & TrnexePath,
-    "--guiVisibility:auto",
-    "--waitForGui:true",
-    "--waitForLst:true",
-    "--waitForTmp:false",
-    "--detectTimeout:300000",
-    "--watchLog:true",
-    "--watchTmp:true",
-    "--watchTimeout:0",
-    "--stallTimeout:0",
-    "--pollMs:100",
-    "--clean:false",
-    "--killOnTimeout:true",
-    "--killOnStall:true",
-    "--severity:Notice",
-    "--writeEvents:false",
-  ]
+
+let trnrunOptions = %*{
+  "trnexePath": TrnexePath,
+  "guiVisibility": "auto",
+  "waitForGui": true,
+  "waitForLst": true,
+  "waitForTmp": false,
+  "detectTimeout": 300000,
+  "watchLog": true,
+  "watchTmp": true,
+  "watchTimeout": 0,
+  "stallTimeout": 0,
+  "pollMs": 100,
+  "clean": false,
+  "killOnTimeout": true,
+  "killOnStall": true,
+  "severity": "Notice",
+  "writeEvents": false,
+}
 
 proc formatSeconds(milliseconds: int64): string =
   ## `milliseconds` as seconds, with one decimal.
@@ -87,7 +88,7 @@ proc runDaemon(daemon: Process, deckFiles: openArray[string]): Table[string, Jso
     pending.add(daemon.request(%*{
       "cmd": "add",
       "deckFile": deckFile,
-      "trnrunArgs": TrnrunArgs,
+      "trnrunOptions": trnrunOptions,
       "label": deckFile.splitFile().name,
     })["simId"].getInt())
 

@@ -1,4 +1,4 @@
-import std/[monotimes, options, os, times, unittest]
+import std/[json, monotimes, options, os, times, unittest]
 
 import ../src/trnrun
 import ./fake_trnrun
@@ -17,6 +17,13 @@ proc waitForExit(trnrun: var Trnrun): seq[string] =
 let dir = createDeckDir()
 
 suite "trnrun":
+  test "trnrunArgs turns each option into --key:value":
+    check trnrunArgs(newJObject()).len == 0
+    check trnrunArgs(%*{"guiVisibility": "min", "clean": true, "pollMs": 50, "detectTimeout": 5000.0}) ==
+      @["--guiVisibility:min", "--clean:true", "--pollMs:50", "--detectTimeout:5000"]
+    check trnrunArgs(%*{"pollMs": 0.5}) == @["--pollMs:0.5"]
+    check trnrunArgs(%*{"pollMs": 1e300}) == @["--pollMs:1e+300"]
+
   test "reads every output line, including a last one without a line break":
     var trnrun = launch(getAppFilename(), createDeck(dir, "done-a.dck"), @[])
     let lines = trnrun.waitForExit()

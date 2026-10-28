@@ -1,4 +1,4 @@
-import std/[os, unittest]
+import std/[json, os, unittest]
 
 import ../src/validate
 import ./fake_trnrun
@@ -27,21 +27,19 @@ suite "validate":
     expect InputError:
       discard validateDeck(createDeck(dir, "d.txt"))
 
-  test "validateTrnrunArgs accepts TRNRun options":
-    validateTrnrunArgs([])
-    validateTrnrunArgs(["--guiVisibility:min", "--pollMs:50", "--clean:true", "--runId:x"])
+  test "validateTrnrunOptions accepts any named string, boolean or number, leaving the rest to TRNRun":
+    validateTrnrunOptions(newJObject())
+    validateTrnrunOptions(%*{"guiVisibility": "min", "clean": true, "pollMs": 0, "detectTimeout": 5000.0, "bogus": "x"})
 
-  test "validateTrnrunArgs rejects what TRNRun or the daemon would not take":
-    for args in [
-      @["other.dck"],
-      @["--deckFile:other.dck"],
-      @["--help"],
-      @["-v"],
-      @["--bogus:1"],
-      @["--pollMs:0"],
-      @["--clean:maybe"],
-    ]:
+  test "validateTrnrunOptions rejects another kind of value":
+    for value in [newJNull(), %*[1], %*{"a": 1}]:
       expect InputError:
-        validateTrnrunArgs(args)
+        validateTrnrunOptions(%*{"pollMs": value})
+
+  test "validateTrnrunOptions rejects a reserved or malformed name":
+    # "deckFile:other.dck" would reach TRNRun as --deckFile:other.dck:true.
+    for key in ["deckFile", "help", "h", "version", "v", "", "deckFile:other.dck", "deckFile=x", "-h", "a b"]:
+      expect InputError:
+        validateTrnrunOptions(%*{key: true})
 
 removeDir(dir)

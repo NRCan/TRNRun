@@ -94,10 +94,10 @@ try {
             cmd = 'add'
             label = $Name
             deckFile = $DeckFile
-            trnrunArgs = @(
-                '--guiVisibility:auto'
-                '--watchTmp:true'
-            )
+            trnrunOptions = @{
+                guiVisibility = 'auto'
+                watchTmp = $true
+            }
         }).simId)
 
         Update-Runs

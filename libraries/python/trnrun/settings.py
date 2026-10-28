@@ -1,8 +1,8 @@
 """TRNRun options for a simulation."""
 
-from dataclasses import dataclass, fields
+from dataclasses import dataclass
 from pathlib import Path
-from typing import ClassVar, Literal, cast
+from typing import ClassVar, Literal
 
 from trnrun.simulation import LogSeverity
 
@@ -12,8 +12,8 @@ class SimulationSettings:
     r"""TRNRun options for a simulation; each field that is set becomes one ``--flag:value``.
 
     A field left at None is not passed, so TRNRun's default applies. See
-    ``trnrun.exe --help`` for what each flag does; trnrund validates the values
-    when a run is added.
+    ``trnrun.exe --help`` for what each flag does; TRNRun checks the values
+    when the simulation starts; a bad one finishes it with an error.
 
     Attributes
     ----------
@@ -80,32 +80,26 @@ class SimulationSettings:
         "write_events": "writeEvents",
     }
 
-    def to_cli_args(self) -> list[str]:
-        """Build the TRNRun flags of the fields that are set.
+    def to_trnrun_options(self) -> dict[str, object]:
+        """Build trnrund's ``trnrunOptions`` from the fields that are set.
 
         Returns
         -------
-        list of str
-            Unquoted argv entries such as ``--watchTmp:true``, in field order;
-            ``trnexe_path`` is made absolute from Python's working directory.
+        dict
+            TRNRun option name to JSON value, such as ``{"watchTmp": True}``, in field
+            order; ``trnexe_path`` is made absolute from Python's working directory.
 
         Raises
         ------
         FileNotFoundError
             If ``trnexe_path`` is set but is not a file.
         """
-        args: list[str] = []
-        for settings_field in fields(self):
-            name = settings_field.name
-            value = cast("object", getattr(self, name))
-            if value is None:
-                continue
-            if isinstance(value, bool):
-                value = "true" if value else "false"
-            elif name == "trnexe_path":
-                trnexe = Path(str(value)).absolute()
-                if not trnexe.is_file():
-                    raise FileNotFoundError(f"TrnEXE executable not found: {trnexe}")
-                value = trnexe
-            args.append(f"--{self._FLAGS[name]}:{value}")
-        return args
+        options: dict[str, object] = {
+            flag: value for name, flag in self._FLAGS.items() if (value := getattr(self, name)) is not None
+        }
+        if self.trnexe_path is not None:
+            trnexe = Path(self.trnexe_path).absolute()
+            if not trnexe.is_file():
+                raise FileNotFoundError(f"TrnEXE executable not found: {trnexe}")
+            options["trnexePath"] = str(trnexe)
+        return options

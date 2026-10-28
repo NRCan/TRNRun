@@ -4,8 +4,9 @@
 ## with `ok`; when `ok` is false it also has an `error` for humans. README.md
 ## lists the commands. Simulation work is delegated to `scheduler`.
 
-import std/[json, options, sequtils, strutils]
+import std/[json, options, strutils]
 import ./[scheduler, validate]
+from ./cli import NimblePkgVersion
 
 # --------------------------
 # Request fields
@@ -44,16 +45,12 @@ proc label(request: JsonNode): Option[string] =
   let node = request.optionalField("label", JString, "a string")
   return if node == nil: none(string) else: some(node.getStr())
 
-proc trnrunArgs(request: JsonNode): seq[string] =
-  ## The request's optional `trnrunArgs`; `InputError` unless TRNRun options the daemon allows.
-  const expected = "an array of TRNRun options"
-  let node = request.optionalField("trnrunArgs", JArray, expected)
-  if node == nil:
-    return @[]
-  if node.getElems().anyIt(it.kind != JString):
-    raise newException(InputError, "'trnrunArgs' must be " & expected)
-  result = node.getElems().mapIt(it.getStr())
-  validateTrnrunArgs(result)
+proc trnrunOptions(request: JsonNode): JsonNode =
+  ## The request's optional `trnrunOptions`, empty when missing; `InputError` unless options the daemon allows.
+  result = request.optionalField("trnrunOptions", JObject, "an object of TRNRun options")
+  if result == nil:
+    return newJObject()
+  validateTrnrunOptions(result)
 
 proc states(request: JsonNode): set[SimulationState] =
   ## The request's optional `state`, one state or an array of them, every state when missing; `InputError` otherwise.
@@ -88,7 +85,7 @@ proc addCmd(scheduler: var Scheduler, request: JsonNode): JsonNode =
   ## Answers `add`: queues the requested simulation and returns its simId.
   let simId = scheduler.add(
     deckFile = validateDeck(request.field("deckFile", JString, "a string").getStr()),
-    trnrunArgs = request.trnrunArgs(),
+    trnrunOptions = request.trnrunOptions(),
     label = request.label(),
   )
   return %*{"ok": true, "simId": simId}
@@ -136,18 +133,36 @@ proc simulationsCmd(scheduler: Scheduler, request: JsonNode): JsonNode =
     simulations.add(if withLogs: %scheduler[simId] else: scheduler[simId].toJsonWithoutLogs())
   return %*{"ok": true, "simulations": simulations}
 
+proc allowFields(request: JsonNode, cmd: string, allowed: varargs[string]) =
+  ## `InputError` if `request` has a field other than `cmd` and `allowed`, so a typo is not silently ignored.
+  for name in request.keys:
+    if name != "cmd" and name notin allowed:
+      raise newException(InputError, "Unknown field in " & cmd & " request: '" & name & "'")
+
 proc dispatch(scheduler: var Scheduler, request: JsonNode): JsonNode =
   ## Routes one parsed request to its command and returns the response.
   if request.kind != JObject:
     raise newException(InputError, "Request must be a JSON object")
   let cmd = request.field("cmd", JString, "a string").getStr()
   case cmd
-  of "ready": return %*{"ok": true}
-  of "add": return scheduler.addCmd(request)
-  of "cancel": return scheduler.cancelCmd(request)
-  of "release": return scheduler.releaseCmd(request)
-  of "simulation": return scheduler.simulationCmd(request)
-  of "simulations": return scheduler.simulationsCmd(request)
+  of "ready":
+    request.allowFields(cmd)
+    return %*{"ok": true, "version": NimblePkgVersion}
+  of "add":
+    request.allowFields(cmd, "deckFile", "label", "trnrunOptions")
+    return scheduler.addCmd(request)
+  of "cancel":
+    request.allowFields(cmd, "simId")
+    return scheduler.cancelCmd(request)
+  of "release":
+    request.allowFields(cmd, "simId")
+    return scheduler.releaseCmd(request)
+  of "simulation":
+    request.allowFields(cmd, "simId", "withLogs")
+    return scheduler.simulationCmd(request)
+  of "simulations":
+    request.allowFields(cmd, "state", "withLogs")
+    return scheduler.simulationsCmd(request)
   else: raise newException(InputError, "Unknown cmd: " & cmd)
 
 proc handleRequest*(scheduler: var Scheduler, line: string): string =

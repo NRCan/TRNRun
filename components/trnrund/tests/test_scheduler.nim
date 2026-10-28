@@ -1,4 +1,4 @@
-import std/[monotimes, options, os, strutils, times, unittest]
+import std/[json, monotimes, options, os, strutils, times, unittest]
 
 import ../src/scheduler
 import ./fake_trnrun
@@ -33,11 +33,11 @@ suite "scheduler":
     scheduler = initScheduler(getAppFilename(), 2)
 
   test "add starts a simulation at once when a worker is free":
-    let simId = scheduler.add(createDeck(dir, "wait-a.dck"), @["--pollMs:50"], some("first"))
+    let simId = scheduler.add(createDeck(dir, "wait-a.dck"), %*{"pollMs": 50}, some("first"))
     let simulation = scheduler.simulationOf(simId)
     check simulation.simId == simId
     check simulation.deckFile == dir / "wait-a.dck"
-    check simulation.trnrunArgs == @["--pollMs:50"]
+    check simulation.trnrunOptions == %*{"pollMs": 50}
     check simulation.label == some("first")
     check simulation.state == ssRunning
     check simulation.submittedAt.endsWith("Z")
@@ -110,9 +110,9 @@ suite "scheduler":
     check simulation.trnrunStatus == some(stError)
     check simulation.trnrunMessage == some("TRNRun exited without a terminal status")
 
-  test "passes trnrunArgs after the deck":
+  test "passes trnrunOptions as arguments after the deck":
     let deckFile = createDeck(dir, "args-g.dck")
-    let simId = scheduler.add(deckFile, @["--pollMs:50", "--clean:true"])
+    let simId = scheduler.add(deckFile, %*{"pollMs": 50, "clean": true})
     scheduler.waitUntil(scheduler.stateOf(simId) == ssFinished)
     check readFile(deckFile.changeFileExt("args")) == deckFile & "\n--pollMs:50\n--clean:true"
 

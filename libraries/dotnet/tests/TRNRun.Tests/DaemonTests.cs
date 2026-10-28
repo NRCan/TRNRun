@@ -85,22 +85,12 @@ public sealed class DaemonTests : IDisposable
     }
 
     [Fact]
-    public async Task AddPassesSettingsAsTrnrunArgs()
+    public async Task AddPassesSettingsAsTrnrunOptions()
     {
         using TRNRunDaemon daemon = await StartAsync();
         var settings = new SimulationSettings { WatchTmp = true, Severity = LogSeverity.Fatal, GuiVisibility = GuiVisibility.MinimizedAuto };
         Simulation sim = await daemon.GetSimulationAsync(await daemon.AddAsync(_decks.Write(), settings));
-        Assert.Equal(["--guiVisibility:minauto", "--watchTmp:true", "--severity:Fatal"], sim.TrnrunArgs);
-    }
-
-    [Fact]
-    public async Task AddRefusesABadSetting()
-    {
-        using TRNRunDaemon daemon = await StartAsync();
-        var error = await Assert.ThrowsAsync<RequestException>(
-            () => daemon.AddAsync(_decks.Write(), new SimulationSettings { Severity = (LogSeverity)99 }));
-        Assert.Contains("severity", error.Message);
-        Assert.Empty(await daemon.GetSimulationsAsync(SimulationState.Queued));
+        Assert.Equal("""{"guiVisibility":"minauto","watchTmp":true,"severity":"Fatal"}""", sim.TrnrunOptions?.GetRawText());
     }
 
     [Fact]
@@ -151,7 +141,7 @@ public sealed class DaemonTests : IDisposable
     public async Task RequestSendsARawRequest()
     {
         using TRNRunDaemon daemon = await StartAsync();
-        Assert.Equal("""{"ok":true}""", (await daemon.RequestAsync(new JsonObject { ["cmd"] = "ready" })).ToJsonString());
+        Assert.True((await daemon.RequestAsync(new JsonObject { ["cmd"] = "ready" }))["version"] is JsonValue);
         await Assert.ThrowsAsync<RequestException>(() => daemon.RequestAsync(new JsonObject { ["cmd"] = "nope" }));
     }
 

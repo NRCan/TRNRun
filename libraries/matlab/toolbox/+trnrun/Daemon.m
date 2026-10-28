@@ -104,7 +104,7 @@ classdef Daemon < handle
 
             request = struct('cmd', 'add', ...
                 'deckFile', trnrun.internal.resolveFile(deckFile), ...
-                'trnrunArgs', {settings.cliArgs()});
+                'trnrunOptions', settings.trnrunOptions());
             if ~ismissing(options.label)
                 request.label = options.label;
             end

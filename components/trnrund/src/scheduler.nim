@@ -5,7 +5,7 @@
 ## whose TRNRun exited, and starts queued ones on the workers they freed.
 ## Nothing here knows about the client protocol.
 
-import std/[algorithm, options, tables]
+import std/[algorithm, json, options, tables]
 import ./[simulation, trnrun]
 
 export simulation
@@ -24,7 +24,7 @@ proc startTrnrun(self: var Scheduler, simId: int) =
   template simulation: untyped = self.simulations[simId]
   try:
     self.running[simId] =
-      launch(self.trnrunPath, simulation.deckFile, simulation.trnrunArgs)
+      launch(self.trnrunPath, simulation.deckFile, trnrunArgs(simulation.trnrunOptions))
     simulation.start()
   except OSError as error:
     simulation.finish(none(int), "Cannot start TRNRun: " & error.msg)
@@ -69,7 +69,7 @@ proc initScheduler*(trnrunPath: string, maxWorkers: Positive): Scheduler =
 proc add*(
     self: var Scheduler,
     deckFile: sink string,
-    trnrunArgs: sink seq[string] = @[],
+    trnrunOptions: JsonNode = newJObject(),
     label: sink Option[string] = none(string),
 ): int =
   ## Queues a simulation of `deckFile` and returns its simId.
@@ -77,10 +77,10 @@ proc add*(
   ## simIds start at 1 and are never reused, even after `release`. The
   ## simulation starts at once if a worker is free. If TRNRun cannot start, the
   ## simulation is already `FINISHED` with an error when this returns. Nothing
-  ## is validated here; `deckFile` and `trnrunArgs` are passed to TRNRun as given.
+  ## is validated here; `deckFile` and `trnrunOptions` are passed to TRNRun as given.
   inc self.lastSimId
   result = self.lastSimId
-  self.simulations[result] = initSimulation(result, deckFile, trnrunArgs, label)
+  self.simulations[result] = initSimulation(result, deckFile, trnrunOptions, label)
   self.queue.add(result)
   self.startQueued()
 

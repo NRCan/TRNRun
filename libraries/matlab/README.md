@@ -347,9 +347,9 @@ A value TRNRun has not reported yet is `missing` text, `NaN`, or `NaT`.
 
   Label it was added with; `missing` if none.
 
-- _`trnrunArgs`_ (`string` array)
+- _`trnrunOptions`_ (`struct`)
 
-  Runner options it was added with, such as `--watchTmp:true`.
+  Runner options it was added with, such as `struct('watchTmp', true)`.
 
 - _`state`_ (`string`)
 
@@ -412,7 +412,7 @@ delete(manager);
 fprintf("ID: %d\n", simulation.simId);
 fprintf("Deck: %s\n", simulation.deckFile);
 fprintf("Label: %s\n", simulation.label);
-fprintf("Runner options: %s\n", join(simulation.trnrunArgs, " "));
+fprintf("Runner options: %s\n", jsonencode(simulation.trnrunOptions));
 fprintf("State: %s\n", simulation.state);
 fprintf("Status: %s %s\n", simulation.trnrunStatus, simulation.trnrunMessage);
 fprintf("Succeeded: %d\n", simulation.succeeded);

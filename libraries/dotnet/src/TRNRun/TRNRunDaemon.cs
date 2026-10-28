@@ -143,7 +143,7 @@ public sealed class TRNRunDaemon : IDisposable, IAsyncDisposable
     /// <param name="label">Free text stored with the simulation, such as a name to display; trnrund does not use it.</param>
     /// <param name="cancellationToken">Cancels the wait for earlier requests; see the class remarks.</param>
     /// <returns>The new simulation's simId, used by every other method.</returns>
-    /// <exception cref="RequestException">trnrund refused the deck, such as a missing file, or one of the settings.</exception>
+    /// <exception cref="RequestException">trnrund refused the deck, such as a missing file.</exception>
     /// <exception cref="FileNotFoundException"><see cref="SimulationSettings.TrnexePath"/> does not exist.</exception>
     public async Task<long> AddAsync(
         string deckFile,
@@ -151,12 +151,11 @@ public sealed class TRNRunDaemon : IDisposable, IAsyncDisposable
         string? label = null,
         CancellationToken cancellationToken = default)
     {
-        IReadOnlyList<string> args = settings?.ToCliArgs() ?? [];
         var request = new JsonObject
         {
             ["cmd"] = "add",
             ["deckFile"] = Path.GetFullPath(deckFile),
-            ["trnrunArgs"] = new JsonArray([.. args.Select(arg => (JsonNode)arg)]),
+            ["trnrunOptions"] = settings?.ToTrnrunOptions() ?? new JsonObject(),
         };
         if (label is not null)
         {

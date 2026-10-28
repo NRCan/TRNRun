@@ -114,7 +114,7 @@ class SimulationManager:
         TypeError
             If an option is not a ``SimulationSettings`` field.
         RequestError
-            If trnrund refuses the deck or ``settings``.
+            If trnrund refuses the deck.
         """
         if wait_for is not None:
             _ = _rank(wait_for)

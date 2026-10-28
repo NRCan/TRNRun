@@ -172,14 +172,14 @@ class Daemon:
         TypeError
             If an option is not a ``SimulationSettings`` field.
         RequestError
-            If trnrund refuses the deck or ``settings``.
+            If trnrund refuses the deck.
         FileNotFoundError
             If ``settings.trnexe_path`` does not exist.
         """
         if options:
             settings = replace(settings or SimulationSettings(), **options)
-        args = [] if settings is None else settings.to_cli_args()
-        request = {"cmd": "add", "deckFile": str(Path(deck_file).absolute()), "trnrunArgs": args}
+        trnrun_options = {} if settings is None else settings.to_trnrun_options()
+        request = {"cmd": "add", "deckFile": str(Path(deck_file).absolute()), "trnrunOptions": trnrun_options}
         if label is not None:
             request["label"] = label
         return self.request(request)["simId"]

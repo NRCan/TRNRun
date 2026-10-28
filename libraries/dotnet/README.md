@@ -79,9 +79,9 @@ Console.WriteLine($"{succeeded} succeeded, {decks.Length - succeeded} failed");
 `SimulationSettings` defines how one deck is launched and monitored. Each
 property that is set becomes one
 [TRNRun Runner option](https://github.com/NRCan/TRNRun/tree/main/components/trnrun#settings);
-a property left at `null` keeps the runner's default, listed below. trnrund
-checks the values when the simulation is added, so a bad value throws
-`RequestException` from `AddAsync`.
+a property left at `null` keeps the runner's default, listed below. TRNRun
+checks the values when the simulation starts, so a bad value finishes it with
+`SimulationStatus.Error`.
 
 Durations are `TimeSpan`s, passed as whole milliseconds rounded up. For the
 timeouts, `Timeout.InfiniteTimeSpan` and `TimeSpan.Zero` both mean no limit.
@@ -372,9 +372,9 @@ in PascalCase. A nullable property is `null` until the runner reports it.
 
   Label it was added with.
 
-- _`TrnrunArgs`_ (`IReadOnlyList<string>`)
+- _`TrnrunOptions`_ (`JsonElement?`)
 
-  Runner options it was added with, such as `--watchTmp:true`.
+  Runner options it was added with, as a JSON object such as `{"watchTmp":true}`.
 
 - _`State`_ (`SimulationState`)
 
@@ -439,7 +439,7 @@ Simulation simulation = await daemon.GetSimulationAsync(simId, withLogs: true);
 Console.WriteLine($"ID: {simulation.SimId}");
 Console.WriteLine($"Deck: {simulation.DeckFile}");
 Console.WriteLine($"Label: {simulation.Label}");
-Console.WriteLine($"Runner options: {string.Join(" ", simulation.TrnrunArgs)}");
+Console.WriteLine($"Runner options: {simulation.TrnrunOptions}");
 Console.WriteLine($"State: {simulation.State}");
 Console.WriteLine($"Status: {simulation.Status} {simulation.StatusMessage}");
 Console.WriteLine($"Succeeded: {simulation.Succeeded}");

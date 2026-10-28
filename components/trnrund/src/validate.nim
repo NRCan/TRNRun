@@ -1,19 +1,18 @@
-## Validates deck and TRNRun paths, and TRNRun arguments.
+## Validates deck and TRNRun paths, and the shape of TRNRun options.
 ##
 ## Relative deck and TRNRun paths are both resolved from the daemon working
 ## directory, which a wrapper inherits by default. Decks are restricted to
-## supported file types. TRNRun arguments are parsed with TRNRun's own option
-## vocabulary, so a bad one is rejected when the simulation is added rather
-## than when it starts. Failures raise `InputError` so the daemon can reject
-## the input instead of treating it as a daemon fault.
+## supported file types. TRNRun options are not checked against TRNRun's own
+## vocabulary: TRNRun rejects a bad one when the simulation starts. Failures
+## raise `InputError` so the daemon can reject the input instead of treating it
+## as a daemon fault.
 
-import std/[os, parseopt, strformat, strutils]
-import ../../trnrun/src/cli as trnrunCli
+import std/[json, os, strformat, strutils]
 
 type InputError* = object of ValueError
   ## Input from the command line or a client was rejected; never a daemon fault.
 
-const ReservedOptions =["deckFile", "help", "h", "version", "v"]
+const ReservedOptions = ["deckFile", "help", "h", "version", "v"]
   ## TRNRun options that pick another deck than the daemon passes, or stop TRNRun from running.
 
 proc validateFile*(path, description: string): string =
@@ -28,37 +27,17 @@ proc validateDeck*(deckFile: string): string =
   if result.splitFile().ext.toLowerAscii() notin [".dck", ".trd"]:
     raise newException(InputError, fmt"Expected .dck or .trd, got: '{deckFile}'")
 
-proc validateTrnrunOption(input: var trnrunCli.CliInput, key, value: string) =
-  ## Raises `InputError` unless `key` is a TRNRun option outside `ReservedOptions` that takes `value`.
-  if key in ReservedOptions:
-    raise newException(InputError, fmt"Option not allowed in trnrunArgs: '{key}'")
-  let known =
-    try:
-      input.applyOption(key, value)
-    except ValueError as error:
-      raise newException(
-        InputError,
-        fmt"Invalid value for '{key}' in trnrunArgs: {error.msg}",
-      )
-  if not known:
-    raise newException(InputError, fmt"Unknown option in trnrunArgs: '{key}'")
-
-proc validateTrnrunArgs*(trnrunArgs: openArray[string]) =
-  ## Checks `trnrunArgs` before TRNRun gets them.
+proc validateTrnrunOptions*(trnrunOptions: JsonNode) =
+  ## Checks the `trnrunOptions` object before TRNRun gets it as `--key:value` arguments.
   ##
-  ## Each argument must be an option TRNRun knows, with a value it accepts.
-  ## `ReservedOptions` are refused because the daemon passes the deck itself and
-  ## needs TRNRun to run. Raises `InputError` naming the first bad argument.
-  if trnrunArgs.len == 0:
-    return # `initOptParser` would parse the daemon's own command line instead.
-  var
-    input = DefaultCliInput
-    parser = initOptParser(@trnrunArgs)
-  for kind, key, value in parser.getopt():
-    case kind
-    of cmdArgument:
-      raise newException(InputError, fmt"Unexpected argument in trnrunArgs: '{key}'")
-    of cmdShortOption, cmdLongOption:
-      input.validateTrnrunOption(key, value)
-    of cmdEnd:
-      discard
+  ## Each name must be letters and digits only, so TRNRun reads back the same
+  ## name, and not one of `ReservedOptions`, since the daemon passes the deck
+  ## itself and needs TRNRun to run. Each value must be a string, boolean or
+  ## number. Raises `InputError` naming the first bad option.
+  for key, value in trnrunOptions:
+    if key.len == 0 or not key.allCharsInSet(Letters + Digits):
+      raise newException(InputError, fmt"Invalid option name in trnrunOptions: '{key}'")
+    if key in ReservedOptions:
+      raise newException(InputError, fmt"Option not allowed in trnrunOptions: '{key}'")
+    if value.kind notin {JString, JBool, JInt, JFloat}:
+      raise newException(InputError, fmt"'trnrunOptions.{key}' must be a string, boolean or number")

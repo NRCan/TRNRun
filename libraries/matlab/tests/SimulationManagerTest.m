@@ -158,7 +158,7 @@ classdef SimulationManagerTest < matlab.unittest.TestCase
             simulation = manager.add(testCase.deck(), ...
                 trnrun.SimulationSettings(watchTmp=true), label="tagged");
 
-            testCase.verifyEqual(simulation.trnrunArgs, "--watchTmp:true");
+            testCase.verifyEqual(simulation.trnrunOptions, struct('watchTmp', true));
             testCase.verifyEqual(simulation.label, "tagged");
         end
 

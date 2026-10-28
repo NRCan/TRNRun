@@ -373,7 +373,7 @@ class Dashboard:
                 f"Started   {format_timestamp(sim.started_at)}",
                 f"Finished  {format_timestamp(sim.finished_at)}",
                 f"Logs      {sim.notices} notices, {sim.warnings} warnings, {sim.fatals} fatals",
-                f"Options   {' '.join(sim.trnrun_args)}",
+                f"Options   {' '.join(f'{name}={value}' for name, value in sim.trnrun_options.items())}",
             ]
         self.details.configure(state="normal")
         self.details.delete("1.0", "end")
