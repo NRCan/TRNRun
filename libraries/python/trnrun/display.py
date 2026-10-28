@@ -5,12 +5,12 @@ HTML output area that IPython replaces in place, without widgets or clearing
 other cell output.
 """
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from datetime import UTC, datetime
 from io import StringIO
 from typing import Protocol
 
-from rich.console import Console, Group
+from rich.console import Console, ConsoleOptions, Group
 from rich.live import Live
 from rich.segment import Segment
 from rich.text import Text
@@ -89,29 +89,39 @@ def render(sim: Simulation) -> Text:
     )
 
 
+class _Lines:
+    """Lines read at draw time, so Live's redraw after a print shows the current ones."""
+
+    def __init__(self) -> None:
+        """Start with no lines."""
+        self.lines: Sequence[Text] = ()
+
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> Iterator[Text]:
+        """Yield the current lines."""
+        yield from self.lines
+
+
 class _TerminalOutput:
     """Transient Rich live region, started on demand and stopped when empty; printed lines go above it."""
 
     def __init__(self, console: Console) -> None:
         """Draw on ``console``; nothing shows until the first line."""
         self._console: Console = console
+        self._view: _Lines = _Lines()
         self._live: Live | None = None
 
-    def show(self, lines: Sequence[Text]) -> None:
-        """Redraw the live region, starting it on demand and stopping it when empty."""
+    def show(self, lines: Sequence[Text], printed: Sequence[Text]) -> None:
+        """Print ``printed`` above the live region and redraw it, in one write; start or stop it on demand."""
+        self._view.lines = lines
+        if self._live is None and lines:
+            self._live = Live(self._view, console=self._console, auto_refresh=False, transient=True)
+            self._live.start()
+        if printed:
+            self._console.print(Group(*printed))  # Live redraws the lines after it, in the same write
+        elif self._live is not None:
+            self._live.refresh()
         if not lines:
             self.close()
-            return
-        group = Group(*lines)
-        if self._live is None:
-            self._live = Live(group, console=self._console, auto_refresh=False, transient=True)
-            self._live.start(refresh=True)
-        else:
-            self._live.update(group, refresh=True)
-
-    def print(self, line: Text) -> None:
-        """Print a line above the live region."""
-        self._console.print(line)
 
     def close(self) -> None:
         """Stop and erase the live region; printed lines stay."""
@@ -147,8 +157,10 @@ class _NotebookOutput:
         self._handle: _DisplayHandle | None = None
         self._last_html: str | None = None
 
-    def show(self, lines: Sequence[Text]) -> None:
-        """Replace the output area, publishing it on first use."""
+    def show(self, lines: Sequence[Text], printed: Sequence[Text]) -> None:
+        """Print ``printed`` to stdout, then replace the output area, publishing it on first use."""
+        for line in printed:
+            self._printer.print(line, soft_wrap=True)
         if self._handle is None and not lines:
             return
         # A fresh, private console per frame keeps buffers bounded and bypasses Rich's Jupyter output.
@@ -163,10 +175,6 @@ class _NotebookOutput:
         else:
             self._handle.update(self._html(html))
         self._last_html = html
-
-    def print(self, line: Text) -> None:
-        """Print a line to stdout."""
-        self._printer.print(line, soft_wrap=True)
 
     def close(self) -> None:
         """Release the output area without publishing; the next frame starts a new one."""
@@ -204,9 +212,7 @@ class Display:
         finished : list of Simulation
             Simulations printed once above the live lines; pass each only once.
         """
-        for sim in finished:
-            self._output.print(render(sim))
-        self._output.show([render(sim) for sim in running])
+        self._output.show([render(sim) for sim in running], [render(sim) for sim in finished])
 
     def close(self) -> None:
         """Erase the live lines; printed lines stay."""

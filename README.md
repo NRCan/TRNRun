@@ -10,6 +10,19 @@ TRNRun is a tool for running [TRNSYS](https://www.trnsys.com/) simulations,
 designed to make batch runs easy to automate, monitor, and orchestrate from
 Python, MATLAB, .NET, or the command line.
 
+<table>
+  <tr>
+    <th width="33%">Python</th>
+    <th width="33%">Runner</th>
+    <th width="33%">.NET</th>
+  </tr>
+  <tr>
+    <td><video src="PYTHON_VIDEO_URL"></video></td>
+    <td><video src="RUNNER_VIDEO_URL"></video></td>
+    <td><video src="DOTNET_VIDEO_URL"></video></td>
+  </tr>
+</table>
+
 ## Components
 
 | Component                            | Role                                                            |
@@ -20,40 +33,24 @@ Python, MATLAB, .NET, or the command line.
 
 ## Libraries
 
-| Client                      | Role                                                        | Bundles             |
-| --------------------------- | ----------------------------------------------------------- | ------------------- |
-| [Python](libraries/python/) | Python interface for running concurrent simulation batches. | `trnrun`, `trnrund` |
-| [MATLAB](libraries/matlab/) | MATLAB interface for running concurrent simulation batches. | `trnrun`, `trnrund` |
-| [.NET](libraries/dotnet/)   | .NET interface for running concurrent simulation batches.   | `trnrun`, `trnrund` |
+| Library                     | Install                                                                          | Requires       |
+| --------------------------- | -------------------------------------------------------------------------------- | -------------- |
+| [Python](libraries/python/) | `pip install trnrun` or `uv add trnrun`                                          | Python 3.12+   |
+| [MATLAB](libraries/matlab/) | `.mltbx` from [GitHub Releases](https://github.com/NRCan/TRNRun/releases/latest) | MATLAB R2021a+ |
+| [.NET](libraries/dotnet/)   | `dotnet add package TRNRun`                                                      | .NET 10        |
+
+Each library runs concurrent simulation batches through the bundled daemon.
 
 ## Requirements
 
 - Windows x64
 - TRNSYS 17 or 18
-- Python 3.12 or newer for the Python library
-- MATLAB R2021a or newer for the MATLAB library
-- .NET 10 for the .NET library
+- Optional: the [Type3830 Progress Tracker](components/type3830/) in each deck
+  for progress reporting
 
-Progress reporting requires the optional
-[Type3830 Progress Tracker](components/type3830/) in each deck.
+## Quick start
 
-## Python quick start
-
-Install the package:
-
-```powershell
-pip install trnrun
-```
-
-Or with uv:
-
-```powershell
-uv add trnrun
-```
-
-Use `SimulationManager(display=False)` to run without the progress display.
-
-Run a deck:
+### Python
 
 ```python
 from trnrun import SimulationManager
@@ -63,14 +60,9 @@ with SimulationManager(workers=1) as manager:
     manager.wait(simulation)
 ```
 
-See the [Python documentation](libraries/python/) for the thin `Daemon` client,
-concurrent batches, settings, and custom displays.
+See the [Python documentation](libraries/python/) for more details.
 
-## MATLAB quick start
-
-Install the TRNRun toolbox from the MATLAB Add-On Explorer.
-
-Run a deck:
+### MATLAB
 
 ```matlab
 import trnrun.*
@@ -80,18 +72,9 @@ simulation = manager.add("C:\path\to\deck.dck", ...
     SimulationSettings(watchTmp=true), waitFor="FINISHED");
 ```
 
-See the [MATLAB documentation](libraries/matlab/) for installation, concurrent
-batches, and result inspection.
+See the [MATLAB documentation](libraries/matlab/) for more details.
 
-## .NET quick start
-
-Install the package:
-
-```powershell
-dotnet add package TRNRun
-```
-
-Run a deck:
+### .NET
 
 ```csharp
 using TRNRun;
@@ -101,12 +84,7 @@ long simId = await daemon.AddAsync(@"C:\path\to\deck.dck", new SimulationSetting
 Simulation simulation = await daemon.WaitForFinishedAsync(simId);
 ```
 
-See the [.NET documentation](libraries/dotnet/) for concurrent batches,
-progress polling, and settings.
-
-## Demo
-
-https://github.com/user-attachments/assets/389631b0-c986-4733-9cee-1efe2100246e
+See the [.NET documentation](libraries/dotnet/) for more details.
 
 ## License
 

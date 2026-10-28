@@ -117,6 +117,18 @@ def test_terminal_prints_finished_runs_once() -> None:
     assert out.getvalue().count("DONE") == 1
 
 
+def test_terminal_redraws_current_lines_after_print() -> None:
+    """A print redraws the live lines with the new progress, never the stale one."""
+    out = StringIO()
+    display = Display(Console(file=out, force_terminal=True, width=200))
+    display.update([_sim(SimulationState.RUNNING, 0.25)], [])
+    display.update([_sim(SimulationState.RUNNING, 0.5)], [_sim(SimulationState.FINISHED, 1, SimulationStatus.DONE)])
+    after_print = out.getvalue().split("DONE", 1)[1]
+    display.close()
+    assert "(50%)" in after_print
+    assert "(25%)" not in after_print
+
+
 def test_notebook_publishes_changed_frames_only(published: list[tuple[str, str]]) -> None:
     """The area is published on first use, updated in place, and unchanged frames are skipped."""
     display = Display(Console(force_jupyter=True))
