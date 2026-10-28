@@ -1,13 +1,15 @@
+using System.Text.Json.Nodes;
+
 namespace TRNRun.Tests;
 
-/// <summary>SimulationSettings turned into TRNRun flags.</summary>
+/// <summary>SimulationSettings turned into trnrund's trnrunOptions.</summary>
 public sealed class SimulationSettingsTests
 {
     [Fact]
-    public void UnsetPropertiesPassNoFlag() => Assert.Empty(new SimulationSettings().ToCliArgs());
+    public void UnsetPropertiesPassNoOption() => Assert.Empty(new SimulationSettings().ToTrnrunOptions());
 
     [Fact]
-    public void EveryPropertyBecomesItsFlag()
+    public void EveryPropertyBecomesItsOption()
     {
         string trnexe = Environment.ProcessPath!;
         var settings = new SimulationSettings
@@ -31,13 +33,14 @@ public sealed class SimulationSettingsTests
             WriteEvents = true,
         };
         Assert.Equal(
-            [
-                $"--trnexePath:{trnexe}", "--guiVisibility:keep", "--waitForGui:false", "--waitForLst:true",
-                "--waitForTmp:true", "--detectTimeout:0", "--extraDelay:2000", "--pollMs:1", "--watchLog:true",
-                "--watchTmp:true", "--watchTimeout:60000", "--stallTimeout:0", "--clean:true", "--killOnTimeout:true",
-                "--killOnStall:false", "--severity:Warning", "--writeEvents:true",
-            ],
-            settings.ToCliArgs());
+            new JsonObject
+            {
+                ["trnexePath"] = trnexe, ["guiVisibility"] = "keep", ["waitForGui"] = false, ["waitForLst"] = true,
+                ["waitForTmp"] = true, ["detectTimeout"] = 0, ["extraDelay"] = 2000, ["pollMs"] = 1, ["watchLog"] = true,
+                ["watchTmp"] = true, ["watchTimeout"] = 60000, ["stallTimeout"] = 0, ["clean"] = true, ["killOnTimeout"] = true,
+                ["killOnStall"] = false, ["severity"] = "Warning", ["writeEvents"] = true,
+            }.ToJsonString(),
+            settings.ToTrnrunOptions().ToJsonString());
     }
 
     [Theory]
@@ -47,13 +50,13 @@ public sealed class SimulationSettingsTests
     [InlineData(GuiVisibility.MinimizedAuto, "minauto")]
     [InlineData(GuiVisibility.Hidden, "hidden")]
     public void EveryGuiVisibilityBecomesTrnrunsKeyword(GuiVisibility visibility, string keyword) =>
-        Assert.Equal([$"--guiVisibility:{keyword}"], new SimulationSettings { GuiVisibility = visibility }.ToCliArgs());
+        Assert.Equal(keyword, new SimulationSettings { GuiVisibility = visibility }.ToTrnrunOptions()["guiVisibility"]!.GetValue<string>());
 
     [Fact]
     public void AnUndefinedGuiVisibilityThrows() =>
-        Assert.Throws<ArgumentOutOfRangeException>(() => new SimulationSettings { GuiVisibility = (GuiVisibility)99 }.ToCliArgs());
+        Assert.Throws<ArgumentOutOfRangeException>(() => new SimulationSettings { GuiVisibility = (GuiVisibility)99 }.ToTrnrunOptions());
 
     [Fact]
     public void AMissingTrnexeThrows() =>
-        Assert.Throws<FileNotFoundException>(() => new SimulationSettings { TrnexePath = "missing.exe" }.ToCliArgs());
+        Assert.Throws<FileNotFoundException>(() => new SimulationSettings { TrnexePath = "missing.exe" }.ToTrnrunOptions());
 }

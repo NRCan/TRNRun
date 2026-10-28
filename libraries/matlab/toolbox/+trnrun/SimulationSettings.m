@@ -72,20 +72,18 @@ classdef SimulationSettings
             end
         end
 
-        function args = cliArgs(obj)
-            %CLIARGS Return the --flag:value of each set property as a cell row of char.
+        function options = trnrunOptions(obj)
+            %TRNRUNOPTIONS Return trnrund's trnrunOptions: a struct of each set property.
 
-            args = cell(1, 0);
+            options = struct();
             for name = string(properties(obj))'
                 value = obj.(name);
                 if isempty(value)
                     continue
                 elseif name == "trnexePath"
                     value = trnrun.internal.resolveFile(value);
-                elseif isnumeric(value)
-                    value = sprintf('%d', value);
                 end
-                args{end + 1} = char("--" + name + ":" + value); %#ok<AGROW>
+                options.(name) = value;
             end
         end
     end

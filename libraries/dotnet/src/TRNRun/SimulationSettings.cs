@@ -1,4 +1,4 @@
-using System.Globalization;
+using System.Text.Json.Nodes;
 
 namespace TRNRun;
 
@@ -9,7 +9,7 @@ namespace TRNRun;
 /// Durations are passed as whole milliseconds, rounded up. For the timeouts, <see cref="Timeout.InfiniteTimeSpan"/>
 /// and <see cref="TimeSpan.Zero"/> both mean no limit. Relative paths resolve from the current directory.
 /// </para>
-/// <para>trnrund validates the values when the simulation is added, so a bad value throws from <see cref="TRNRunDaemon.AddAsync"/>.</para>
+/// <para>TRNRun checks the values when the simulation starts, so a bad value finishes it with <see cref="SimulationStatus.Error"/> and a message saying why.</para>
 /// </remarks>
 public sealed record SimulationSettings
 {
@@ -64,48 +64,44 @@ public sealed record SimulationSettings
     /// <summary>Whether TRNRun also writes its events to a <c>.jsonl</c> file beside the deck (<c>--writeEvents</c>).</summary>
     public bool? WriteEvents { get; init; }
 
-    /// <summary>Returns the TRNRun flags for the properties that are set, one unquoted argument each, with <see cref="TrnexePath"/> made absolute.</summary>
+    /// <summary>Returns trnrund's <c>trnrunOptions</c> for the properties that are set, keyed by TRNRun option, with <see cref="TrnexePath"/> made absolute.</summary>
     /// <exception cref="FileNotFoundException">A set <see cref="TrnexePath"/> is not an existing file.</exception>
-    /// <exception cref="ArgumentOutOfRangeException"><see cref="GuiVisibility"/> is not a defined value; other bad values are left for trnrund to refuse.</exception>
-    internal IReadOnlyList<string> ToCliArgs()
+    /// <exception cref="ArgumentOutOfRangeException"><see cref="GuiVisibility"/> is not a defined value; other bad values are left for TRNRun to refuse.</exception>
+    internal JsonObject ToTrnrunOptions()
     {
-        var args = new List<string>();
-        Add(args, "trnexePath", TrnexePath is null ? null : ResolveTrnexe(TrnexePath));
-        Add(args, "guiVisibility", GuiVisibility is { } visibility ? GuiVisibilityName(visibility) : null);
-        Add(args, "waitForGui", WaitForGui);
-        Add(args, "waitForLst", WaitForLst);
-        Add(args, "waitForTmp", WaitForTmp);
-        Add(args, "detectTimeout", Unlimited(DetectTimeout));
-        Add(args, "extraDelay", ExtraDelay);
-        Add(args, "pollMs", PollInterval);
-        Add(args, "watchLog", WatchLog);
-        Add(args, "watchTmp", WatchTmp);
-        Add(args, "watchTimeout", Unlimited(WatchTimeout));
-        Add(args, "stallTimeout", Unlimited(StallTimeout));
-        Add(args, "clean", CleanOnSuccess);
-        Add(args, "killOnTimeout", KillOnTimeout);
-        Add(args, "killOnStall", KillOnStall);
-        Add(args, "severity", Severity?.ToString());
-        Add(args, "writeEvents", WriteEvents);
-        return args;
+        var options = new JsonObject();
+        Add(options, "trnexePath", TrnexePath is null ? null : ResolveTrnexe(TrnexePath));
+        Add(options, "guiVisibility", GuiVisibility is { } visibility ? GuiVisibilityName(visibility) : null);
+        Add(options, "waitForGui", WaitForGui);
+        Add(options, "waitForLst", WaitForLst);
+        Add(options, "waitForTmp", WaitForTmp);
+        Add(options, "detectTimeout", Unlimited(DetectTimeout));
+        Add(options, "extraDelay", ExtraDelay);
+        Add(options, "pollMs", PollInterval);
+        Add(options, "watchLog", WatchLog);
+        Add(options, "watchTmp", WatchTmp);
+        Add(options, "watchTimeout", Unlimited(WatchTimeout));
+        Add(options, "stallTimeout", Unlimited(StallTimeout));
+        Add(options, "clean", CleanOnSuccess);
+        Add(options, "killOnTimeout", KillOnTimeout);
+        Add(options, "killOnStall", KillOnStall);
+        Add(options, "severity", Severity?.ToString());
+        Add(options, "writeEvents", WriteEvents);
+        return options;
     }
 
-    /// <summary>Appends <c>--flag:value</c> unless the value is <see langword="null"/>.</summary>
-    private static void Add(List<string> args, string flag, string? value)
+    /// <summary>Sets the option unless the value is <see langword="null"/>.</summary>
+    private static void Add(JsonObject options, string option, JsonNode? value)
     {
         if (value is not null)
         {
-            args.Add($"--{flag}:{value}");
+            options[option] = value;
         }
     }
 
-    /// <summary>Appends a Boolean flag as TRNRun's lowercase <c>true</c> or <c>false</c>, unless unset.</summary>
-    private static void Add(List<string> args, string flag, bool? value) =>
-        Add(args, flag, value switch { null => null, true => "true", false => "false" });
-
-    /// <summary>Appends a duration flag in whole milliseconds, rounded up so a short timeout never becomes unlimited, unless unset.</summary>
-    private static void Add(List<string> args, string flag, TimeSpan? value) =>
-        Add(args, flag, value is { } duration ? ((long)Math.Ceiling(duration.TotalMilliseconds)).ToString(CultureInfo.InvariantCulture) : null);
+    /// <summary>Sets a duration option in whole milliseconds, rounded up so a short timeout never becomes unlimited, unless unset.</summary>
+    private static void Add(JsonObject options, string option, TimeSpan? value) =>
+        Add(options, option, value is { } duration ? (long)Math.Ceiling(duration.TotalMilliseconds) : null);
 
     /// <summary>Maps <see cref="Timeout.InfiniteTimeSpan"/> to zero, which TRNRun reads as no limit.</summary>
     private static TimeSpan? Unlimited(TimeSpan? timeout) => timeout == Timeout.InfiniteTimeSpan ? TimeSpan.Zero : timeout;

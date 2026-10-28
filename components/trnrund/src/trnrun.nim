@@ -4,7 +4,7 @@
 ## Nothing waits on that pipe: the caller polls `readLines` and `exitCode`, and
 ## must keep reading so TRNRun never blocks on a full pipe.
 
-import std/[options, osproc, streams, strutils]
+import std/[json, math, options, osproc, streams, strutils]
 
 type Trnrun* = object
   ## One started TRNRun and its output not yet ended by a line break.
@@ -14,6 +14,20 @@ type Trnrun* = object
 const
   ReadSize = 4096
   KillWaitMs = 5000 ## How long `kill` waits for TRNRun to exit before giving up.
+
+proc trnrunArgs*(trnrunOptions: JsonNode): seq[string] =
+  ## The `trnrunOptions` object as TRNRun `--key:value` arguments, one per option.
+  result = @[]
+  for key, value in trnrunOptions:
+    let text =
+      case value.kind
+      of JString: value.getStr()
+      of JFloat:
+        let number = value.getFloat()
+        # A whole number such as 5000.0 is passed as 5000, since TRNRun's numeric options are integers.
+        if number == trunc(number) and abs(number) < 1e15: $number.int64 else: $value
+      else: $value
+    result.add("--" & key & ":" & text)
 
 proc launch*(trnrunPath, deckFile: string, trnrunArgs: seq[string]): Trnrun =
   ## Starts `trnrunPath` on `deckFile` with `trnrunArgs` and no console; `OSError` on failure.

@@ -1,6 +1,7 @@
 import std/[json, os, unittest]
 
 import ../src/protocol
+from ../src/cli import NimblePkgVersion
 import ../src/scheduler
 import ./fake_trnrun
 import ./junit
@@ -44,8 +45,8 @@ suite "protocol":
       for simId in scheduler.list({state}):
         discard scheduler.cancel(simId)
 
-  test "ready answers true":
-    check request("""{"cmd":"ready"}""") == %*{"ok": true}
+  test "ready answers true with the version":
+    check request("""{"cmd":"ready"}""") == %*{"ok": true, "version": NimblePkgVersion}
 
   test "add accepts a deck with a label and TRNRun options":
     let deckFile = createDeck(dir, "wait-a.dck")
@@ -53,13 +54,13 @@ suite "protocol":
       "cmd": "add",
       "deckFile": deckFile,
       "label": "first",
-      "trnrunArgs": ["--pollMs:50"],
+      "trnrunOptions": {"pollMs": 50, "clean": true, "guiVisibility": "min"},
     })
     let simulation = simulation(simId)
     check simulation["simId"].getInt() == simId
     check simulation["deckFile"].getStr() == deckFile
     check simulation["label"].getStr() == "first"
-    check simulation["trnrunArgs"] == %*["--pollMs:50"]
+    check simulation["trnrunOptions"] == %*{"pollMs": 50, "clean": true, "guiVisibility": "min"}
     check simulation["state"].getStr() == "RUNNING"
 
   test "simulation returns every field of the simulation":
@@ -79,6 +80,7 @@ suite "protocol":
     check simulation["trnrunStatus"].getStr() == "DONE"
     check simulation["succeeded"].getBool()
     check simulation["label"].kind == JNull
+    check simulation["trnrunOptions"] == newJObject()
     check simulation["logs"][0] == %*{
       "severity": "Notice",
       "time": 0.0,
@@ -104,7 +106,7 @@ suite "protocol":
     let queued = add(createDeck(dir, "wait-c2.dck"))
     check simulation(queued)["state"].getStr() == "QUEUED"
 
-  test "add rejects a bad deckFile, label or trnrunArgs":
+  test "add rejects a bad deckFile, label or trnrunOptions":
     let deckFile = createDeck(dir, "done-d.dck")
     check request(%*{"cmd": "add", "deckFile": dir / "none.dck"}).rejects(
       "Deck file not found: '" & dir / "none.dck" & "'")
@@ -114,13 +116,16 @@ suite "protocol":
     check request(%*{"cmd": "add", "deckFile": 3}).rejects("'deckFile' must be a string")
     check request(%*{"cmd": "add", "deckFile": deckFile, "label": 1}).rejects(
       "'label' must be a string")
-    for args in [%*"--clean:true", %*[1]]:
-      check request(%*{"cmd": "add", "deckFile": deckFile, "trnrunArgs": args}).rejects(
-        "'trnrunArgs' must be an array of TRNRun options")
-    check request(%*{"cmd": "add", "deckFile": deckFile, "trnrunArgs": ["--help"]}).rejects(
-      "Option not allowed in trnrunArgs: 'help'")
-    check request(%*{"cmd": "add", "deckFile": deckFile, "trnrunArgs": ["--bogus:1"]}).rejects(
-      "Unknown option in trnrunArgs: 'bogus'")
+    for options in [%*"--clean:true", %*["--clean:true"]]:
+      check request(%*{"cmd": "add", "deckFile": deckFile, "trnrunOptions": options}).rejects(
+        "'trnrunOptions' must be an object of TRNRun options")
+    for value in [%*[1], %*{"a": 1}]:
+      check request(%*{"cmd": "add", "deckFile": deckFile, "trnrunOptions": {"pollMs": value}}).rejects(
+        "'trnrunOptions.pollMs' must be a string, boolean or number")
+    check request(%*{"cmd": "add", "deckFile": deckFile, "trnrunOptions": {"help": true}}).rejects(
+      "Option not allowed in trnrunOptions: 'help'")
+    check request(%*{"cmd": "add", "deckFile": deckFile, "trnrunOptions": {"deckFile:x.dck": true}}).rejects(
+      "Invalid option name in trnrunOptions: 'deckFile:x.dck'")
 
   test "cancel answers true once cancelled, and again once finished":
     let simId = add(createDeck(dir, "wait-e.dck"))
@@ -192,6 +197,15 @@ suite "protocol":
     check request(%*{"cmd": "launch"}).rejects("Unknown cmd: launch")
     check request(%*{"command": "ready"}).rejects("'cmd' must be a string")
     check request("[1,2]").rejects("Request must be a JSON object")
+
+  test "unknown fields are refused":
+    check request(%*{"cmd": "ready", "x": 1}).rejects("Unknown field in ready request: 'x'")
+    check request(%*{"cmd": "add", "deckFile": createDeck(dir, "done-m.dck"), "trnrunArgs": []}).rejects(
+      "Unknown field in add request: 'trnrunArgs'")
+    check request(%*{"cmd": "simulations", "withlogs": true}).rejects(
+      "Unknown field in simulations request: 'withlogs'")
+    check request(%*{"cmd": "cancel", "simId": 999, "state": nil}).rejects(
+      "Unknown field in cancel request: 'state'")
 
   test "malformed JSON is refused without raising":
     for line in ["", "{", "not json", """{"cmd":"ready"} trailing"""]:

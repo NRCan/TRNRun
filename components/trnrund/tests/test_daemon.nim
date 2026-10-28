@@ -71,7 +71,7 @@ suite "daemon":
     let
       daemon = startDaemon(trnrunOption, "--workers:1")
       deckFile = createDeck(dir, "wait-a.dck")
-    check daemon.request(%*{"cmd": "ready"}) == %*{"ok": true}
+    check daemon.request(%*{"cmd": "ready"}) == %*{"ok": true, "version": TestVersion}
     check daemon.request(%*{"cmd": "nope"})["ok"].getBool() == false
     let
       running = daemon.add(deckFile)
@@ -90,7 +90,7 @@ suite "daemon":
 
   test "answers a request at once instead of after its idle wait":
     let daemon = startDaemon(trnrunOption)
-    check daemon.request(%*{"cmd": "ready"}) == %*{"ok": true}
+    check daemon.request(%*{"cmd": "ready"}) == %*{"ok": true, "version": TestVersion}
     let start = getMonoTime()
     for _ in 1..200:
       discard daemon.request(%*{"cmd": "ready"})

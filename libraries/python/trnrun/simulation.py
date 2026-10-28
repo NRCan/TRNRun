@@ -82,8 +82,8 @@ class Simulation:
         Absolute deck path.
     label : str or None
         Label it was added with.
-    trnrun_args : list of str
-        TRNRun options it was added with.
+    trnrun_options : dict
+        TRNRun options it was added with, keyed by TRNRun's camelCase names.
     status, status_message : SimulationStatus or None, str or None
         TRNRun's latest status and its detail. TRNRun can report ``DONE``
         before ``state`` is ``FINISHED``.
@@ -113,7 +113,7 @@ class Simulation:
     state: SimulationState
     deck_file: Path
     label: str | None = None
-    trnrun_args: list[str] = field(default_factory=list[str])
+    trnrun_options: dict[str, Any] = field(default_factory=dict[str, Any])
     status: SimulationStatus | None = None
     status_message: str | None = None
     sim_time: float | None = None
@@ -194,7 +194,7 @@ def parse_simulation(sim: dict[str, Any]) -> Simulation:
         state=SimulationState(sim["state"]),
         deck_file=Path(sim["deckFile"]),
         label=sim["label"],
-        trnrun_args=sim["trnrunArgs"],
+        trnrun_options=sim["trnrunOptions"],
         status=None if status is None else SimulationStatus(status),
         status_message=sim["trnrunMessage"],
         sim_time=sim["simTime"],

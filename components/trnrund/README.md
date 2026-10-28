@@ -127,11 +127,12 @@ Confirms the daemon is up and reading requests.
 // stdin
 {"cmd":"ready"}
 // stdout
-{"ok":true}
+{"ok":true,"version":"1.2.3"}
 ```
 
 - **stdin**: no fields besides `cmd`.
-- **stdout**: no fields besides `ok`.
+- **stdout**:
+  - `version`: the daemon's version, so a client can check it speaks this protocol.
 
 ### `add`
 
@@ -141,7 +142,7 @@ with [`simulation`](#simulation).
 
 ```jsonc
 // stdin
-{"cmd":"add","deckFile":"C:\\models\\building-a.dck","trnrunArgs":["--guiVisibility:min"],"label":"building-a"}
+{"cmd":"add","deckFile":"C:\\models\\building-a.dck","trnrunOptions":{"guiVisibility":"min","watchTmp":true},"label":"building-a"}
 // stdout
 {"ok":true,"simId":1}
 ```
@@ -149,7 +150,8 @@ with [`simulation`](#simulation).
 - **stdin**:
   - `deckFile`: an existing `.dck` or `.trd` file; relative paths resolve from
     the daemon's working directory.
-  - `trnrunArgs` (optional): runner options, such as `--watchTmp:true`.
+  - `trnrunOptions` (optional): runner options as an object, such as
+    `{"watchTmp":true,"detectTimeout":5000}`.
   - `label` (optional): a text tag returned with the simulation, for the
     client's own use. It does not need to be unique.
 - **stdout**:
@@ -249,10 +251,10 @@ fields, gets `ok: false` and an `error` message for humans:
 not reported yet is `null`.
 
 ```json
-{"simId":1,"label":"building-a","state":"FINISHED","trnrunStatus":"DONE","trnrunMessage":"","percent":1.0,"simTime":8760.0,"elapsedMs":5321.0,"etaMs":0.0,"notices":2,"warnings":1,"fatals":0,"succeeded":true,"exitCode":0,"error":null,"submittedAt":"2026-10-22T14:03:12.345Z","startedAt":"2026-10-22T14:03:12.351Z","finishedAt":"2026-10-22T14:03:17.702Z","deckFile":"C:\\models\\building-a.dck","trnrunArgs":["--guiVisibility:min"],"startTime":0.0,"stopTime":8760.0,"timeStep":1.0,"setting":{...},"logs":[{"severity":"Warning","time":12.0,"unitId":5,"typeId":56,"messageCode":null,"message":"...","information":null}]}
+{"simId":1,"label":"building-a","state":"FINISHED","trnrunStatus":"DONE","trnrunMessage":"","percent":1.0,"simTime":8760.0,"elapsedMs":5321.0,"etaMs":0.0,"notices":2,"warnings":1,"fatals":0,"succeeded":true,"exitCode":0,"error":null,"submittedAt":"2026-10-22T14:03:12.345Z","startedAt":"2026-10-22T14:03:12.351Z","finishedAt":"2026-10-22T14:03:17.702Z","deckFile":"C:\\models\\building-a.dck","trnrunOptions":{"guiVisibility":"min","watchTmp":true},"startTime":0.0,"stopTime":8760.0,"timeStep":1.0,"setting":{...},"logs":[{"severity":"Warning","time":12.0,"unitId":5,"typeId":56,"messageCode":null,"message":"...","information":null}]}
 ```
 
-- _`simId`_, _`label`_, _`deckFile`_, _`trnrunArgs`_
+- _`simId`_, _`label`_, _`deckFile`_, _`trnrunOptions`_
 
   The identifier assigned by `add` and the values the client sent with it.
   `deckFile` is the resolved absolute path.

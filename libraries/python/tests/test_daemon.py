@@ -3,6 +3,7 @@
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from unittest.mock import ANY
 
 import pytest
 
@@ -63,12 +64,12 @@ def test_add_resolves_the_deck_from_pythons_directory(deck: DeckWriter, monkeypa
     assert (sim.deck_file, sim.label) == (path, None)
 
 
-def test_add_passes_settings_as_trnrun_args(deck: DeckWriter) -> None:
-    """The settings' flags are stored with the simulation."""
+def test_add_passes_settings_as_trnrun_options(deck: DeckWriter) -> None:
+    """The settings' options are stored with the simulation."""
     settings = SimulationSettings(watch_tmp=True, severity="Fatal")
     with Daemon(trnrun_path=PYTHON) as daemon:
         sim = daemon.simulation(daemon.add(deck(), settings))
-    assert sim.trnrun_args == ["--watchTmp:true", "--severity:Fatal"]
+    assert sim.trnrun_options == {"watchTmp": True, "severity": "Fatal"}
 
 
 def test_add_takes_settings_as_keywords(deck: DeckWriter) -> None:
@@ -78,16 +79,8 @@ def test_add_takes_settings_as_keywords(deck: DeckWriter) -> None:
         merged = daemon.simulation(daemon.add(deck(), SimulationSettings(watch_tmp=True, poll_ms=10), poll_ms=20))
         with pytest.raises(TypeError):
             _ = daemon.add(deck(), watch_tmpp=True)
-    assert alone.trnrun_args == ["--watchTmp:true"]
-    assert merged.trnrun_args == ["--pollMs:20", "--watchTmp:true"]
-
-
-def test_add_refuses_a_bad_setting(deck: DeckWriter) -> None:
-    """A value TRNRun would reject is refused by trnrund, before queuing."""
-    with Daemon(trnrun_path=PYTHON) as daemon:
-        with pytest.raises(RequestError, match="guiVisibility"):
-            _ = daemon.add(deck(), SimulationSettings(gui_visibility="nope"))  # pyright: ignore[reportArgumentType]
-        assert daemon.simulations("QUEUED") == []
+    assert alone.trnrun_options == {"watchTmp": True}
+    assert merged.trnrun_options == {"pollMs": 20, "watchTmp": True}
 
 
 def test_a_failed_runner_is_reported(deck: DeckWriter) -> None:
@@ -132,7 +125,7 @@ def test_cancel_and_release_refuse_the_wrong_state(deck: DeckWriter) -> None:
 def test_request_sends_a_raw_request() -> None:
     """A raw request returns trnrund's raw response, or raises RequestError when refused."""
     with Daemon(trnrun_path=PYTHON) as daemon:
-        assert daemon.request({"cmd": "ready"}) == {"ok": True}
+        assert daemon.request({"cmd": "ready"}) == {"ok": True, "version": ANY}
         with pytest.raises(RequestError):
             _ = daemon.request({"cmd": "nope"})
 

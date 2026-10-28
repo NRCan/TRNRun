@@ -18,10 +18,10 @@ bin: \
 test: \
     trnrun-test \
     trnrund-test \
-    type3830-test \
     python-test \
-    matlab-test \
-    dotnet-test
+    dotnet-test \
+    type3830-test \
+    matlab-test
 
 # Build all artifacts and assemble the root distribution
 deploy: \

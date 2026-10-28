@@ -360,9 +360,9 @@ updates in place on each refresh. A field is
 
   Label it was added with.
 
-- _`trnrun_args`_ (`list[str]`)
+- _`trnrun_options`_ (`dict[str, Any]`)
 
-  Runner options it was added with, such as `--watchTmp:true`.
+  Runner options it was added with, such as `{"watchTmp": True}`.
 
 - _`state`_ (`SimulationState`)
 
@@ -428,7 +428,7 @@ with SimulationManager(workers=1) as manager:
 print(f"ID: {simulation.sim_id}")
 print(f"Deck: {simulation.deck_file}")
 print(f"Label: {simulation.label}")
-print(f"Runner options: {simulation.trnrun_args}")
+print(f"Runner options: {simulation.trnrun_options}")
 print(f"State: {simulation.state}")
 print(f"Finished: {simulation.is_finished}")
 print(f"Status: {simulation.status} {simulation.status_message}")
