@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="https://github.com/NRCan/TRNRun/actions/workflows/build.yml"><img alt="Unit Tests" src="https://img.shields.io/github/actions/workflow/status/NRCan/TRNRun/build.yml?branch=main&label=Unit%20Tests"></a>
-  <a href="https://www.trnsys.com/"><img alt="TRNSYS 17 / 18" src="https://img.shields.io/badge/TRNSYS-17%20%7C%2018-orange"></a>
+  <a href="https://www.trnsys.com/"><img alt="TRNSYS 17 / 18" src="https://img.shields.io/badge/TRNSYS-17%20%7C%2018-yellow"></a>
   <a href="LICENSE"><img alt="License - MIT" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
 </p>
 
@@ -44,10 +44,10 @@ Python, MATLAB, .NET, or the command line.
 | Library                     | Release                                                                                                                                                      | Compatibility                                                                                                             | Install                                                                          |
 | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
 | [Python](libraries/python/) | [![PyPI Latest Release](https://img.shields.io/pypi/v/trnrun.svg?color=blue)](https://pypi.org/project/trnrun/)                                              | [![Python versions](https://img.shields.io/pypi/pyversions/trnrun.svg)](https://pypi.org/project/trnrun/)                 | `pip install trnrun` or `uv add trnrun`                                          |
-| [.NET](libraries/dotnet/)   | -                            | [![.NET 10](https://img.shields.io/badge/.NET-10-512BD4)](https://dotnet.microsoft.com/download/dotnet/10.0)              | `dotnet add package TRNRun`                                                      |
+| [.NET](libraries/dotnet/)   |  [![NuGet Latest Release](https://img.shields.io/nuget/v/TRNRun.svg?color=512BD4)](https://www.nuget.org/packages/TRNRun)                             | [![.NET 10](https://img.shields.io/badge/.NET-10-512BD4)](https://dotnet.microsoft.com/download/dotnet/10.0)              | `dotnet add package TRNRun`                                                      |
 | [MATLAB](libraries/matlab/) | [![MATLAB Toolbox Latest Release](https://img.shields.io/github/v/release/NRCan/TRNRun?label=toolbox&color=e16737)](https://github.com/NRCan/TRNRun/releases/latest) | [![MATLAB R2021a+](https://img.shields.io/badge/MATLAB-R2021a%2B-e16737)](https://www.mathworks.com/products/matlab.html) | `.mltbx` from [GitHub Releases](https://github.com/NRCan/TRNRun/releases/latest) |
 
-<!-- [![NuGet Latest Release](https://img.shields.io/nuget/v/TRNRun.svg?color=purple)](https://www.nuget.org/packages/TRNRun) -->
+
 
 Each library runs concurrent simulation batches through the bundled daemon.
 
