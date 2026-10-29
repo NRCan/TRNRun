@@ -127,5 +127,4 @@ jobs:
             dist/*.mltbx
             dist/*.zip
             dist/*.nupkg
-            dist/*.snupkg
           if-no-files-found: error

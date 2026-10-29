@@ -60,7 +60,7 @@ matlab-dist:
 matlab-test:
     matlab -batch "buildtool test"
 
-# Pack the .NET NuGet and symbol packages; links trnrun.exe and trnrund.exe from their build directories
+# Pack the .NET NuGet package; links trnrun.exe and trnrund.exe from their build directories
 [group('dotnet')]
 [working-directory('libraries/dotnet')]
 dotnet-dist:

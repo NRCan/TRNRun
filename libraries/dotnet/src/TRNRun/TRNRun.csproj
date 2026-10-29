@@ -4,9 +4,8 @@
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <!-- Trim and AOT analyzers; with warnings as errors, a change that breaks them fails the build. -->
     <IsAotCompatible>true</IsAotCompatible>
-    <!-- A .snupkg beside the .nupkg, so debuggers step into the source via Source Link. -->
-    <IncludeSymbols>true</IncludeSymbols>
-    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <!-- PDB inside the DLL, so debuggers step into the source via Source Link without a symbol server. -->
+    <DebugType>embedded</DebugType>
     <PackageId>TRNRun</PackageId>
     <Version>0.9.1</Version>
     <Authors>Natural Resources Canada / Ressources naturelles Canada;CanmetENERGY in Varennes / CanmetÉNERGIE à Varennes;Alex Lachance</Authors>
