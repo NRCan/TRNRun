@@ -27,8 +27,6 @@ simulations as typed `Simulation` records.
 - Optional: [Type3830 Progress Tracker](https://github.com/NRCan/TRNRun/tree/main/components/type3830) for
   progress and stall monitoring
 
-No NuGet dependencies; trim- and AOT-compatible.
-
 ## Installation
 
 ```powershell
