@@ -1,7 +1,7 @@
 import std/strutils
 
 # Package
-version = "0.8.0"
+version = "0.9.0"
 author = "Alex Lachance"
 description = "Process wrapper for TRNSYS TrnEXE with simulation monitoring and status reporting"
 license = "MIT"

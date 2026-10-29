@@ -8,11 +8,12 @@
     <IncludeSymbols>true</IncludeSymbols>
     <SymbolPackageFormat>snupkg</SymbolPackageFormat>
     <PackageId>TRNRun</PackageId>
-    <Version>0.8.0</Version>
+    <Version>0.9.0</Version>
     <Authors>Natural Resources Canada / Ressources naturelles Canada;CanmetENERGY in Varennes / CanmetÉNERGIE à Varennes;Alex Lachance</Authors>
     <Description>Run TRNSYS simulations through the trnrund daemon: a thin client of its JSON request protocol.</Description>
     <PackageTags>TRNSYS;simulation;Windows</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageIcon>trnrun-mark.png</PackageIcon>
     <PackageLicenseFile>LICENSE</PackageLicenseFile>
     <PackageProjectUrl>https://github.com/NRCan/TRNRun</PackageProjectUrl>
     <RepositoryUrl>https://github.com/NRCan/TRNRun</RepositoryUrl>
@@ -28,6 +29,7 @@
   <ItemGroup>
     <None Include="../../README.md" Pack="true" PackagePath="/" />
     <None Include="../../../../LICENSE" Pack="true" PackagePath="/" />
+    <None Include="../../../../assets/trnrun-mark.png" Pack="true" PackagePath="/" />
     <!-- Link the real native build outputs; do not keep a second staged copy. -->
     <None Include="$(_NativeRunnerPath)" Link="native/trnrun.exe"
           Pack="true" PackagePath="native/" ExcludeFromSingleFile="true"

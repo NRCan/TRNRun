@@ -20,7 +20,7 @@ from trnrun.simulation import (
 )
 from trnrun.settings import SimulationSettings
 
-__version__ = "0.8.0"
+__version__ = "0.9.0"
 __all__ = [
     "Daemon",
     "DaemonExitedError",
