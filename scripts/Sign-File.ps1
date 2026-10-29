@@ -1,5 +1,4 @@
-# Sign a file with AzureSignTool when all NRCAN_SIGN_* variables are set, such as: Sign-File.ps1 build/trnrun.exe
-# Install the tool with: dotnet tool install --global AzureSignTool --version 7.0.*
+# Sign a file with AzureSignTool
 param([Parameter(Mandatory)][string]$Path)
 
 $ErrorActionPreference = 'Stop'
