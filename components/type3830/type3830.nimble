@@ -42,6 +42,7 @@ const
   licenseSourceFile = "../../LICENSE"
   packageLicenseFile = "LICENSE"
   zigcc = "../../scripts/zigcc.bat"
+  signScript = "../../scripts/Sign-File.ps1"
 
   arch64 = Arch(
     cpu: "amd64",
@@ -67,6 +68,12 @@ const
   debugMode = Mode(name: "debug", flags: @["-d:debug", "--linedir:on"], dirPrefix: "DebugDLLs")
 
 # Build
+proc signFile(path: string) =
+  if not fileExists(signScript):
+    quit("Missing signing script: " & signScript)
+
+  exec "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File " & signScript & " " & path
+
 proc compileDll(arch: Arch, mode: Mode) =
   let
     dir = dllDir & "/" & mode.dirPrefix
@@ -99,6 +106,7 @@ proc compileDll(arch: Arch, mode: Mode) =
   args.add source
 
   exec args.join(" ")
+  signFile(output)
 
 proc compileAllDlls() =
   if dirExists(dllDir):

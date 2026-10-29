@@ -22,8 +22,15 @@ const
   pythonBinDir = "../../libraries/python/trnrun/bin"
   target = "x86_64-windows-gnu"
   zigcc = "../../scripts/zigcc.bat"
+  signScript = "../../scripts/Sign-File.ps1"
 
 # Build
+proc signFile(path: string) =
+  if not fileExists(signScript):
+    quit("Missing signing script: " & signScript)
+
+  exec "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File " & signScript & " " & path
+
 proc compileResource(): string =
   result = buildDir & "/" & exeName & ".res"
 
@@ -69,6 +76,7 @@ proc compileExe() =
   args.add source
 
   exec args.join(" ")
+  signFile(output)
 
 # Distribution
 proc assemblePackage() =

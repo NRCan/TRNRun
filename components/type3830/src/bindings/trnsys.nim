@@ -92,7 +92,12 @@ proc getSimulationTimeStep*(): cdouble {.cdecl, importc: "TRNSYSFUNCTIONS_mp_GET
 # proc typeck*(iopt, info, numberOfInputs, numberOfParameters, numberOfDerivatives: ptr cint) {.cdecl, importc: "TYPECK".}
 #
 # proc getListingFileLogicalUnit*(): cint {.cdecl, importc: "TRNSYSFUNCTIONS_mp_GETLISTINGFILELOGICALUNIT".}
-proc getLUFileNameCpp*(logicalUnit: ptr cint, filePath: cstring, pathLen: csize_t): cint {.cdecl, importc: "TRNSYSFUNCTIONS_mp_GETLUFILENAME_CPP".}
+when defined(i386):
+  # TRNSYS 17 (32-bit) has no GETLUFILENAME_CPP; use the Fortran character
+  # function, whose hidden result buffer and length are passed first.
+  proc getLUFileNameFortran*(fileName: cstring, fileNameLen: csize_t, logicalUnit: ptr cint) {.cdecl, importc: "TRNSYSFUNCTIONS_mp_GETLUFILENAME".}
+else:
+  proc getLUFileNameCpp*(logicalUnit: ptr cint, filePath: cstring, pathLen: csize_t): cint {.cdecl, importc: "TRNSYSFUNCTIONS_mp_GETLUFILENAME_CPP".}
 
 proc logicalUnitIsOpen*(logicalUnit: ptr cint): cint {.cdecl, importc: "TRNSYSFUNCTIONS_mp_LOGICALUNITISOPEN".}
 
@@ -199,13 +204,18 @@ proc getLUFileName*(logicalUnit: cint): string =
     return ""
 
   var buffer = newString(maxPathLength)
-  let written =
-    getLUFileNameCpp(addr unit, cast[cstring](buffer[0].addr), maxPathLength.csize_t)
+  when defined(i386):
+    getLUFileNameFortran(
+      cast[cstring](buffer[0].addr), maxPathLength.csize_t, addr unit
+    )
+  else:
+    let written =
+      getLUFileNameCpp(addr unit, cast[cstring](buffer[0].addr), maxPathLength.csize_t)
 
-  if written <= 0:
-    return ""
+    if written <= 0:
+      return ""
 
-  buffer.setLen(min(written.int, maxPathLength))
+    buffer.setLen(min(written.int, maxPathLength))
   buffer.strip(chars = {' ', '\0', '\t'})
 
 # ------------------------------------------------------------
