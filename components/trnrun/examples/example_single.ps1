@@ -28,6 +28,7 @@ $CliOptions = @(
     '--killOnStall=true'
     '--severity=Notice' # Notice | Warning | Fatal
     '--writeEvents=false'
+    '--keepAwake=true'
 )
 
 Write-Host "Running $([IO.Path]::GetFileName($DeckFile))"

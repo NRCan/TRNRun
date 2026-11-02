@@ -66,17 +66,6 @@ trnrun "C:\path\to\deck.dck" `
     --trnexePath:"C:\TRNSYS17\Exe\TrnEXE.exe"
 ```
 
-Enable Type3830 progress with timeout and stall detection:
-
-```powershell
-trnrun "C:\path\to\deck.dck" `
-    --watchTmp:true `
-    --watchTimeout:300000 `
-    --stallTimeout:300000 `
-    --killOnTimeout:true `
-    --killOnStall:true
-```
-
 Running `trnrun` without a deck opens the native file picker. For all options
 and version information:
 
@@ -157,7 +146,7 @@ Enabled checks execute in this order: GUI, `.lst`, then `.tmp`.
 
   Stream parsed TRNSYS `.log` entries as `LOG` events.
 
-- _`--watchTmp`_ (`boolean`, default: `false`)
+- _`--watchTmp`_ (`boolean`, default: `true`)
 
   Read Type3830 `.tmp` snapshots and emit `CONFIG` and `PROGRESS` events.
 
@@ -200,6 +189,10 @@ reported outcome.
   `.jsonl`. For example, `model.dck` writes `model.jsonl`. The file is truncated
   when the run starts.
 
+- _`--keepAwake`_ (`boolean`, default: `false`)
+
+  Block idle PC sleep until the run ends.
+
 - _`--clean`_ (`boolean`, default: `false`)
 
   Delete `.tmp`, `.log`, `.lst`, and `.PTI` sidecars after a successful run.
@@ -228,6 +221,7 @@ trnrun --deckFile:"C:\path\to\deck.dck" `
     --killOnStall:true `
     --severity:Notice `
     --writeEvents:false `
+    --keepAwake:true `
     --clean:true
 ```
 
@@ -339,6 +333,10 @@ Reports the effective settings used by the runner after normalization.
   Whether JSONL mirroring is active. This becomes `false` if the event file
   could not be opened.
 
+- _`keepAwake`_ (`boolean`)
+
+  Whether idle PC sleep is blocked during the run.
+
 ### `STATUS` events
 
 Reports a lifecycle transition or terminal outcome.
@@ -447,7 +445,7 @@ Optional fields are omitted when unavailable; they are not emitted as `null`.
 ### Example stream
 
 ```json
-{"kind":"SETTING","timestamp":"2026-06-19T19:37:13","trnexePath":"C:\\TRNSYS18\\Exe\\TrnEXE64.exe","guiVisibility":"hidden","waitForGui":true,"waitForLst":true,"waitForTmp":false,"detectTimeoutMs":300000,"extraDelayMs":0,"watchLog":true,"watchTmp":true,"watchTimeoutMs":0,"stallTimeoutMs":0,"pollMs":100,"cleanOnSuccess":false,"killOnTimeout":false,"killOnStall":false,"severity":"Notice","writeEvents":false,"seq":1}
+{"kind":"SETTING","timestamp":"2026-06-19T19:37:13","trnexePath":"C:\\TRNSYS18\\Exe\\TrnEXE64.exe","guiVisibility":"hidden","waitForGui":true,"waitForLst":true,"waitForTmp":false,"detectTimeoutMs":300000,"extraDelayMs":0,"watchLog":true,"watchTmp":true,"watchTimeoutMs":0,"stallTimeoutMs":0,"pollMs":100,"cleanOnSuccess":false,"killOnTimeout":false,"killOnStall":false,"severity":"Notice","writeEvents":false,"keepAwake":false,"seq":1}
 {"kind":"STATUS","timestamp":"2026-06-19T19:37:13","status":"PENDING","message":"","seq":2}
 {"kind":"STATUS","timestamp":"2026-06-19T19:37:14","status":"LAUNCHING","message":"","seq":3}
 {"kind":"STATUS","timestamp":"2026-06-19T19:37:15","status":"RUNNING","message":"","seq":4}

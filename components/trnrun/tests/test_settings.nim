@@ -19,7 +19,7 @@ suite "runner settings":
       detectTimeoutMs: 300_000,
       extraDelayMs: 0,
       watchLog: true,
-      watchTmp: false,
+      watchTmp: true,
       watchTimeoutMs: 0,
       stallTimeoutMs: 0,
       pollMs: 100,
@@ -28,6 +28,7 @@ suite "runner settings":
       killOnStall: false,
       severity: sevNotice,
       writeEvents: false,
+      keepAwake: false,
     )
 
   test "clamps negative timing values and polling to valid minimums":
@@ -153,6 +154,7 @@ suite "runner settings":
       killOnStall: true,
       severity: sevWarning,
       writeEvents: true,
+      keepAwake: false,
     )
 
     let event = settings.settingEvent(fixedTimestamp())

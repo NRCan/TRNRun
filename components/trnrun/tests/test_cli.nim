@@ -25,7 +25,7 @@ suite "CLI options":
     check input.applyOption("detectTimeout", "1234")
     check input.applyOption("extraDelay", "25")
     check input.applyOption("watchLog", "false")
-    check input.applyOption("watchTmp", "true")
+    check input.applyOption("watchTmp", "false")
     check input.applyOption("watchTimeout", "5000")
     check input.applyOption("stallTimeout", "3000")
     check input.applyOption("pollMs", "50")
@@ -34,6 +34,7 @@ suite "CLI options":
     check input.applyOption("killOnStall", "true")
     check input.applyOption("severity", "Warning")
     check input.applyOption("writeEvents", "true")
+    check input.applyOption("keepAwake", "true")
 
     check input == CliInput(
       deckFile: "model.dck",
@@ -47,7 +48,7 @@ suite "CLI options":
         detectTimeoutMs: 1234,
         extraDelayMs: 25,
         watchLog: false,
-        watchTmp: true,
+        watchTmp: false,
         watchTimeoutMs: 5000,
         stallTimeoutMs: 3000,
         pollMs: 50,
@@ -56,6 +57,7 @@ suite "CLI options":
         killOnStall: true,
         severity: sevWarning,
         writeEvents: true,
+        keepAwake: true,
       ),
     )
 

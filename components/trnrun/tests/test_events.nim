@@ -47,6 +47,7 @@ suite "simulation event JSON serialization":
           killOnStall: false,
           severity: sevNotice,
           writeEvents: true,
+          keepAwake: true,
         ),
       ),
     )
@@ -71,6 +72,7 @@ suite "simulation event JSON serialization":
       "killOnStall": false,
       "severity": "Notice",
       "writeEvents": true,
+      "keepAwake": true,
     }
 
   test "serializes every simulation status using its wire value":

@@ -40,6 +40,7 @@ classdef SimulationSettings
             mustBeMember(severity, ["Notice", "Warning", "Fatal"])} = string.empty
 
         writeEvents logical {mustBeScalarOrEmpty} = logical.empty  % mirror events to <deck>.jsonl
+        keepAwake   logical {mustBeScalarOrEmpty} = logical.empty  % block idle sleep and screen-off
     end
 
     methods
@@ -65,6 +66,7 @@ classdef SimulationSettings
                 options.killOnStall
                 options.severity
                 options.writeEvents
+                options.keepAwake
             end
 
             for name = string(fieldnames(options))'

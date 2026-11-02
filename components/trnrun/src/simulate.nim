@@ -8,8 +8,8 @@ import std/[monotimes, osproc]
 when isMainModule:
   import std/[os, strformat]
 
-import ./[events, eventsink, job, monitor, mutex, settings, sidecar, status, trnexe,
-  validate, wait]
+import ./[events, eventsink, job, monitor, mutex, settings, sidecar, sleep, status,
+  trnexe, validate, wait]
 
 proc runSimulation*(
     deckFile: string,
@@ -45,6 +45,8 @@ proc runSimulation*(
     process: Process = nil
     startTime: MonoTime = default(MonoTime)
 
+  if settings.keepAwake:
+    preventSleep()
   try:
     withLaunchLock:
       eventSink(statusEvent(statusLaunching))
@@ -152,6 +154,8 @@ proc runSimulation*(
   finally:
     # Handle cleanup only: the outcome is already reported, so a failure here
     # has nothing left to contradict it with.
+    if settings.keepAwake:
+      allowSleep()
     try:
       if process != nil:
         process.close()

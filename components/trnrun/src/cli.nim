@@ -27,7 +27,7 @@ Options:
   --detectTimeout:MS      Readiness timeout, 0 = unlimited (default: 300000)
   --extraDelay:MS         (default: 0)
   --watchLog:BOOL         (default: true)
-  --watchTmp:BOOL         Needed for stall detection (default: false)
+  --watchTmp:BOOL         Needed for stall detection (default: true)
   --watchTimeout:MS       0 = unlimited (default: 0)
   --stallTimeout:MS       0 = disabled (default: 0)
   --pollMs:MS             (default: 100)
@@ -36,6 +36,7 @@ Options:
   --killOnStall:BOOL      (default: false)
   --severity:LEVEL        Notice | Warning | Fatal (default: Notice)
   --writeEvents:BOOL      (default: false)
+  --keepAwake:BOOL        Block idle sleep and screen-off during the run (default: false)
 
 Exit codes: 0 done  1 fatal  2 usage error  124 timeout  125 stalled  130 cancelled"""
 
@@ -121,6 +122,8 @@ proc applyOption*(input: var CliInput, key, value: string): bool =
     input.settings.severity = parseEnum[LogSeverity](value)
   of "writeEvents":
     input.settings.writeEvents = parseBool(value)
+  of "keepAwake":
+    input.settings.keepAwake = parseBool(value)
   else:
     return false
 

@@ -35,6 +35,7 @@ $Worker = {
         '--killOnStall=true'
         '--severity=Notice' # Notice | Warning | Fatal
         '--writeEvents=false'
+        '--keepAwake=true'
     )
 
     $CliArguments = @("--deckFile=$DeckFile") + $CliOptions

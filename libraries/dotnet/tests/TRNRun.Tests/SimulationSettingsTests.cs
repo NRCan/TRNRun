@@ -31,6 +31,7 @@ public sealed class SimulationSettingsTests
             KillOnStall = false,
             Severity = LogSeverity.Warning,
             WriteEvents = true,
+            KeepAwake = true,
         };
         Assert.Equal(
             new JsonObject
@@ -39,6 +40,7 @@ public sealed class SimulationSettingsTests
                 ["waitForTmp"] = true, ["detectTimeout"] = 0, ["extraDelay"] = 2000, ["pollMs"] = 1, ["watchLog"] = true,
                 ["watchTmp"] = true, ["watchTimeout"] = 60000, ["stallTimeout"] = 0, ["clean"] = true, ["killOnTimeout"] = true,
                 ["killOnStall"] = false, ["severity"] = "Warning", ["writeEvents"] = true,
+                ["keepAwake"] = true,
             }.ToJsonString(),
             settings.ToTrnrunOptions().ToJsonString());
     }

@@ -21,7 +21,8 @@
             {"name":"killOnTimeout", "kind":"namevalue", "type":["logical","scalar"], "purpose":"Kill TRNSYS after a timeout"},
             {"name":"killOnStall", "kind":"namevalue", "type":["logical","scalar"], "purpose":"Kill TRNSYS after a stall"},
             {"name":"severity", "kind":"namevalue", "type":["choices={'Notice','Warning','Fatal'}"], "purpose":"Minimum log severity"},
-            {"name":"writeEvents", "kind":"namevalue", "type":["logical","scalar"], "purpose":"Write the events to a .jsonl file beside the deck"}
+            {"name":"writeEvents", "kind":"namevalue", "type":["logical","scalar"], "purpose":"Write the events to a .jsonl file beside the deck"},
+            {"name":"keepAwake", "kind":"namevalue", "type":["logical","scalar"], "purpose":"Block idle sleep and screen-off during the run"}
         ],
         "outputs":
         [

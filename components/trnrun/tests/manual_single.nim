@@ -27,6 +27,7 @@ const
   KillOnStall = false
   Severity = "Notice"
   WriteEvents = false
+  KeepAwake = false
 
 proc exitMeaning(exitCode: int): string =
   case exitCode
@@ -81,6 +82,7 @@ proc main(): int =
     "--killOnStall=" & $KillOnStall,
     "--severity=" & Severity,
     "--writeEvents=" & $WriteEvents,
+    "--keepAwake=" & $KeepAwake,
   ]
 
   styledWriteLine(stdout, fgCyan, "Running manual check:")
