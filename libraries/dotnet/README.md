@@ -58,12 +58,13 @@ else
 using TRNRun;
 
 string[] decks = [.. Directory.EnumerateFiles(@"C:\path\to\decks", "*.dck").Order()];
+var settings = new SimulationSettings { KeepAwake = true };
 
 await using TRNRunDaemon daemon = await TRNRunDaemon.StartAsync(workers: 4);
 var simIds = new List<long>();
 foreach (string deck in decks)
 {
-    simIds.Add(await daemon.AddAsync(deck));
+    simIds.Add(await daemon.AddAsync(deck, settings));
 }
 
 Simulation[] simulations = await Task.WhenAll(simIds.Select(simId => daemon.WaitForFinishedAsync(simId)));
@@ -88,10 +89,10 @@ It is an immutable record: derive variants with `with`:
 ```csharp
 using TRNRun;
 
-var settings = new SimulationSettings { CleanOnSuccess = true, PollInterval = TimeSpan.FromMilliseconds(10) };
-await daemon.AddAsync(deck, settings);                                                         // CleanOnSuccess = true, PollInterval = 10 ms
+var settings = new SimulationSettings { KeepAwake = true, PollInterval = TimeSpan.FromMilliseconds(10) };
+await daemon.AddAsync(deck, settings);                                                         // KeepAwake = true, PollInterval = 10 ms
 await daemon.AddAsync(deck);                                                                   // every runner default
-await daemon.AddAsync(deck, settings with { PollInterval = TimeSpan.FromMilliseconds(20) });   // CleanOnSuccess = true, PollInterval = 20 ms
+await daemon.AddAsync(deck, settings with { PollInterval = TimeSpan.FromMilliseconds(20) });   // KeepAwake = true, PollInterval = 20 ms
 ```
 
 ### Executable and window
@@ -326,10 +327,11 @@ Example daemon workflow with every method:
 using System.Text.Json.Nodes;
 using TRNRun;
 
+var settings = new SimulationSettings { KeepAwake = true };
 await using TRNRunDaemon daemon = await TRNRunDaemon.StartAsync(workers: 2);
 
-long first = await daemon.AddAsync(@"C:\path\to\first.dck");
-long second = await daemon.AddAsync(@"C:\path\to\second.dck", label: "second");
+long first = await daemon.AddAsync(@"C:\path\to\first.dck", settings);
+long second = await daemon.AddAsync(@"C:\path\to\second.dck", settings, label: "second");
 
 Console.WriteLine(await daemon.GetSimulationAsync(first));
 Console.WriteLine($"Running: {(await daemon.GetSimulationsAsync(SimulationState.Running)).Count}");
@@ -375,7 +377,7 @@ in PascalCase. A nullable property is `null` until the runner reports it.
 
 - _`TrnrunOptions`_ (`JsonElement?`)
 
-  Runner options it was added with, as a JSON object such as `{"pollMs":10}`.
+  Runner options it was added with, as a JSON object such as `{"keepAwake":true}`.
 
 - _`State`_ (`SimulationState`)
 
@@ -433,7 +435,7 @@ An example inspecting every property:
 using TRNRun;
 
 await using TRNRunDaemon daemon = await TRNRunDaemon.StartAsync(workers: 1);
-long simId = await daemon.AddAsync(@"C:\path\to\deck.dck");
+long simId = await daemon.AddAsync(@"C:\path\to\deck.dck", new SimulationSettings { KeepAwake = true });
 await daemon.WaitForFinishedAsync(simId);
 Simulation simulation = await daemon.GetSimulationAsync(simId, withLogs: true);
 
@@ -466,11 +468,12 @@ once finished:
 using TRNRun;
 
 string[] decks = [@"C:\path\to\first.dck", @"C:\path\to\second.dck"];
+var settings = new SimulationSettings { KeepAwake = true };
 
 await using TRNRunDaemon daemon = await TRNRunDaemon.StartAsync(workers: 2);
 foreach (string deck in decks)
 {
-    await daemon.AddAsync(deck);
+    await daemon.AddAsync(deck, settings);
 }
 
 int remaining = decks.Length;

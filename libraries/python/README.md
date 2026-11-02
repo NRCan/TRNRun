@@ -72,7 +72,7 @@ decks = sorted(Path(r"C:\path\to\decks").glob("*.dck"))
 
 with SimulationManager(workers=4) as manager:
     for deck in decks:
-        manager.add(deck)
+        manager.add(deck, keep_awake=True)
     manager.wait()
 
 succeeded = [sim for sim in manager.simulations.values() if sim.succeeded]
@@ -94,10 +94,10 @@ passed with them, and an unknown name raises `TypeError`:
 ```python
 from trnrun import SimulationSettings
 
-settings = SimulationSettings(clean_on_success=True, poll_ms=10)
-manager.add(deck, settings)              # clean_on_success=True, poll_ms=10
-manager.add(deck, clean_on_success=True) # the same as SimulationSettings(clean_on_success=True)
-manager.add(deck, settings, poll_ms=20)  # clean_on_success=True, poll_ms=20
+settings = SimulationSettings(keep_awake=True, poll_ms=10)
+manager.add(deck, settings)              # keep_awake=True, poll_ms=10
+manager.add(deck, keep_awake=True)       # the same as SimulationSettings(keep_awake=True)
+manager.add(deck, settings, poll_ms=20)  # keep_awake=True, poll_ms=20
 ```
 
 ### Executable and window
@@ -328,8 +328,8 @@ from trnrun import SimulationManager
 manager = SimulationManager(workers=2)
 
 try:
-    first = manager.add(r"C:\path\to\first.dck", wait_for="RUNNING")
-    second = manager.add(r"C:\path\to\second.dck", label="second")
+    first = manager.add(r"C:\path\to\first.dck", keep_awake=True, wait_for="RUNNING")
+    second = manager.add(r"C:\path\to\second.dck", keep_awake=True, label="second")
 
     manager.wait(first)
     print(f"First status: {first.status}")
@@ -367,7 +367,7 @@ updates in place on each refresh. A field is
 
 - _`trnrun_options`_ (`dict[str, Any]`)
 
-  Runner options it was added with, such as `{"pollMs": 10}`.
+  Runner options it was added with, such as `{"keepAwake": True}`.
 
 - _`state`_ (`SimulationState`)
 
@@ -427,7 +427,7 @@ An example inspecting every property:
 from trnrun import SimulationManager
 
 with SimulationManager(workers=1) as manager:
-    simulation = manager.add(r"C:\path\to\deck.dck")
+    simulation = manager.add(r"C:\path\to\deck.dck", keep_awake=True)
     manager.wait(simulation)
 
 print(f"ID: {simulation.sim_id}")
@@ -505,8 +505,8 @@ from trnrun import Daemon, RequestError
 daemon = Daemon(workers=2)
 
 try:
-    first = daemon.add(r"C:\path\to\first.dck")
-    second = daemon.add(r"C:\path\to\second.dck", label="second")
+    first = daemon.add(r"C:\path\to\first.dck", keep_awake=True)
+    second = daemon.add(r"C:\path\to\second.dck", keep_awake=True, label="second")
 
     print(daemon.simulation(first))
     print(f"Running: {len(daemon.simulations('RUNNING'))}")

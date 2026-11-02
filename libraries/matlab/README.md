@@ -74,10 +74,11 @@ updates but not the simulations.
 function simulations = run_batch(deck_folder)
     import trnrun.*
     decks = dir(fullfile(deck_folder, "*.dck"));
+    settings = SimulationSettings(keepAwake=true);
     manager = SimulationManager(workers=4);
 
     for deck = decks'
-        manager.add(fullfile(deck.folder, deck.name), waitFor="RUNNING");
+        manager.add(fullfile(deck.folder, deck.name), settings, waitFor="RUNNING");
     end
     manager.wait();
 
@@ -97,7 +98,7 @@ values when the simulation is added.
 
 ```matlab
 import trnrun.*
-settings = SimulationSettings(clean=true, pollMs=10);
+settings = SimulationSettings(keepAwake=true, pollMs=10);
 manager.add(deck, settings);
 ```
 
@@ -312,9 +313,10 @@ Example manager workflow with every method and property:
 import trnrun.*
 
 manager = SimulationManager(workers=2);
+settings = SimulationSettings(keepAwake=true);
 
-first = manager.add("C:\path\to\first.dck", waitFor="RUNNING");
-second = manager.add("C:\path\to\second.dck", label="second");
+first = manager.add("C:\path\to\first.dck", settings, waitFor="RUNNING");
+second = manager.add("C:\path\to\second.dck", settings, label="second");
 
 manager.wait(first);
 fprintf("First status: %s\n", first.trnrunStatus);
@@ -352,7 +354,7 @@ A value TRNRun has not reported yet is `missing` text, `NaN`, or `NaT`.
 
 - _`trnrunOptions`_ (`struct`)
 
-  Runner options it was added with, such as `struct('pollMs', 10)`.
+  Runner options it was added with, such as `struct('keepAwake', true)`.
 
 - _`state`_ (`string`)
 
@@ -408,7 +410,7 @@ An example inspecting every property:
 import trnrun.*
 
 manager = SimulationManager(workers=1);
-simulation = manager.add("C:\path\to\deck.dck");
+simulation = manager.add("C:\path\to\deck.dck", SimulationSettings(keepAwake=true));
 manager.wait(simulation);
 delete(manager);
 
@@ -485,9 +487,10 @@ Example daemon workflow with every method:
 import trnrun.*
 
 daemon = Daemon(workers=2);
+settings = SimulationSettings(keepAwake=true);
 
-first = daemon.add("C:\path\to\first.dck");
-second = daemon.add("C:\path\to\second.dck", label="second");
+first = daemon.add("C:\path\to\first.dck", settings);
+second = daemon.add("C:\path\to\second.dck", settings, label="second");
 
 disp(daemon.simulation(first));
 fprintf("Running: %d\n", numel(daemon.simulations("RUNNING")));

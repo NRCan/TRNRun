@@ -79,10 +79,10 @@ TRNSYS 17 and 18 at the default paths listed above.
 
 1. Add **Utility (NRCan) > Progress Tracker** to the deck in TRNSYS Studio.
 2. Set the printing interval in simulation hours. The default is `1` hour.
-3. Run the deck; TRNRun reads Type3830 progress by default:
+3. Run the deck with Type3830 monitoring enabled:
 
 ```powershell
-trnrun "C:\path\to\deck.dck"
+trnrun "C:\path\to\deck.dck" --watchTmp:true
 ```
 
 ## Configuration

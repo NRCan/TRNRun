@@ -151,7 +151,7 @@ with [`simulation`](#simulation).
   - `deckFile`: an existing `.dck` or `.trd` file; relative paths resolve from
     the daemon's working directory.
   - `trnrunOptions` (optional): runner options as an object, such as
-    `{"guiVisibility":"min","detectTimeout":5000}`.
+    `{"guiVisibility":"min"}`.
   - `label` (optional): a text tag returned with the simulation, for the
     client's own use. It does not need to be unique.
 - **stdout**:
