@@ -34,6 +34,7 @@ proc parameterMatrix(): seq[ParameterValues] =
     ParameterValues(name: "killOnStall", values: @["true", "false"]),
     ParameterValues(name: "severity", values: @["Notice"]),
     ParameterValues(name: "writeEvents", values: @["false"]),
+    ParameterValues(name: "keepAwake", values: @["false"]),
   ]
 
 proc countCombinations(matrix: openArray[ParameterValues]): int =

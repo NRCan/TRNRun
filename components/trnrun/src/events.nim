@@ -60,6 +60,7 @@ type
     killOnStall*: bool
     severity*: LogSeverity
     writeEvents*: bool
+    keepAwake*: bool
 
   SettingEvent* = object ## Runner settings applied to a simulation.
     timestamp*: DateTime

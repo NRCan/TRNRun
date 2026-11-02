@@ -44,6 +44,7 @@ type
     killOnStall*: bool
     severity*: LogSeverity
     writeEvents*: bool
+    keepAwake*: bool
 
   StatusEvent* = object
     ## A lifecycle transition, with outcome details.

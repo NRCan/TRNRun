@@ -40,6 +40,7 @@ let trnrunOptions = %*{
   "killOnStall": true,
   "severity": "Notice",
   "writeEvents": false,
+  "keepAwake": false,
 }
 
 proc formatSeconds(milliseconds: int64): string =

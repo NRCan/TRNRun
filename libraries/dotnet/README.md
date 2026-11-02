@@ -39,7 +39,7 @@ dotnet add package TRNRun
 using TRNRun;
 
 await using TRNRunDaemon daemon = await TRNRunDaemon.StartAsync(workers: 1);
-long simId = await daemon.AddAsync(@"C:\path\to\deck.dck", new SimulationSettings { WatchTmp = true });
+long simId = await daemon.AddAsync(@"C:\path\to\deck.dck", new SimulationSettings { KeepAwake = true });
 Simulation simulation = await daemon.WaitForFinishedAsync(simId);
 
 if (simulation.Succeeded == true)
@@ -58,13 +58,12 @@ else
 using TRNRun;
 
 string[] decks = [.. Directory.EnumerateFiles(@"C:\path\to\decks", "*.dck").Order()];
-var settings = new SimulationSettings { WatchTmp = true };
 
 await using TRNRunDaemon daemon = await TRNRunDaemon.StartAsync(workers: 4);
 var simIds = new List<long>();
 foreach (string deck in decks)
 {
-    simIds.Add(await daemon.AddAsync(deck, settings));
+    simIds.Add(await daemon.AddAsync(deck));
 }
 
 Simulation[] simulations = await Task.WhenAll(simIds.Select(simId => daemon.WaitForFinishedAsync(simId)));
@@ -89,10 +88,10 @@ It is an immutable record: derive variants with `with`:
 ```csharp
 using TRNRun;
 
-var settings = new SimulationSettings { WatchTmp = true, PollInterval = TimeSpan.FromMilliseconds(10) };
-await daemon.AddAsync(deck, settings);                                                         // WatchTmp = true, PollInterval = 10 ms
+var settings = new SimulationSettings { CleanOnSuccess = true, PollInterval = TimeSpan.FromMilliseconds(10) };
+await daemon.AddAsync(deck, settings);                                                         // CleanOnSuccess = true, PollInterval = 10 ms
 await daemon.AddAsync(deck);                                                                   // every runner default
-await daemon.AddAsync(deck, settings with { PollInterval = TimeSpan.FromMilliseconds(20) });   // WatchTmp = true, PollInterval = 20 ms
+await daemon.AddAsync(deck, settings with { PollInterval = TimeSpan.FromMilliseconds(20) });   // CleanOnSuccess = true, PollInterval = 20 ms
 ```
 
 ### Executable and window
@@ -149,7 +148,7 @@ await daemon.AddAsync(deck, settings with { PollInterval = TimeSpan.FromMillisec
 
   Read the deck's `.log` file and report its entries as `Logs`.
 
-- _`WatchTmp`_ (`bool?`, default: `false`)
+- _`WatchTmp`_ (`bool?`, default: `true`)
 
   Read Type3830 `.tmp` updates and report the simulation period and progress.
   Required for progress-based `SimulationStatus.Cancelled` and
@@ -193,6 +192,10 @@ await daemon.AddAsync(deck, settings with { PollInterval = TimeSpan.FromMillisec
   Mirror the runner events to a `.jsonl` file beside the deck, replacing any
   existing file when the run starts.
 
+- _`KeepAwake`_ (`bool?`, default: `false`)
+
+  Block idle PC sleep until the run ends.
+
 A configuration with every property set explicitly:
 
 ```csharp
@@ -217,6 +220,7 @@ var settings = new SimulationSettings
     KillOnStall = true,
     Severity = LogSeverity.Notice,
     WriteEvents = false,
+    KeepAwake = true,
 };
 ```
 
@@ -322,11 +326,10 @@ Example daemon workflow with every method:
 using System.Text.Json.Nodes;
 using TRNRun;
 
-var settings = new SimulationSettings { WatchTmp = true };
 await using TRNRunDaemon daemon = await TRNRunDaemon.StartAsync(workers: 2);
 
-long first = await daemon.AddAsync(@"C:\path\to\first.dck", settings);
-long second = await daemon.AddAsync(@"C:\path\to\second.dck", settings, label: "second");
+long first = await daemon.AddAsync(@"C:\path\to\first.dck");
+long second = await daemon.AddAsync(@"C:\path\to\second.dck", label: "second");
 
 Console.WriteLine(await daemon.GetSimulationAsync(first));
 Console.WriteLine($"Running: {(await daemon.GetSimulationsAsync(SimulationState.Running)).Count}");
@@ -372,7 +375,7 @@ in PascalCase. A nullable property is `null` until the runner reports it.
 
 - _`TrnrunOptions`_ (`JsonElement?`)
 
-  Runner options it was added with, as a JSON object such as `{"watchTmp":true}`.
+  Runner options it was added with, as a JSON object such as `{"pollMs":10}`.
 
 - _`State`_ (`SimulationState`)
 
@@ -430,7 +433,7 @@ An example inspecting every property:
 using TRNRun;
 
 await using TRNRunDaemon daemon = await TRNRunDaemon.StartAsync(workers: 1);
-long simId = await daemon.AddAsync(@"C:\path\to\deck.dck", new SimulationSettings { WatchTmp = true });
+long simId = await daemon.AddAsync(@"C:\path\to\deck.dck");
 await daemon.WaitForFinishedAsync(simId);
 Simulation simulation = await daemon.GetSimulationAsync(simId, withLogs: true);
 
@@ -463,12 +466,11 @@ once finished:
 using TRNRun;
 
 string[] decks = [@"C:\path\to\first.dck", @"C:\path\to\second.dck"];
-var settings = new SimulationSettings { WatchTmp = true };
 
 await using TRNRunDaemon daemon = await TRNRunDaemon.StartAsync(workers: 2);
 foreach (string deck in decks)
 {
-    await daemon.AddAsync(deck, settings);
+    await daemon.AddAsync(deck);
 }
 
 int remaining = decks.Length;

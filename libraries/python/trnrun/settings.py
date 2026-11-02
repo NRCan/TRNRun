@@ -40,6 +40,8 @@ class SimulationSettings:
         Minimum log severity: Notice, Warning or Fatal (``--severity``).
     write_events : bool, optional
         Write the events to a .jsonl file beside the deck (``--writeEvents``).
+    keep_awake : bool, optional
+        Block idle sleep and screen-off during the run (``--keepAwake``).
     """
 
     trnexe_path: str | Path | None = None
@@ -59,6 +61,7 @@ class SimulationSettings:
     kill_on_stall: bool | None = None
     severity: LogSeverity | Literal["Notice", "Warning", "Fatal"] | None = None
     write_events: bool | None = None
+    keep_awake: bool | None = None
 
     _FLAGS: ClassVar[dict[str, str]] = {
         "trnexe_path": "trnexePath",
@@ -78,6 +81,7 @@ class SimulationSettings:
         "kill_on_stall": "killOnStall",
         "severity": "severity",
         "write_events": "writeEvents",
+        "keep_awake": "keepAwake",
     }
 
     def to_trnrun_options(self) -> dict[str, object]:

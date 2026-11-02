@@ -215,6 +215,7 @@ proc runTests() =
           "--killOnStall:true",
           "--severity:Warning",
           "--writeEvents:true",
+          "--keepAwake:true",
         ],
         testDirectory,
       )
@@ -275,6 +276,7 @@ proc runTests() =
           "--killOnStall:true",
           "--severity:Warning",
           "--writeEvents:false",
+          "--keepAwake:true",
         ],
         testDirectory,
       )
@@ -300,6 +302,7 @@ proc runTests() =
       check setting["killOnStall"].getBool()
       check setting["severity"].getStr() == "Warning"
       check not setting["writeEvents"].getBool()
+      check setting["keepAwake"].getBool()
 
     test "reports missing and unsupported deck files":
       let

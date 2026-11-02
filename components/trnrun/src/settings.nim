@@ -18,7 +18,7 @@ const DefaultRunnerSettings* = RunnerSettings(
   detectTimeoutMs: 300_000,
   extraDelayMs: 0,
   watchLog: true,
-  watchTmp: false,
+  watchTmp: true,
   watchTimeoutMs: 0,
   stallTimeoutMs: 0,
   pollMs: 100,
@@ -27,6 +27,7 @@ const DefaultRunnerSettings* = RunnerSettings(
   killOnStall: false,
   severity: sevNotice,
   writeEvents: false,
+  keepAwake: false,
 )
   ## Default settings for TRNSYS simulation runs.
 

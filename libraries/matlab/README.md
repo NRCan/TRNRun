@@ -53,7 +53,7 @@ Install `TRNRun` from the `.mltbx` file:
 function simulation = run_deck(deck_path)
     import trnrun.*
     manager = SimulationManager(workers=1);
-    simulation = manager.add(deck_path, SimulationSettings(watchTmp=true), ...
+    simulation = manager.add(deck_path, SimulationSettings(keepAwake=true), ...
         waitFor="FINISHED");
 
     if simulation.succeeded
@@ -74,11 +74,10 @@ updates but not the simulations.
 function simulations = run_batch(deck_folder)
     import trnrun.*
     decks = dir(fullfile(deck_folder, "*.dck"));
-    settings = SimulationSettings(watchTmp=true);
     manager = SimulationManager(workers=4);
 
     for deck = decks'
-        manager.add(fullfile(deck.folder, deck.name), settings, waitFor="RUNNING");
+        manager.add(fullfile(deck.folder, deck.name), waitFor="RUNNING");
     end
     manager.wait();
 
@@ -98,7 +97,7 @@ values when the simulation is added.
 
 ```matlab
 import trnrun.*
-settings = SimulationSettings(watchTmp=true, pollMs=10);
+settings = SimulationSettings(clean=true, pollMs=10);
 manager.add(deck, settings);
 ```
 
@@ -156,7 +155,7 @@ manager.add(deck, settings);
 
   Read the deck's `.log` file and report its entries as `logs`.
 
-- _`watchTmp`_ (`logical`, default: `false`)
+- _`watchTmp`_ (`logical`, default: `true`)
 
   Read Type3830 `.tmp` updates and report the simulation period and progress.
   Required for progress-based `CANCELLED` and `STALLED` outcomes. Without
@@ -199,6 +198,10 @@ manager.add(deck, settings);
   Mirror the runner events to a `.jsonl` file beside the deck, replacing any
   existing file when the run starts.
 
+- _`keepAwake`_ (`logical`, default: `false`)
+
+  Block idle PC sleep until the run ends.
+
 A configuration with every property set explicitly:
 
 ```matlab
@@ -220,7 +223,8 @@ settings = SimulationSettings( ...
     killOnTimeout=true, ...
     killOnStall=true, ...
     severity="Notice", ...
-    writeEvents=false);
+    writeEvents=false, ...
+    keepAwake=true);
 ```
 
 ## `SimulationManager`
@@ -308,10 +312,9 @@ Example manager workflow with every method and property:
 import trnrun.*
 
 manager = SimulationManager(workers=2);
-settings = SimulationSettings(watchTmp=true);
 
-first = manager.add("C:\path\to\first.dck", settings, waitFor="RUNNING");
-second = manager.add("C:\path\to\second.dck", settings, label="second");
+first = manager.add("C:\path\to\first.dck", waitFor="RUNNING");
+second = manager.add("C:\path\to\second.dck", label="second");
 
 manager.wait(first);
 fprintf("First status: %s\n", first.trnrunStatus);
@@ -349,7 +352,7 @@ A value TRNRun has not reported yet is `missing` text, `NaN`, or `NaT`.
 
 - _`trnrunOptions`_ (`struct`)
 
-  Runner options it was added with, such as `struct('watchTmp', true)`.
+  Runner options it was added with, such as `struct('pollMs', 10)`.
 
 - _`state`_ (`string`)
 
@@ -405,7 +408,7 @@ An example inspecting every property:
 import trnrun.*
 
 manager = SimulationManager(workers=1);
-simulation = manager.add("C:\path\to\deck.dck", SimulationSettings(watchTmp=true));
+simulation = manager.add("C:\path\to\deck.dck");
 manager.wait(simulation);
 delete(manager);
 
@@ -482,10 +485,9 @@ Example daemon workflow with every method:
 import trnrun.*
 
 daemon = Daemon(workers=2);
-settings = SimulationSettings(watchTmp=true);
 
-first = daemon.add("C:\path\to\first.dck", settings);
-second = daemon.add("C:\path\to\second.dck", settings, label="second");
+first = daemon.add("C:\path\to\first.dck");
+second = daemon.add("C:\path\to\second.dck", label="second");
 
 disp(daemon.simulation(first));
 fprintf("Running: %d\n", numel(daemon.simulations("RUNNING")));

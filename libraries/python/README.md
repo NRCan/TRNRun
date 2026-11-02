@@ -52,7 +52,7 @@ uv add trnrun
 from trnrun import SimulationManager
 
 with SimulationManager(workers=1) as manager:
-    simulation = manager.add(r"C:\path\to\deck.dck", watch_tmp=True)
+    simulation = manager.add(r"C:\path\to\deck.dck", keep_awake=True)
     manager.wait(simulation)
 
 if simulation.succeeded:
@@ -72,7 +72,7 @@ decks = sorted(Path(r"C:\path\to\decks").glob("*.dck"))
 
 with SimulationManager(workers=4) as manager:
     for deck in decks:
-        manager.add(deck, watch_tmp=True)
+        manager.add(deck)
     manager.wait()
 
 succeeded = [sim for sim in manager.simulations.values() if sim.succeeded]
@@ -94,10 +94,10 @@ passed with them, and an unknown name raises `TypeError`:
 ```python
 from trnrun import SimulationSettings
 
-settings = SimulationSettings(watch_tmp=True, poll_ms=10)
-manager.add(deck, settings)              # watch_tmp=True, poll_ms=10
-manager.add(deck, watch_tmp=True)        # the same as SimulationSettings(watch_tmp=True)
-manager.add(deck, settings, poll_ms=20)  # watch_tmp=True, poll_ms=20
+settings = SimulationSettings(clean_on_success=True, poll_ms=10)
+manager.add(deck, settings)              # clean_on_success=True, poll_ms=10
+manager.add(deck, clean_on_success=True) # the same as SimulationSettings(clean_on_success=True)
+manager.add(deck, settings, poll_ms=20)  # clean_on_success=True, poll_ms=20
 ```
 
 ### Executable and window
@@ -153,7 +153,7 @@ manager.add(deck, settings, poll_ms=20)  # watch_tmp=True, poll_ms=20
 
   Read the deck's `.log` file and report its entries as `logs`.
 
-- _`watch_tmp`_ (`bool`, default: `False`)
+- _`watch_tmp`_ (`bool`, default: `True`)
 
   Read Type3830 `.tmp` updates and report the simulation period and progress.
   Required for progress-based `SimulationStatus.CANCELLED` and
@@ -197,6 +197,10 @@ manager.add(deck, settings, poll_ms=20)  # watch_tmp=True, poll_ms=20
   Mirror the runner events to a `.jsonl` file beside the deck, replacing any
   existing file when the run starts.
 
+- _`keep_awake`_ (`bool`, default: `False`)
+
+  Block idle PC sleep until the run ends.
+
 A configuration with every field set explicitly:
 
 ```python
@@ -222,6 +226,7 @@ settings = SimulationSettings(
     kill_on_stall=True,
     severity="Notice",
     write_events=False,
+    keep_awake=True,
 )
 ```
 
@@ -323,8 +328,8 @@ from trnrun import SimulationManager
 manager = SimulationManager(workers=2)
 
 try:
-    first = manager.add(r"C:\path\to\first.dck", watch_tmp=True, wait_for="RUNNING")
-    second = manager.add(r"C:\path\to\second.dck", watch_tmp=True, label="second")
+    first = manager.add(r"C:\path\to\first.dck", wait_for="RUNNING")
+    second = manager.add(r"C:\path\to\second.dck", label="second")
 
     manager.wait(first)
     print(f"First status: {first.status}")
@@ -362,7 +367,7 @@ updates in place on each refresh. A field is
 
 - _`trnrun_options`_ (`dict[str, Any]`)
 
-  Runner options it was added with, such as `{"watchTmp": True}`.
+  Runner options it was added with, such as `{"pollMs": 10}`.
 
 - _`state`_ (`SimulationState`)
 
@@ -422,7 +427,7 @@ An example inspecting every property:
 from trnrun import SimulationManager
 
 with SimulationManager(workers=1) as manager:
-    simulation = manager.add(r"C:\path\to\deck.dck", watch_tmp=True)
+    simulation = manager.add(r"C:\path\to\deck.dck")
     manager.wait(simulation)
 
 print(f"ID: {simulation.sim_id}")
@@ -500,8 +505,8 @@ from trnrun import Daemon, RequestError
 daemon = Daemon(workers=2)
 
 try:
-    first = daemon.add(r"C:\path\to\first.dck", watch_tmp=True)
-    second = daemon.add(r"C:\path\to\second.dck", watch_tmp=True, label="second")
+    first = daemon.add(r"C:\path\to\first.dck")
+    second = daemon.add(r"C:\path\to\second.dck", label="second")
 
     print(daemon.simulation(first))
     print(f"Running: {len(daemon.simulations('RUNNING'))}")

@@ -64,6 +64,9 @@ public sealed record SimulationSettings
     /// <summary>Whether TRNRun also writes its events to a <c>.jsonl</c> file beside the deck (<c>--writeEvents</c>).</summary>
     public bool? WriteEvents { get; init; }
 
+    /// <summary>Whether to block idle sleep and screen-off until the run ends (<c>--keepAwake</c>).</summary>
+    public bool? KeepAwake { get; init; }
+
     /// <summary>Returns trnrund's <c>trnrunOptions</c> for the properties that are set, keyed by TRNRun option, with <see cref="TrnexePath"/> made absolute.</summary>
     /// <exception cref="FileNotFoundException">A set <see cref="TrnexePath"/> is not an existing file.</exception>
     /// <exception cref="ArgumentOutOfRangeException"><see cref="GuiVisibility"/> is not a defined value; other bad values are left for TRNRun to refuse.</exception>
@@ -87,6 +90,7 @@ public sealed record SimulationSettings
         Add(options, "killOnStall", KillOnStall);
         Add(options, "severity", Severity?.ToString());
         Add(options, "writeEvents", WriteEvents);
+        Add(options, "keepAwake", KeepAwake);
         return options;
     }
 

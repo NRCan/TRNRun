@@ -61,6 +61,7 @@ def test_trnrund_accepts_every_setting(deck: DeckWriter) -> None:
         kill_on_stall=True,
         severity="Warning",
         write_events=False,
+        keep_awake=True,
     )
     assert len(settings.to_trnrun_options()) == len(fields(SimulationSettings))
     with Daemon(workers=1, trnrun_path=PYTHON) as daemon:

@@ -66,7 +66,7 @@ Each library runs concurrent simulation batches through the bundled daemon.
 from trnrun import SimulationManager
 
 with SimulationManager(workers=1) as manager:
-    simulation = manager.add(r"C:\path\to\deck.dck", watch_tmp=True)
+    simulation = manager.add(r"C:\path\to\deck.dck", keep_awake=True)
     manager.wait(simulation)
 ```
 
@@ -79,7 +79,7 @@ import trnrun.*
 manager = SimulationManager(workers=1);
 
 simulation = manager.add("C:\path\to\deck.dck", ...
-    SimulationSettings(watchTmp=true), waitFor="FINISHED");
+    SimulationSettings(keepAwake=true), waitFor="FINISHED");
 ```
 
 See the [MATLAB documentation](libraries/matlab/) for more details.
@@ -90,7 +90,7 @@ See the [MATLAB documentation](libraries/matlab/) for more details.
 using TRNRun;
 
 await using TRNRunDaemon daemon = await TRNRunDaemon.StartAsync(workers: 1);
-long simId = await daemon.AddAsync(@"C:\path\to\deck.dck", new SimulationSettings { WatchTmp = true });
+long simId = await daemon.AddAsync(@"C:\path\to\deck.dck", new SimulationSettings { KeepAwake = true });
 Simulation simulation = await daemon.WaitForFinishedAsync(simId);
 ```
 

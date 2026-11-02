@@ -32,6 +32,7 @@ $CliOptions = @(
     '--killOnStall=true'
     '--severity=Notice' # Notice | Warning | Fatal
     '--writeEvents=false'
+    '--keepAwake=true'
 )
 
 foreach ($DeckFile in $DeckFiles | Where-Object { Test-Path -LiteralPath $_ }) {

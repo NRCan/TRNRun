@@ -31,6 +31,7 @@ const
   KillOnStall = true
   Severity = "Notice"
   WriteEvents = false
+  KeepAwake = false
 
 proc exitMeaning(exitCode: int): string =
   ## Returns the trnrun outcome name for `exitCode`.
@@ -68,6 +69,7 @@ proc runMode(executable, runnerRoot, deckFile, guiVisibility: string): bool =
     "--killOnStall=" & $KillOnStall,
     "--severity=" & Severity,
     "--writeEvents=" & $WriteEvents,
+    "--keepAwake=" & $KeepAwake,
   ]
 
   styledWriteLine(

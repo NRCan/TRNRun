@@ -112,6 +112,7 @@ proc testSettings(): RunnerSettings =
   result.killOnTimeout = false
   result.killOnStall = false
   result.writeEvents = false
+  result.keepAwake = false
 
 proc removeIfExists(path: string) =
   if fileExists(path):
