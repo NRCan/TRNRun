@@ -41,7 +41,8 @@ trnrun runs the bundled executables and TRNSYS through [Wine](https://www.winehq
 
 - Linux x64
 - Wine 10 or newer
-- TRNSYS installed via Wine
+- TRNSYS installed via Wine, or copied from a Windows installation into the
+  Wine prefix
 - Xvfb installed for a machine without a display (e.g. server)
 
 ## Installation

@@ -75,7 +75,13 @@ def warn_if_old_wine(wine: str) -> None:
     match = _WINE_VERSION.match(output)
     if match is not None and int(match[1]) < _FAST_WINE:
         msg = f"{output.strip()} runs TRNSYS about twice as slow as Windows; Wine {_FAST_WINE} or later, such as WineHQ's wine-stable, runs it close to Windows speed"
-        # stacklevel: launch's caller's caller, the code that created the Daemon.
+        warnings.warn(msg, RuntimeWarning, stacklevel=4)
+
+
+def warn_if_keep_awake_ignored() -> None:
+    """Warn, off Windows, that keep_awake has no effect there."""
+    if not ON_WINDOWS:
+        msg = "keep_awake has no effect off Windows: Wine does not pass it to the host; to keep the machine awake, run Python under systemd-inhibit"
         warnings.warn(msg, RuntimeWarning, stacklevel=4)
 
 
