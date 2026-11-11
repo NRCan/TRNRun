@@ -1,4 +1,4 @@
-name: Build and test Windows distributions
+name: Build and test distributions
 
 on:
   workflow_dispatch:
@@ -128,3 +128,78 @@ jobs:
             dist/*.zip
             dist/*.nupkg
           if-no-files-found: error
+
+  linux:
+    name: Test Python client on Linux through Wine
+    needs: build
+    if: ${{ !inputs.skip-tests }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      WINEPREFIX: ${{ github.workspace }}/.wine
+      WINEDEBUG: -all
+      WINEDLLOVERRIDES: mscoree,mshtml=
+      # The fake TRNRun: trnrund runs under Wine, so it can only start a Windows Python.
+      TRNRUN_TEST_PYTHON: ${{ github.workspace }}/.wine-python/python.exe
+      WINDOWS_PYTHON_URL: https://www.python.org/ftp/python/3.12.10/python-3.12.10-embed-amd64.zip
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Download distributions
+        uses: actions/download-artifact@v7
+        with:
+          name: trnrun-windows-distributions
+          path: dist
+
+      # WineHQ's Wine: Ubuntu's Wine 9 runs TRNSYS about twice as slowly per time step.
+      - name: Install Wine and Xvfb
+        run: |
+          sudo dpkg --add-architecture i386
+          sudo mkdir -pm755 /etc/apt/keyrings
+          sudo wget -qO /etc/apt/keyrings/winehq-archive.key https://dl.winehq.org/wine-builds/winehq.key
+          sudo wget -qNP /etc/apt/sources.list.d/ https://dl.winehq.org/wine-builds/ubuntu/dists/noble/winehq-noble.sources
+          sudo apt-get update -q
+          sudo apt-get install -yq --install-recommends wine-stable xvfb
+          echo /opt/wine-stable/bin >> "$GITHUB_PATH"
+
+      - name: Create the Wine prefix
+        run: |
+          xvfb-run -a wine wineboot -u
+          wineserver -w
+          wine --version
+
+      - name: Unzip a Windows Python for the fake TRNRun
+        run: |
+          curl -fsSLo python-embed.zip "$WINDOWS_PYTHON_URL"
+          unzip -q python-embed.zip -d .wine-python
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: libraries/python/uv.lock
+
+      - name: Bundle the executables from the Linux wheel
+        run: unzip -jo dist/trnrun-*-manylinux_2_17_x86_64.whl 'trnrun/bin/*' -d libraries/python/trnrun/bin
+
+      # No DISPLAY here, so every Daemon starts its own Xvfb, as on a headless server.
+      - name: Test Python client
+        working-directory: libraries/python
+        run: uv run --python 3.12 pytest --junitxml=../../TestResults/python-linux.xml
+
+      - name: Install the Linux wheel
+        run: |
+          uv venv --python 3.12 /tmp/wheel-check
+          uv pip install --python /tmp/wheel-check dist/trnrun-*-manylinux_2_17_x86_64.whl
+          cd /tmp && /tmp/wheel-check/bin/python -c "
+          from trnrun import Daemon
+          with Daemon() as daemon:
+              print('trnrund', daemon.request({'cmd': 'ready'})['version'], 'answered from the installed wheel')
+          "
+
+      - name: Summarize test results
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: ./scripts/Write-TestSummary.ps1 TestResults >> $env:GITHUB_STEP_SUMMARY

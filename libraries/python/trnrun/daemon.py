@@ -15,6 +15,7 @@ from pathlib import Path
 from types import TracebackType
 from typing import IO, Any, Self, cast
 
+from trnrun._platform import launch, to_trnrund
 from trnrun.settings import SimulationSettings
 from trnrun.simulation import Simulation, StateName, parse_simulation
 
@@ -55,26 +56,34 @@ class Daemon:
         trnrun_path : str or Path, optional
             TRNRun executable trnrund launches per simulation; the bundled one by default.
 
+        Notes
+        -----
+        Off Windows, trnrund runs through Wine (``TRNRUN_WINE``, default ``wine``) in
+        ``WINEPREFIX``, where TRNSYS must be installed. Wine needs an X display for
+        TRNSYS's windows; without one (the ``DISPLAY`` environment variable unset, as
+        on a server), a private Xvfb is started and stopped by ``close``.
+
         Raises
         ------
         FileNotFoundError
-            If ``trnrund_path`` does not exist.
+            If ``trnrund_path`` does not exist, or off Windows, if Wine, or Xvfb when needed, is missing.
         DaemonExitedError
             If trnrund exits before answering, such as for an invalid option.
         """
-        args = [str(trnrund_path), f"--trnrun:{Path(trnrun_path).absolute()}"]
+        args = [str(trnrund_path), f"--trnrun:{to_trnrund(trnrun_path)}"]
         if workers is not None:
             args.append(f"--workers:{workers}")
+        pipes: dict[str, Any] = {
+            "stdin": subprocess.PIPE,
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.PIPE,
+            "text": True,
+            "encoding": "utf-8",
+        }
         self._lock: threading.Lock = threading.Lock()
-        self._process: subprocess.Popen[str] = subprocess.Popen(
-            args,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            creationflags=subprocess.CREATE_NO_WINDOW,
-        )
+        self._process: subprocess.Popen[str]
+        self._xvfb: subprocess.Popen[bytes] | None  # Private Xvfb when off Windows with no X display.
+        self._process, self._xvfb = launch(args, **pipes)
         self._stdin: IO[str] = cast("IO[str]", self._process.stdin)
         self._stdout: IO[str] = cast("IO[str]", self._process.stdout)
         self._stderr: IO[str] = cast("IO[str]", self._process.stderr)
@@ -106,6 +115,9 @@ class Daemon:
         except subprocess.TimeoutExpired:
             self._process.kill()
             _ = self._process.wait()
+        if self._xvfb is not None:
+            self._xvfb.terminate()
+            _ = self._xvfb.wait()
 
     def request(self, request: Mapping[str, object]) -> dict[str, Any]:
         """Send one raw request and return its response.
@@ -179,7 +191,7 @@ class Daemon:
         if options:
             settings = replace(settings or SimulationSettings(), **options)
         trnrun_options = {} if settings is None else settings.to_trnrun_options()
-        request = {"cmd": "add", "deckFile": str(Path(deck_file).absolute()), "trnrunOptions": trnrun_options}
+        request = {"cmd": "add", "deckFile": to_trnrund(deck_file), "trnrunOptions": trnrun_options}
         if label is not None:
             request["label"] = label
         return self.request(request)["simId"]

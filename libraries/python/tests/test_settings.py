@@ -6,7 +6,8 @@ from pathlib import Path
 import pytest
 
 from tests.conftest import PYTHON, DeckWriter, requires_trnrund
-from trnrun import Daemon, LogSeverity, SimulationSettings
+from trnrun import Daemon, LogSeverity, SimulationSettings, _platform
+from trnrun._platform import to_trnrund
 
 
 def test_default_settings_pass_nothing() -> None:
@@ -29,7 +30,8 @@ def test_relative_trnexe_path_is_made_absolute(tmp_path: Path, monkeypatch: pyte
     """A relative TrnEXE path resolves from Python's working directory, not trnrund's."""
     monkeypatch.chdir(tmp_path)
     (tmp_path / "TrnEXE64.exe").touch()
-    assert SimulationSettings(trnexe_path="TrnEXE64.exe").to_trnrun_options() == {"trnexePath": str(tmp_path / "TrnEXE64.exe")}
+    expected = to_trnrund(tmp_path / "TrnEXE64.exe")  # The absolute path; Z:\... off Windows.
+    assert SimulationSettings(trnexe_path="TrnEXE64.exe").to_trnrun_options() == {"trnexePath": expected}
 
 
 def test_missing_trnexe_fails_before_queuing(tmp_path: Path) -> None:
@@ -38,6 +40,13 @@ def test_missing_trnexe_fails_before_queuing(tmp_path: Path) -> None:
         _ = SimulationSettings(trnexe_path=tmp_path / "missing.exe").to_trnrun_options()
     with pytest.raises(FileNotFoundError):
         _ = SimulationSettings(trnexe_path=tmp_path).to_trnrun_options()
+
+
+def test_trnexe_in_the_wine_prefix_is_left_to_trnrun(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Off Windows, a Windows-form path passes unchecked: Wine ignores case, so Python cannot tell if it exists."""
+    monkeypatch.setattr(_platform, "ON_WINDOWS", False)
+    trnexe = "C:\\trnsys18\\Exe\\TrnEXE64.exe"
+    assert SimulationSettings(trnexe_path=trnexe).to_trnrun_options() == {"trnexePath": trnexe}
 
 
 @requires_trnrund

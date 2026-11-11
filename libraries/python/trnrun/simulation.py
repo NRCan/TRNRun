@@ -10,6 +10,8 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal, override
 
+from trnrun._platform import from_trnrund
+
 
 class SimulationState(StrEnum):
     """Daemon lifecycle, ``QUEUED → RUNNING → FINISHED``; one that never starts goes straight to ``FINISHED``."""
@@ -192,7 +194,7 @@ def parse_simulation(sim: dict[str, Any]) -> Simulation:
     return Simulation(
         sim_id=sim["simId"],
         state=SimulationState(sim["state"]),
-        deck_file=Path(sim["deckFile"]),
+        deck_file=from_trnrund(sim["deckFile"]),
         label=sim["label"],
         trnrun_options=sim["trnrunOptions"],
         status=None if status is None else SimulationStatus(status),
