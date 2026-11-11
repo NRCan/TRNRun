@@ -1,11 +1,10 @@
-"""Hatch build hook: check the bundled executables and tag the wheel for its platform.
+"""Hatch build hook: check the bundled executables and tag the wheel for its platforms.
 
-Every wheel bundles the same Windows executables. ``TRNRUN_WHEEL_PLATFORM`` picks
-the tag: ``win_amd64`` (default), or ``manylinux_2_17_x86_64``, where the
-package runs them through Wine.
+The wheel bundles Windows executables, so it installs on x86-64 Windows and on
+x86-64 Linux, where the package runs them through Wine. One wheel carries both
+tags; any other platform refuses it rather than installing something that cannot run.
 """
 
-import os
 import subprocess
 from pathlib import Path
 
@@ -21,11 +20,6 @@ class CustomBuildHook(BuildHookInterface):
         """Validate bundled executables and configure the wheel tag."""
         if version == "editable":
             return
-
-        platform = os.environ.get("TRNRUN_WHEEL_PLATFORM", PLATFORMS[0])
-        if platform not in PLATFORMS:
-            message = f"TRNRUN_WHEEL_PLATFORM must be one of {', '.join(PLATFORMS)}, got {platform!r}"
-            raise ValueError(message)
 
         bin_dir = Path(self.root) / "trnrun" / "bin"
         executables = [
@@ -52,4 +46,4 @@ class CustomBuildHook(BuildHookInterface):
                 raise ValueError(message)
 
         build_data["pure_python"] = False
-        build_data["tag"] = f"py3-none-{platform}"
+        build_data["tag"] = f"py3-none-{'.'.join(PLATFORMS)}"

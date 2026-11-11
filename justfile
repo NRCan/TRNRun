@@ -72,12 +72,11 @@ dotnet-dist:
 dotnet-test:
     dotnet test TRNRun.slnx --logger "trx;LogFileName=dotnet.trx" --results-directory ../../TestResults
 
-# Build the Python wheels: Windows, and Linux, which runs the same executables through Wine
+# Build the Python wheel, for Windows and for Linux, which runs the same executables through Wine
 [group('python')]
 [working-directory('libraries/python')]
 python-dist:
-    $env:TRNRUN_WHEEL_PLATFORM = 'win_amd64'; uv build --wheel --out-dir ../../dist
-    $env:TRNRUN_WHEEL_PLATFORM = 'manylinux_2_17_x86_64'; uv build --wheel --out-dir ../../dist
+    uv build --wheel --out-dir ../../dist
 
 # Run the Python test suite
 [group('python')]
