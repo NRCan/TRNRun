@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 
 from trnrun import LogEvent, LogSeverity, Simulation, SimulationState, SimulationStatus, parse_simulation
+from trnrun._platform import from_trnrund
 
 
 def _raw(**fields: Any) -> dict[str, Any]:
@@ -57,7 +58,7 @@ def test_parse_every_field() -> None:
     assert parse_simulation(_raw()) == Simulation(
         sim_id=1,
         state=SimulationState.FINISHED,
-        deck_file=Path("C:\\models\\building-a.dck"),
+        deck_file=from_trnrund("C:\\models\\building-a.dck"),  # Unchanged on Windows; in the Wine prefix elsewhere.
         label="building-a",
         trnrun_options={"guiVisibility": "min"},
         status=SimulationStatus.DONE,

@@ -1,4 +1,4 @@
-set shell := ["powershell.exe", "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"]
+set windows-shell := ["powershell.exe", "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"]
 
 # List available recipes
 default:
@@ -72,7 +72,7 @@ dotnet-dist:
 dotnet-test:
     dotnet test TRNRun.slnx --logger "trx;LogFileName=dotnet.trx" --results-directory ../../TestResults
 
-# Build the Python wheel
+# Build the Python wheel, for Windows and for Linux, which runs the same executables through Wine
 [group('python')]
 [working-directory('libraries/python')]
 python-dist:

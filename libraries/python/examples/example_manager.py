@@ -15,7 +15,7 @@ decks = [Path(shutil.copyfile(MASTER_DCK, runs / f"{MASTER_DCK.stem}_{i:03d}.dck
 
 with SimulationManager(workers=5, poll_interval=0.1) as manager:
     for deck in decks:
-        _ = manager.add(deck, SETTINGS, wait_for="RUNNING")
+        _ = manager.add(deck, SETTINGS, wait_for="QUEUED")
     manager.wait()
 
 failed = [sim for sim in manager.simulations.values() if not sim.succeeded]

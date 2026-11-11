@@ -11,6 +11,7 @@
 <p align="center">
   <a href="https://github.com/NRCan/TRNRun/actions/workflows/build.yml"><img alt="Unit Tests" src="https://img.shields.io/github/actions/workflow/status/NRCan/TRNRun/build.yml?branch=main&label=Unit%20Tests"></a>
   <a href="https://www.trnsys.com/"><img alt="TRNSYS 17 / 18" src="https://img.shields.io/badge/TRNSYS-17%20%7C%2018-yellow"></a>
+  <img alt="Platform - Windows | Linux (Wine)" src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%28Wine%29-lightgrey">
   <a href="LICENSE"><img alt="License - MIT" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
 </p>
 
@@ -53,7 +54,7 @@ Each library runs concurrent simulation batches through the bundled daemon.
 
 ## Requirements
 
-- Windows x64
+- Windows x64, or Linux x64 through Wine (Python library only)
 - TRNSYS 17 or 18
 - Optional: the [Type3830 Progress Tracker](components/type3830/) in each deck
   for progress reporting

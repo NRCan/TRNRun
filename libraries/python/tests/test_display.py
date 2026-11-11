@@ -1,5 +1,6 @@
 """Display: render's one line per simulation, in a terminal and in a notebook."""
 
+import os
 from datetime import UTC, datetime
 from io import StringIO
 from pathlib import Path
@@ -89,7 +90,7 @@ def test_render_name_and_bar_bounds() -> None:
     assert render(labelled).plain.startswith("[1] mine ")
     assert f"[{'#' * 20}]" in render(labelled).plain
     long = Simulation(sim_id=1, state=SimulationState.RUNNING, deck_file=Path("x" * 40) / "end.dck")
-    assert f"[1] …{'x' * 23}\\end.dck |" in render(long).plain
+    assert f"[1] …{'x' * 23}{os.sep}end.dck |" in render(long).plain
 
 
 def test_render_colours_final_statuses_only() -> None:

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar, Literal
 
+from trnrun._platform import in_prefix, to_trnrund, warn_if_keep_awake_ignored
 from trnrun.simulation import LogSeverity
 
 
@@ -18,7 +19,9 @@ class SimulationSettings:
     Attributes
     ----------
     trnexe_path : str or Path, optional
-        TRNSYS executable (``--trnexePath``); must exist.
+        TRNSYS executable (``--trnexePath``); must exist. Off Windows, a Linux path or
+        a path inside the Wine prefix, such as ``C:\TRNSYS18\Exe\TrnEXE64.exe``, which
+        only TRNRun checks.
     gui_visibility : str, optional
         TRNSYS window: ``keep``, ``auto``, ``min``, ``minAuto`` or ``hidden`` (``--guiVisibility``).
     wait_for_gui, wait_for_lst, wait_for_tmp : bool, optional
@@ -96,14 +99,16 @@ class SimulationSettings:
         Raises
         ------
         FileNotFoundError
-            If ``trnexe_path`` is set but is not a file.
+            If ``trnexe_path`` is set but is not a file; not checked for a path inside the Wine prefix.
         """
         options: dict[str, object] = {
             flag: value for name, flag in self._FLAGS.items() if (value := getattr(self, name)) is not None
         }
+        if self.keep_awake:
+            warn_if_keep_awake_ignored()
         if self.trnexe_path is not None:
-            trnexe = Path(self.trnexe_path).absolute()
-            if not trnexe.is_file():
-                raise FileNotFoundError(f"TrnEXE executable not found: {trnexe}")
-            options["trnexePath"] = str(trnexe)
+            # A path in the Wine prefix is left to TRNRun, which fails the simulation if it is missing.
+            if not in_prefix(self.trnexe_path) and not Path(self.trnexe_path).is_file():
+                raise FileNotFoundError(f"TrnEXE executable not found: {Path(self.trnexe_path).absolute()}")
+            options["trnexePath"] = to_trnrund(self.trnexe_path)
         return options

@@ -1,4 +1,4 @@
-name: Build and test Windows distributions
+name: Build and test distributions
 
 on:
   workflow_dispatch:
@@ -21,6 +21,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v7
 
+      # The MATLAB tests use this Python as their fake TRNRun; uv follows .python-version instead.
       - name: Set up Python
         uses: actions/setup-python@v7
         with:

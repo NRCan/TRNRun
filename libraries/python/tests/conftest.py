@@ -2,8 +2,13 @@
 
 trnrund starts the runner as ``<trnrun> <deck> <args...>``, so Python runs the
 deck as a script that prints TRNRun's JSON events and exits.
+
+Off Windows, trnrund runs under Wine and can only start Windows programs, so
+``TRNRUN_TEST_PYTHON`` must name a Windows ``python.exe``, such as the
+embeddable one unzipped anywhere; the trnrund tests are skipped without it.
 """
 
+import os
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -11,10 +16,11 @@ from typing import Any
 
 import pytest
 
+from trnrun._platform import ON_WINDOWS
 from trnrun.daemon import BIN
 
 # The interpreter itself, not a venv redirector, whose child would outlive a cancel.
-PYTHON = Path(sys._base_executable)
+PYTHON = Path(os.environ.get("TRNRUN_TEST_PYTHON") or sys._base_executable)
 
 DONE: list[dict[str, Any]] = [
     {"kind": "STATUS", "status": "RUNNING", "message": ""},
@@ -39,7 +45,10 @@ sys.exit({exit_code})
 
 type DeckWriter = Callable[..., Path]
 
-requires_trnrund = pytest.mark.skipif(not (BIN / "trnrund.exe").is_file(), reason="trnrun/bin/trnrund.exe is missing")
+requires_trnrund = pytest.mark.skipif(
+    not (BIN / "trnrund.exe").is_file() or not (ON_WINDOWS or os.environ.get("TRNRUN_TEST_PYTHON")),
+    reason="trnrun/bin/trnrund.exe is missing, or off Windows, TRNRUN_TEST_PYTHON is unset",
+)
 
 
 @pytest.fixture

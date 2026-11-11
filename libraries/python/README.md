@@ -26,11 +26,24 @@ daemon.
 
 ## Requirements
 
-- Windows x64
 - Python 3.12 or newer
 - TRNSYS 17 or 18
 - Optional: [Type3830 Progress Tracker](https://github.com/NRCan/TRNRun/tree/main/components/type3830) for
   progress and stall monitoring
+
+### Windows
+
+- Windows x64
+
+### Linux
+
+trnrun runs the bundled executables and TRNSYS through [Wine](https://www.winehq.org/).
+
+- Linux x64
+- Wine 10 or newer
+- TRNSYS installed via Wine, or copied from a Windows installation into the
+  Wine prefix
+- Xvfb installed for a machine without a display (e.g. server)
 
 ## Installation
 
