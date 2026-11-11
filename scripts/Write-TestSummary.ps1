@@ -1,6 +1,6 @@
 # Print a Markdown summary of the JUnit (*.xml) and TRX (*.trx) results under a directory, such as:
-# Write-TestSummary.ps1 TestResults 'Test results (Windows)' >> $env:GITHUB_STEP_SUMMARY
-param([Parameter(Mandatory)][string]$Path, [string]$Title = 'Test results')
+# Write-TestSummary.ps1 TestResults >> $env:GITHUB_STEP_SUMMARY
+param([Parameter(Mandatory)][string]$Path)
 
 $ErrorActionPreference = 'Stop'
 
@@ -51,7 +51,7 @@ foreach ($file in Get-ChildItem $Path -Recurse -Filter *.trx | Sort-Object FullN
 }
 
 if ($rows.Count -eq 0) {
-    "## $Title"
+    '## Test results'
     ''
     "No test results found in $Path."
     return
@@ -63,7 +63,7 @@ $failed = ($all | Measure-Object Failed -Sum).Sum
 $skipped = ($all | Measure-Object Skipped -Sum).Sum
 $seconds = ($all | Measure-Object Seconds -Sum).Sum
 
-"## $Title"
+'## Test results'
 ''
 '| Total tests | Passed ✅ | Failed ❌ | Skipped 🚫 | Duration (s) |'
 '|---:|---:|---:|---:|---:|'

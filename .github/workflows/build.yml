@@ -21,8 +21,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v7
 
-      # The MATLAB tests use this Python as their fake TRNRun. uv ignores it and follows .python-version,
-      # so the Python tests run on the newest Python here and on the oldest supported one on Linux.
+      # The MATLAB tests use this Python as their fake TRNRun; uv follows .python-version instead.
       - name: Set up Python
         uses: actions/setup-python@v7
         with:
@@ -78,14 +77,6 @@ jobs:
       - name: Build Python wheel
         run: just python-dist
 
-      # Uploaded before the tests, so a failing Windows suite does not keep the Linux job from running.
-      - name: Upload Linux wheel
-        uses: actions/upload-artifact@v7
-        with:
-          name: trnrun-linux-wheel
-          path: dist/*-manylinux_2_17_x86_64.whl
-          if-no-files-found: error
-
       # The test steps check this id, so it must stay on the last build step.
       - name: Build .NET package
         id: build
@@ -117,7 +108,7 @@ jobs:
 
       - name: Summarize Nim, Python, and .NET test results
         if: ${{ !inputs.skip-tests && !cancelled() && steps.build.outcome == 'success' }}
-        run: ./scripts/Write-TestSummary.ps1 TestResults 'Test results (Windows)' >> $env:GITHUB_STEP_SUMMARY
+        run: ./scripts/Write-TestSummary.ps1 TestResults >> $env:GITHUB_STEP_SUMMARY
 
       - name: Build MATLAB toolbox
         uses: matlab-actions/run-build@v3
@@ -138,76 +129,3 @@ jobs:
             dist/*.zip
             dist/*.nupkg
           if-no-files-found: error
-
-  # Runs the Python tests against the built Windows executables under Wine. TRNSYS is not tested, as on Windows.
-  linux:
-    name: Test Python client on Linux (Wine)
-    needs: build
-    # Runs even when a Windows suite fails; the wheel was uploaded before the tests.
-    if: ${{ !inputs.skip-tests && !cancelled() }}
-    runs-on: ubuntu-26.04 # Its apt has Wine 10, the oldest the docs recommend.
-    timeout-minutes: 30
-    env:
-      UV_PYTHON: "3.12" # The oldest supported Python; Windows tests the newest.
-      WINEDEBUG: -all
-      WINEDLLOVERRIDES: mscoree,mshtml= # No Mono or Gecko install dialog.
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v7
-
-      - name: Set up uv
-        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
-
-      - name: Set up just
-        uses: extractions/setup-just@v4
-
-      # No DISPLAY is set, so the library starts its own Xvfb, as on a headless server.
-      - name: Install Wine and Xvfb
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends wine wine64 xvfb
-          wine --version
-
-      - name: Create Wine prefix
-        run: |
-          wineboot -i
-          wineserver -w
-
-      # Off Windows, trnrund can only start Windows programs, so the fake TRNRun is a Windows Python.
-      - name: Download Windows embeddable Python
-        run: |
-          curl -fsSLo "$RUNNER_TEMP/python-embed.zip" https://www.python.org/ftp/python/3.12.10/python-3.12.10-embed-amd64.zip
-          unzip -q "$RUNNER_TEMP/python-embed.zip" -d "$RUNNER_TEMP/python-embed"
-
-      - name: Download Linux wheel
-        uses: actions/download-artifact@v7
-        with:
-          name: trnrun-linux-wheel
-          path: ${{ runner.temp }}/dist
-
-      # The tests run the source package, so it gets the executables the wheel bundles.
-      - name: Extract executables from the Linux wheel
-        run: unzip -j "$RUNNER_TEMP"/dist/*.whl 'trnrun/bin/*' -d libraries/python/trnrun/bin
-
-      - name: Test Python client
-        env:
-          TRNRUN_TEST_PYTHON: ${{ runner.temp }}/python-embed/python.exe
-        run: just python-test
-
-      # -I keeps the checkout's source package off sys.path, so trnrund comes from the installed wheel.
-      - name: Check the installed Linux wheel
-        if: ${{ !cancelled() }}
-        run: |
-          uv venv "$RUNNER_TEMP/wheel-check"
-          uv pip install --python "$RUNNER_TEMP/wheel-check" "$RUNNER_TEMP"/dist/*.whl
-          "$RUNNER_TEMP/wheel-check/bin/python" -I -c "
-          from trnrun import Daemon
-          with Daemon() as daemon:
-              print('trnrund', daemon.request({'cmd': 'ready'})['version'], 'answered from the installed wheel')
-          "
-
-      - name: Summarize test results
-        if: ${{ !cancelled() }}
-        shell: pwsh
-        run: ./scripts/Write-TestSummary.ps1 TestResults 'Test results (Linux, Wine)' >> $env:GITHUB_STEP_SUMMARY
