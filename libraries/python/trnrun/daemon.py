@@ -55,20 +55,6 @@ class Daemon:
             trnrund executable; the bundled one by default.
         trnrun_path : str or Path, optional
             TRNRun executable trnrund launches per simulation; the bundled one by default.
-
-        Notes
-        -----
-        Off Windows, trnrund runs through Wine (``TRNRUN_WINE``, default ``wine``) in
-        ``WINEPREFIX``, where TRNSYS must be installed. Wine needs an X display for
-        TRNSYS's windows; without one (the ``DISPLAY`` environment variable unset, as
-        on a server), a private Xvfb is started and stopped by ``close``.
-
-        Raises
-        ------
-        FileNotFoundError
-            If ``trnrund_path`` does not exist, or off Windows, if Wine, or Xvfb when needed, is missing.
-        DaemonExitedError
-            If trnrund exits before answering, such as for an invalid option.
         """
         args = [str(trnrund_path), f"--trnrun:{to_trnrund(trnrun_path)}"]
         if workers is not None:

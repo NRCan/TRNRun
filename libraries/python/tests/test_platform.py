@@ -1,11 +1,13 @@
 """Path conversion for trnrund on each platform, and the Wine environment; none of it needs Wine."""
 
+import subprocess
+import warnings
 from pathlib import Path
 
 import pytest
 
-from trnrun import _platform
-from trnrun._platform import from_trnrund, to_trnrund, wine_env
+from trnrun import SimulationSettings, _platform
+from trnrun._platform import from_trnrund, to_trnrund, warn_if_old_wine, wine_env
 
 
 @pytest.fixture
@@ -49,6 +51,53 @@ def test_wine_env_is_quiet() -> None:
     env = wine_env()
     assert env["WINEDEBUG"] == "-all"
     assert "mscoree" in env["WINEDLLOVERRIDES"]
+
+
+def _fake_wine(monkeypatch: pytest.MonkeyPatch, output: str) -> None:
+    """Make ``wine --version`` print ``output``, with a fresh version check."""
+
+    def run(args: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(args, 0, stdout=output)
+
+    monkeypatch.setattr(_platform.subprocess, "run", run)
+    warn_if_old_wine.cache_clear()
+
+
+@pytest.mark.parametrize("output", ["wine-9.0 (Ubuntu 9.0~repack-4build3)\n", "wine-8.0.1\n"])
+def test_old_wine_warns(monkeypatch: pytest.MonkeyPatch, output: str) -> None:
+    """Wine before 10 runs TRNSYS about twice as slow."""
+    _fake_wine(monkeypatch, output)
+    with pytest.warns(RuntimeWarning, match="twice as slow"):
+        warn_if_old_wine("wine")
+
+
+@pytest.mark.parametrize("output", ["wine-10.0\n", "wine-11.0\n", "wine-10.0 (Staging)\n", "", "not wine\n"])
+def test_recent_or_unknown_wine_is_silent(monkeypatch: pytest.MonkeyPatch, output: str) -> None:
+    """Wine 10 or later, or a version that cannot be read, passes without a warning."""
+    _fake_wine(monkeypatch, output)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        warn_if_old_wine("wine")
+
+
+@pytest.mark.usefixtures("off_windows")
+def test_keep_awake_warns_off_windows() -> None:
+    """keep_awake still reaches TRNRun, but warns that it does nothing under Wine."""
+    with pytest.warns(RuntimeWarning, match="keep_awake"):
+        options = SimulationSettings(keep_awake=True).to_trnrun_options()
+    assert options == {"keepAwake": True}
+
+
+def test_keep_awake_is_silent_on_windows(monkeypatch: pytest.MonkeyPatch) -> None:
+    """On Windows, or when keep_awake is off, there is nothing to warn about."""
+    monkeypatch.setattr(_platform, "ON_WINDOWS", True)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        _ = SimulationSettings(keep_awake=True).to_trnrun_options()
+    monkeypatch.setattr(_platform, "ON_WINDOWS", False)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        _ = SimulationSettings(keep_awake=False).to_trnrun_options()
 
 
 @pytest.mark.skipif(not _platform.ON_WINDOWS, reason="Windows behaviour")

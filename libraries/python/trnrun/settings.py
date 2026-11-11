@@ -1,9 +1,11 @@
 """TRNRun options for a simulation."""
 
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar, Literal
 
+from trnrun import _platform
 from trnrun._platform import in_prefix, to_trnrund
 from trnrun.simulation import LogSeverity
 
@@ -104,6 +106,9 @@ class SimulationSettings:
         options: dict[str, object] = {
             flag: value for name, flag in self._FLAGS.items() if (value := getattr(self, name)) is not None
         }
+        if self.keep_awake and not _platform.ON_WINDOWS:
+            msg = "keep_awake has no effect off Windows: Wine does not pass it to the host; to keep the machine awake, run Python under systemd-inhibit"
+            warnings.warn(msg, RuntimeWarning, stacklevel=3)  # stacklevel: the caller of Daemon.add.
         if self.trnexe_path is not None:
             # A path in the Wine prefix is left to TRNRun, which fails the simulation if it is missing.
             if not in_prefix(self.trnexe_path) and not Path(self.trnexe_path).is_file():
