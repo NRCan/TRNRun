@@ -1,4 +1,3 @@
-[windows]
 set shell :=["powershell.exe", "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"]
 
 # List available recipes
