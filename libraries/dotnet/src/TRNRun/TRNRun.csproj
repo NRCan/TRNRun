@@ -7,7 +7,7 @@
     <!-- PDB inside the DLL, so debuggers step into the source via Source Link without a symbol server. -->
     <DebugType>embedded</DebugType>
     <PackageId>TRNRun</PackageId>
-    <Version>0.9.2</Version>
+    <Version>0.10.0</Version>
     <Authors>Natural Resources Canada / Ressources naturelles Canada;CanmetENERGY in Varennes / CanmetÉNERGIE à Varennes;Alex Lachance</Authors>
     <Description>Run, monitor, and orchestrate batches of TRNSYS simulations</Description>
     <Copyright>Copyright (c) His Majesty the King in Right of Canada, as represented by the Minister of Natural Resources, 2026.</Copyright>
